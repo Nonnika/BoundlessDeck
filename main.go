@@ -1,64 +1,36 @@
+// BoundlessDeck is an infinite canvas workbench in native UI: MyGo draws it
+// itself, from Go, with no web page. Each deck is a folder: the home
+// screen opens one, and the deck is saved inside it.
 package main
 
 import (
 	"log"
-	"runtime"
-	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 )
 
-// Greeter is callable from the frontend: `mygo generate` turns its methods
-// into typed TypeScript functions in src/mygo.ts.
-type Greeter struct{}
-
-// Greet returns a greeting for name.
-func (Greeter) Greet(name string) string {
-	if name == "" {
-		name = "stranger"
-	}
-	return "Hello, " + name + "! This message comes from Go."
-}
-
-// SystemInfo describes the machine the app runs on.
-type SystemInfo struct {
-	OS        string `json:"os"`
-	Arch      string `json:"arch"`
-	GoVersion string `json:"goVersion"`
-}
-
-// Info returns information about the system.
-func (Greeter) Info() SystemInfo {
-	return SystemInfo{OS: runtime.GOOS, Arch: runtime.GOARCH, GoVersion: runtime.Version()}
-}
-
-// Tick is sent to the page every second.
-var Tick = mygo.NewEvent[time.Time]("tick")
-
 func main() {
-	mygo.Bind(Greeter{})
-
+	a := newApp()
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:           "BoundlessDeck",
-			Width:           960,
-			Height:          640,
-			MinWidth:        480,
-			MinHeight:       360,
-			BackgroundColor: "light-dark(#f6f7f9, #0f1115)", // the page's --bg in src/style.css
-			// Opens where the user left it last time.
-			StateKey: "main",
-			// The frontend: devUrl during `mygo dev`, frontendDist
-			// embedded by `mygo build` otherwise (see mygo.json).
-			URL: "/",
+			Width:           1280,
+			Height:          800,
+			MinWidth:        680,
+			MinHeight:       420,
+			BackgroundColor: "light-dark(#f6f7f9, #0f1115)",
+			StateKey:        "main",
+			Content:         ui.View(a.view),
 		})
-		go func() {
-			for t := range time.Tick(time.Second) {
-				if Tick.Emit(win, t) != nil {
-					return // the window was closed
-				}
-			}
-		}()
+		a.win = win
+		a.loadRecents()
+		// A folder dropped on the home screen opens as a deck; files
+		// dropped on a deck become blocks where they landed.
+		win.OnFileDrop(func(e *mygo.FileDropEvent) {
+			win.Update(func() { a.dropped(e.Paths, float32(e.X), float32(e.Y)) })
+		})
+		win.OnClosed(a.closeDeck)
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
