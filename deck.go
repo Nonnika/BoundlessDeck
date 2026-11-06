@@ -491,6 +491,7 @@ func (d *deck) hangUp(b *block) {
 	if b.rt == nil {
 		return
 	}
+	d.flushMemo(b)
 	b.rt.closePDF()
 	b.rt.closeBrowser()
 	b.rt.termGen++ // one still starting is closed as it comes
@@ -738,7 +739,7 @@ func (d *deck) seed() {
 		Text: "- 双指滑动平移，⌘ + 滚轮或捏合缩放，⌘0 显示全部\n" +
 			"- 拖顶部的胶带移动，拖右下角等比缩放\n" +
 			"- 点胶带、框选或 Shift + 点击来选中，⌘D 删除\n" +
-			"- 右上角新建 QuickLook、链接文件、打开终端\n" +
+			"- 右上角新建 QuickLook、笔记、链接文件、打开终端\n" +
 			"- 左上角回到主页，画布会保存在这个文件夹里",
 	})
 	d.sel = map[string]bool{}

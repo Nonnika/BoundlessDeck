@@ -64,6 +64,16 @@ func (d *deck) startEditing(n *block, part editPart) {
 
 // stopEditing keeps what was typed and shows the block as it reads again.
 func (d *deck) stopEditing() {
+	if n := d.editing; n != nil && n.Kind == kindMemo {
+		if d.editPart == editBody {
+			d.saveMemo(n, n.rt, false)
+		} else if n.Title != d.editFrom {
+			// The note's title is its file's name.
+			d.editing, d.editHad = nil, false
+			d.renameMemo(n)
+			return
+		}
+	}
 	if n := d.editing; n != nil && d.editPart == editTitle {
 		n.Title = strings.TrimSpace(n.Title)
 		switch {
@@ -91,6 +101,13 @@ func defaultTitle(n *block) string {
 		return "终端"
 	case kindBrowser:
 		return "浏览器"
+	case kindMemo:
+		if n.Path != "" {
+			return memoTitleOf(n.Path)
+		}
+		return memoTitle
+	case kindStack:
+		return "块堆"
 	}
 	return "QuickLook"
 }
@@ -117,6 +134,11 @@ func (d *deck) watchEditFocus(c *ui.Context) {
 // endKeys ends the edit on Escape, and in the body on ⌘↵ too.
 func (d *deck) endKeys(k ui.TextKey) bool {
 	if k.Key == ui.KeyEscape || (k.Key == ui.KeyEnter && k.Mods == ui.Cmd) {
+		if n := d.editing; n != nil && d.editPart == editBody && livePreviewed(n) {
+			// Done typing, the preview keeps the focus: the wheel goes
+			// on scrolling what was written.
+			d.focusBlock = n.ID
+		}
 		d.stopEditing()
 		return true
 	}

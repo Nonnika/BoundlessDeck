@@ -124,6 +124,8 @@ func (d *deck) titleBar(c *ui.Context, n *block) {
 
 func (d *deck) body(c *ui.Context, n *block) {
 	switch n.Kind {
+	case kindMemo:
+		d.memoBody(c, n)
 	case kindFile:
 		switch previewOf(n.Path) {
 		case previewImage:
@@ -271,8 +273,8 @@ const gestureHold = 300 * time.Millisecond
 // from the canvas once focused.
 func hasScroller(n *block) bool {
 	switch n.Kind {
-	case kindTerminal, kindBrowser:
-		return true
+	case kindTerminal, kindBrowser, kindNote, kindMemo:
+		return true // a QuickLook's or 笔记's live preview too
 	case kindFile:
 		switch previewOf(n.Path) {
 		case previewText, previewMarkdown, previewWord:
