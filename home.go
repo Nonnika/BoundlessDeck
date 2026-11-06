@@ -338,6 +338,8 @@ func (a *app) homeView(c *ui.Context) {
 				})
 			})
 		})
+		// Over the column's top: there is none to click up there.
+		dragBand(c, c.TitleBar().Height)
 		a.trashView(c, t, cw, ch)
 	})
 }

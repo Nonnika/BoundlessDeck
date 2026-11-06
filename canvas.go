@@ -340,7 +340,7 @@ func (d *deck) toolbar(c *ui.Context) {
 			del = del.TextColor(t.Danger)
 		}
 		del.OnClick(d.deleteSelected)
-	}).Label("新建").Absolute().Top(12).Right(12).Padding(5).Gap(2).
+	}).Label("新建").Absolute().Top(chromeTop).Right(12).Padding(5).Gap(2).
 		Background(t.Surface).Border(1, t.Border).Radius(12).
 		Shadow(0, 4, 16, 0, shade)
 }
@@ -377,7 +377,7 @@ func (d *deck) homePill(c *ui.Context) {
 	if t.Dark {
 		shade = ui.RGBA(0, 0, 0, 0.4)
 	}
-	ui.Row(c).Absolute().Top(12).Left(12).Padding(5).
+	ui.Row(c).Absolute().Top(chromeTop).Left(chromeLeft(c)).Padding(5).
 		Background(t.Surface).Border(1, t.Border).Radius(12).Shadow(0, 4, 16, 0, shade).
 		Children(func() {
 			ui.Button(c.Key("go-home"), "").Label("返回主页").Tooltip("保存并返回主页（"+shortPath(d.root)+"）").

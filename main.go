@@ -22,7 +22,10 @@ func main() {
 			MinHeight:       420,
 			BackgroundColor: "light-dark(#f6f7f9, #0f1115)",
 			StateKey:        "main",
-			Content:         ui.View(a.view),
+			// The canvas runs up under the traffic lights (titlebar.go).
+			TitleBarStyle:        mygo.TitleBarHidden,
+			TrafficLightPosition: &mygo.Point{X: trafficLights.X, Y: trafficLights.Y},
+			Content:              ui.View(a.view),
 		})
 		a.win = win
 		a.loadRecents()
