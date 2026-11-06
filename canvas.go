@@ -3,7 +3,6 @@ package main
 import (
 	"math"
 	"path/filepath"
-	goruntime "runtime"
 	"slices"
 	"strings"
 	"time"
@@ -384,7 +383,7 @@ func (d *deck) toolbar(c *ui.Context) {
 			cw, ch := c.Size()
 			d.newMemo(cw/2, ch/2)
 		}
-		if toolButton(c.Key("new-file"), iconFile, "文件…", "链接本地文件（"+newKeyOf(kindFile)+"，也可从访达拖入）").Clicked() {
+		if toolButton(c.Key("new-file"), iconFile, "文件", "链接本地文件（"+newKeyOf(kindFile)+"，也可从访达拖入）").Clicked() {
 			cw, ch := c.Size()
 			go d.pickFile(cw/2, ch/2)
 		}
@@ -397,32 +396,10 @@ func (d *deck) toolbar(c *ui.Context) {
 		if toolButton(c.Key("new-stack"), iconStack, "块堆", "新建块堆：拖 block 的胶带或标题栏进来，点击后悬停推出卡片、上下边缘滚动，空格长预览（"+newKeyOf(kindStack)+"）").Clicked() {
 			d.addAtCenter(c, kindStack)
 		}
-		ui.Divider(c).Margin(6, 2)
-		n := len(d.sel)
-		del := toolButton(c.Key("delete-selected"), iconTrash, "删除", "删除选中（"+deleteKeys+"）", func() {
-			// The count is a badge after the label, there only while
-			// something is selected.
-			if n > 0 {
-				ui.Textf(c, "%d", n).FontSize(10).SingleLine().
-					Padding(1, 6).Radius(999).Background(t.Danger).TextColor(t.AccentText)
-			}
-		}).Disabled(n == 0)
-		if n > 0 {
-			del = del.TextColor(t.Danger)
-		}
-		del.OnClick(d.deleteSelected)
 	}).Label("新建").Absolute().Top(chromeTop).Right(12).Padding(5).Gap(2).
 		Background(t.Surface).Border(1, t.Border).Radius(12).
 		Shadow(0, 4, 16, 0, shade)
 }
-
-// deleteKeys names the delete-selection shortcut as the platform writes it.
-var deleteKeys = func() string {
-	if goruntime.GOOS == "darwin" {
-		return "⌘D"
-	}
-	return "Ctrl+D"
-}()
 
 // toolButton is a toolbar button with an icon before its label.
 // extra, when given, builds what follows the label.
