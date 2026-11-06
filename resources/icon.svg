@@ -1,10 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- BoundlessDeck app icon: a robot peeking out of a deck of blocks, with an orbit and a spark.
+  <!-- BoundlessDeck app icon: one white block, the robot's face on it, two more
+       blocks of the deck fanned out behind. Kept to one figure so it reads at 16 px.
        Render: rsvg-convert -w 1024 -h 1024 resources/icon.svg -o resources/icon.png -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5A86FA"/>
+      <stop offset="1" stop-color="#2F5BE6"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#F2F4FA"/>
+      <stop offset="1" stop-color="#EEF2FD"/>
     </linearGradient>
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
       <feGaussianBlur in="SourceAlpha" stdDeviation="14"/>
@@ -12,56 +17,28 @@
       <feComponentTransfer><feFuncA type="linear" slope="0.28"/></feComponentTransfer>
       <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
-    <linearGradient id="halo" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#D9E2FC"/>
-      <stop offset="0.75" stop-color="#EEF2FE"/>
-      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
-    </linearGradient>
-    <linearGradient id="haloIn" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.3"/>
-    </linearGradient>
-    <linearGradient id="top" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#3F6CF2"/>
-      <stop offset="1" stop-color="#4C7BF7"/>
-    </linearGradient>
-    <linearGradient id="orbit" gradientUnits="userSpaceOnUse" x1="-350" y1="0" x2="350" y2="0">
-      <stop offset="0" stop-color="#6E8DF6" stop-opacity="0"/>
-      <stop offset="0.3" stop-color="#6E8DF6" stop-opacity="0.85"/>
-      <stop offset="1" stop-color="#7B97F6" stop-opacity="0.9"/>
-    </linearGradient>
-    <clipPath id="front"><rect x="-400" y="0" width="800" height="200"/></clipPath>
-    <clipPath id="body"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+    <filter id="lift" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="18"/>
+      <feOffset dy="16" result="b"/>
+      <feFlood flood-color="#10245E" flood-opacity="0.35"/>
+      <feComposite in2="b" operator="in"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
   </defs>
 
   <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
 
-  <g clip-path="url(#body)">
-    <g transform="translate(0 22)">
-      <!-- orbit, back half -->
-      <g transform="translate(514 500) rotate(-17)">
-        <ellipse rx="350" ry="98" fill="none" stroke="url(#orbit)" stroke-width="11"/>
-      </g>
+  <!-- the deck behind: two blocks fanned to the right -->
+  <rect x="332" y="300" width="400" height="400" rx="88" fill="#FFFFFF" fill-opacity="0.28"
+        transform="rotate(16 532 500)"/>
+  <rect x="312" y="310" width="400" height="400" rx="88" fill="#FFFFFF" fill-opacity="0.5"
+        transform="rotate(8 512 510)"/>
 
-      <!-- robot -->
-      <circle cx="512" cy="368" r="126" fill="url(#halo)"/>
-      <circle cx="512" cy="372" r="106" fill="url(#haloIn)"/>
-      <rect x="434" y="334" width="156" height="94" rx="47" fill="#202129"/>
-      <rect x="477" y="362" width="20" height="40" rx="10" fill="#FFFFFF"/>
-      <rect x="527" y="362" width="20" height="40" rx="10" fill="#FFFFFF"/>
-
-      <!-- the deck: three layers of blocks -->
-      <path d="M272 620 L512 530 L752 620 L512 710 Z" fill="#D3DDFC"/>
-      <path d="M272 550 L512 460 L752 550 L512 640 Z" fill="#A7BBF9"/>
-      <path d="M272 480 L410 428 L512 466 L614 428 L752 480 L512 570 Z" fill="url(#top)" stroke="url(#top)" stroke-width="6" stroke-linejoin="round"/>
-
-      <!-- orbit, front half -->
-      <g transform="translate(514 500) rotate(-17)" clip-path="url(#front)">
-        <ellipse rx="350" ry="98" fill="none" stroke="url(#orbit)" stroke-width="11"/>
-      </g>
-
-      <!-- spark -->
-      <path transform="translate(690 270)" d="M0 -40 Q5 -5 40 0 Q5 5 0 40 Q-5 5 -40 0 Q-5 -5 0 -40 Z" fill="#3F6EF0"/>
-    </g>
+  <!-- the front block, with the robot's face -->
+  <g filter="url(#lift)">
+    <rect x="292" y="322" width="400" height="400" rx="88" fill="url(#card)"/>
+    <rect x="352" y="452" width="280" height="168" rx="84" fill="#202129"/>
+    <rect x="433" y="497" width="34" height="78" rx="17" fill="#FFFFFF"/>
+    <rect x="517" y="497" width="34" height="78" rx="17" fill="#FFFFFF"/>
   </g>
 </svg>

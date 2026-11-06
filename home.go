@@ -380,6 +380,9 @@ func (a *app) homeView(c *ui.Context) {
 	})
 }
 
+// deckWordSize is the size of the home screen's Deck.
+const deckWordSize = 96
+
 // homeTop is the room above the home screen's column.
 const homeTop = 96
 
@@ -389,35 +392,48 @@ func (a *app) homeHead(c *ui.Context, t *ui.Theme) {
 			// Pulled together: Deck's line box has room above its capitals.
 			ui.Column(c).Gap(-14).Children(func() {
 				boundlessWord(c, t)
-				ui.Text(c, "Deck").FontSize(96).FontWeight(800).LetterSpacing(-3).LineHeight(0.9).
+				ui.Text(c, "Deck").FontSize(deckWordSize).FontWeight(800).LetterSpacing(-3).LineHeight(0.9).
 					TextColor(t.Text)
 			})
-			robotMark(c, t, 88)
+			// Its figure's foot on the word's baseline: the row lines up
+			// the bottoms of their boxes, and Deck's runs on below its
+			// letters, by about a fifth of its size.
+			ui.Box(c).Padding(0, 0, deckWordSize*0.19, 0).Children(func() {
+				robotMark(c, t, 88)
+			})
 		})
 		endless(c, t)
 	})
 }
 
-// robotMark is the robot of the app icon (resources/icon.svg): a dark
-// face with two eyes in a halo fading downward, size wide and tall.
+// robotMark is the figure of the app icon (resources/icon.svg) without its
+// tile: a white block with the robot's face, two blocks of the deck fanned
+// out behind it, size wide and tall.
 func robotMark(c *ui.Context, t *ui.Theme, size float32) {
-	halo, inner := ui.Hex("#d9e2fc"), ui.RGBA(255, 255, 255, 1)
+	back := ui.Hex("#5a86fa")
+	card, cardEnd := ui.RGB(255, 255, 255), ui.Hex("#eef2fd")
 	face, eye := ui.Hex("#202129"), ui.RGB(255, 255, 255)
+	shadow := ui.Hex("#10245e").Alpha(0.18)
 	if t.Dark {
-		halo, inner = t.Accent.Alpha(0.35), ui.RGBA(255, 255, 255, 0.08)
-		face, eye = ui.Hex("#e8eaf2"), ui.Hex("#202129")
+		back = t.Accent
+		cardEnd = ui.Hex("#dfe4f3")
+		shadow = ui.RGBA(0, 0, 0, 0.45)
 	}
-	// The icon's robot is drawn on a 252-wide halo.
-	k := size / 252
+	// The icon's figure, cut out of it on a 480-wide square.
+	k := size / 480
 	ui.Box(c).Size(size, size).Label("BoundlessDeck").Draw(func(p *ui.Painter, r ui.Rect) {
 		at := func(x, y, w, h float32) ui.Rect {
 			return ui.Rect{X: r.X + x*k, Y: r.Y + y*k, W: w * k, H: h * k}
 		}
-		p.FillGradient(r, ui.LinearGradient{From: halo, To: halo.Alpha(0), Angle: 180, End: 0.95}, size/2)
-		p.FillGradient(at(20, 24, 212, 212), ui.LinearGradient{From: inner, To: inner.Alpha(0), Angle: 180}, 106*k)
-		p.Fill(at(48, 92, 156, 94), face, 47*k)
-		p.Fill(at(91, 120, 20, 40), eye, 10*k)
-		p.Fill(at(141, 120, 20, 40), eye, 10*k)
+		rad := 88 * k
+		tilt(p, at(64, 50, 400, 400), 16, func(b ui.Rect) { p.Fill(b, back.Alpha(0.28), rad) })
+		tilt(p, at(44, 60, 400, 400), 8, func(b ui.Rect) { p.Fill(b, back.Alpha(0.5), rad) })
+		front := at(24, 72, 400, 400)
+		p.Shadow(front, rad, 0, 16*k, 36*k, 0, shadow)
+		p.FillGradient(front, ui.LinearGradient{From: card, To: cardEnd, Angle: 180}, rad)
+		p.Fill(at(84, 202, 280, 168), face, 84*k)
+		p.Fill(at(165, 247, 34, 78), eye, 17*k)
+		p.Fill(at(249, 247, 34, 78), eye, 17*k)
 	})
 }
 
