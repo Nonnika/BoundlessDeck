@@ -22,6 +22,8 @@ const maxRecents = 12
 // open in it.
 type app struct {
 	win *mygo.Window
+	// menu is the menu bar (menu.go), nil in tests.
+	menu *mygo.Menu
 	// deck is the deck open, nil while the home screen shows.
 	deck *deck
 
@@ -196,6 +198,7 @@ func (a *app) closeDeck() {
 }
 
 func (a *app) setTitle() {
+	a.syncMenu()
 	if a.win == nil {
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"math"
 	"path/filepath"
 	goruntime "runtime"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -363,17 +364,25 @@ func (d *deck) toolbar(c *ui.Context) {
 		shade = ui.RGBA(0, 0, 0, 0.4)
 	}
 	ui.Toolbar(c, func() {
-		if toolButton(c.Key("new-note"), iconNote, "QuickLook", "新建 QuickLook（或在空白处双击）").Clicked() {
+		if toolButton(c.Key("new-note"), iconNote, "QuickLook", "新建 QuickLook（"+newKeyOf(kindNote)+"，或在空白处双击）").Clicked() {
 			d.addAtCenter(c, kindNote)
 		}
-		if toolButton(c.Key("new-file"), iconFile, "文件…", "链接本地文件（也可从访达拖入）").Clicked() {
-			go d.pickFile()
+		if toolButton(c.Key("new-memo"), iconMemo, "笔记", "新建笔记：在工作目录里建一个 Markdown 文件（"+newKeyOf(kindMemo)+"）").Clicked() {
+			cw, ch := c.Size()
+			d.newMemo(cw/2, ch/2)
 		}
-		if toolButton(c.Key("new-term"), iconTerminal, "终端", "新建终端").Clicked() {
+		if toolButton(c.Key("new-file"), iconFile, "文件…", "链接本地文件（"+newKeyOf(kindFile)+"，也可从访达拖入）").Clicked() {
+			cw, ch := c.Size()
+			go d.pickFile(cw/2, ch/2)
+		}
+		if toolButton(c.Key("new-term"), iconTerminal, "终端", "新建终端（"+newKeyOf(kindTerminal)+"）").Clicked() {
 			d.addAtCenter(c, kindTerminal)
 		}
-		if toolButton(c.Key("new-browser"), iconGlobe, "浏览器", "新建浏览器").Clicked() {
+		if toolButton(c.Key("new-browser"), iconGlobe, "浏览器", "新建浏览器（"+newKeyOf(kindBrowser)+"）").Clicked() {
 			d.addAtCenter(c, kindBrowser)
+		}
+		if toolButton(c.Key("new-stack"), iconStack, "块堆", "新建块堆：拖 block 的胶带或标题栏进来，点击后悬停推出卡片、上下边缘滚动，空格长预览（"+newKeyOf(kindStack)+"）").Clicked() {
+			d.addAtCenter(c, kindStack)
 		}
 		ui.Divider(c).Margin(6, 2)
 		n := len(d.sel)
@@ -447,7 +456,65 @@ func (d *deck) statusBar(c *ui.Context) {
 		Background(t.Surface).Border(1, t.Border).Radius(9).Children(func() {
 		ui.Textf(c, "%.0f%%", d.cam.S*100).FontSize(11).TextColor(t.TextMuted)
 		ui.Textf(c, "%d 个 block · 选中 %d", len(d.blocks), len(d.sel)).FontSize(11).TextColor(t.TextMuted)
+		d.mcpStatus(c, t)
 	})
+}
+
+// mcpStatus shows the workspace's MCP endpoint: its tools, and the
+// project-level config it wrote, in the tooltip.
+func (d *deck) mcpStatus(c *ui.Context, t *ui.Theme) {
+	switch {
+	case d.mcp != nil:
+		tip := mcpProjectSummary(d.mcpProject) + "\n" +
+			filepath.Join(deckDir, "mcp.json") + " · " + d.mcp.sock
+		if d.mcpProject != nil && len(d.mcpProject.Warnings) > 0 {
+			tip += "\n" + strings.Join(d.mcpProject.Warnings, "\n")
+		}
+		if d.mcpErr != nil {
+			tip += "\n" + d.mcpErr.Error()
+		}
+		ui.Textf(c, "MCP · %d 个工具", len(mcpToolList)).FontSize(11).TextColor(t.TextMuted).Tooltip(tip)
+	case d.mcpErr != nil:
+		ui.Text(c, "MCP 未启动").FontSize(11).TextColor(t.Danger).Tooltip(d.mcpErr.Error())
+	}
+}
+
+// addAtPointer adds a block of the kind under the mouse, as a shortcut
+// of the menu does: in the middle of the view when the mouse is outside
+// the window.
+func (d *deck) addAtPointer(kind blockKind) {
+	x, y := d.viewW/2, d.viewH/2
+	if d.win != nil {
+		if px, py, ok := cursorIn(mygo.Screen.CursorScreenPoint(), d.win.ContentBounds(), d.viewW, d.viewH); ok {
+			x, y = px, py
+		}
+	}
+	d.addKindAt(kind, x, y)
+}
+
+// cursorIn is where the mouse, at p on the screen, is in a window whose
+// content lies at content and shows w × h DIPs; ok says it is in it.
+func cursorIn(p mygo.Point, content mygo.Rectangle, w, h float32) (x, y float32, ok bool) {
+	x, y = float32(p.X-content.X), float32(p.Y-content.Y)
+	if content.Width > 0 && content.Height > 0 {
+		// The content in DIPs, should the UI be zoomed.
+		x *= w / float32(content.Width)
+		y *= h / float32(content.Height)
+	}
+	return x, y, x >= 0 && y >= 0 && x < w && y < h
+}
+
+// addKindAt adds a block of any kind at a point of the window, in DIPs:
+// a 笔记 makes its file, a file block asks which file first.
+func (d *deck) addKindAt(kind blockKind, sx, sy float32) {
+	switch kind {
+	case kindMemo:
+		d.newMemo(sx, sy)
+	case kindFile:
+		go d.pickFile(sx, sy)
+	default:
+		d.addAt(kind, sx, sy)
+	}
 }
 
 // addAtCenter adds a block of the kind at the middle of the view.
@@ -490,8 +557,9 @@ func (d *deck) addAt(kind blockKind, sx, sy float32) *block {
 	return b
 }
 
-// pickFile asks for a file and adds the block that shows it.
-func (d *deck) pickFile() {
+// pickFile asks for a file and adds the block that shows it at (sx, sy)
+// in the window, in DIPs.
+func (d *deck) pickFile(sx, sy float32) {
 	files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
 		Parent: d.win,
 		Title:  "链接一个本地文件",
@@ -508,7 +576,7 @@ func (d *deck) pickFile() {
 	win.Update(func() {
 		b := &block{Kind: kindFile, Title: filepath.Base(path), Path: rel}
 		b.W, b.H = fileBlockSize(path)
-		wx, wy := d.cam.toWorld(640, 400)
+		wx, wy := d.cam.toWorld(sx, sy)
 		b.X, b.Y = d.freeSpot(wx-b.W/2, wy-b.H/2, b.W, b.H)
 		d.addBlock(b)
 	})

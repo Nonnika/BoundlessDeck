@@ -20,6 +20,8 @@ func main() {
 	}
 	perfInit() // DECK_PERFLOG, DECK_CPUPROFILE (perflog.go)
 	a := newApp()
+	// Every command with its shortcut, in the menu bar (menu.go).
+	mygo.App.SetMenu(a.buildMenu())
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:           "BoundlessDeck",
@@ -36,6 +38,7 @@ func main() {
 		})
 		a.win = win
 		a.loadRecents()
+		a.syncMenu()
 		// A folder dropped on the home screen opens as a deck; files
 		// dropped on a deck become blocks where they landed.
 		win.OnFileDrop(func(e *mygo.FileDropEvent) {
