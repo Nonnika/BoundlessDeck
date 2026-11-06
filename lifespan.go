@@ -7,6 +7,8 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"boundlessdeck/internal/icons"
 )
 
 // A QuickLook block is a passing thought: it goes by itself once its time
@@ -192,7 +194,7 @@ func (d *deck) lifeChip(c *ui.Context, n *block, pp paper, s float32) {
 			return true
 		}).
 		Children(func() {
-			ui.Icon(c, iconTimer).FontSize(size).TextColor(color)
+			ui.Icon(c, icons.Timer).FontSize(size).TextColor(color)
 			ui.Text(c, label).FontSize(size).FontWeight(500).SingleLine().TextColor(color)
 		})
 }

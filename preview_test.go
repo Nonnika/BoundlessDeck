@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+
+	"boundlessdeck/internal/pdf/pdftest"
+	"boundlessdeck/internal/word/wordtest"
 )
 
 // writePNG writes a 64×64 PNG, see-through on its left half or not.
@@ -46,8 +49,8 @@ func previewDeck(t *testing.T) *deck {
 		}
 	}
 	write("readme.md", []byte("# 项目说明\n\n这是 **Markdown** 预览。\n\n- 第一条\n- 第二条\n\n```go\nfmt.Println(\"hi\")\n```\n"))
-	write("plan.docx", testDocx(t))
-	pdf, _ := os.ReadFile(writeTestPDF(t, 200, 300, 2))
+	write("plan.docx", wordtest.Docx())
+	pdf, _ := os.ReadFile(pdftest.Write(t, 200, 300, 2))
 	write("paper.pdf", pdf)
 	writePNG(t, filepath.Join(d.root, "logo.png"), true)
 	writePNG(t, filepath.Join(d.root, "solid.png"), false)

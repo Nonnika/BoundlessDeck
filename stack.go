@@ -7,6 +7,9 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
+
+	"boundlessdeck/internal/chart"
+	"boundlessdeck/internal/icons"
 )
 
 // A 块堆 (kind stack) is a wallet of blocks: blocks dropped on it leave the
@@ -698,8 +701,8 @@ type stackCard struct {
 	lifted      float32 // 0 in its slot, 1 pushed out
 	apart       float32 // 0 in the pile, 1 out of the long preview's way
 	title, face string
-	md          string     // Markdown the face shows rendered, rather than face
-	chart       *chartData // a 图表's table, drawn small on its face
+	md          string      // Markdown the face shows rendered, rather than face
+	chart       *chart.Data // a 图表's table, drawn small on its face
 }
 
 // faceShows says whether the face of cards[i], below its header, shows
@@ -742,7 +745,7 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 		}
 		box.Children(func() {
 			ui.Column(c).Fill().Justify(ui.Center).AlignItems(ui.Center).Gap(6 * s).Children(func() {
-				ui.Icon(c, iconStack).FontSize(30 * s)
+				ui.Icon(c, icons.Stack).FontSize(30 * s)
 				ui.Text(c, "拖 block 的胶带或标题栏过来").FontSize(13 * s).TextColor(t.TextMuted)
 				ui.Text(c, "松手即收纳 · 点击后悬停翻看 · 空格预览").FontSize(11 * s).TextColor(t.TextMuted)
 			})
@@ -926,7 +929,7 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 							ui.Span{Text: k.face, Size: 11 * s, Color: t.TextMuted})
 					}
 					if k.chart != nil {
-						chartView{typ: chartTypeOf(k.n), data: k.chart, s: s, t: t, compact: true}.draw(p,
+						chart.View{Type: chartTypeOf(k.n), Data: k.chart, S: s, T: t, Compact: true}.Draw(p,
 							ui.Rect{X: card.X + 10*s, Y: card.Y + g.peek + 6*s, W: card.W - 20*s, H: g.cardH - g.peek - 12*s})
 					}
 				})
@@ -1094,21 +1097,21 @@ func (d *deck) stackPreviewView(c *ui.Context) {
 func kindIcon(k blockKind) *ui.SVG {
 	switch k {
 	case kindNote:
-		return iconNote
+		return icons.Note
 	case kindMemo:
-		return iconMemo
+		return icons.Memo
 	case kindFile:
-		return iconFile
+		return icons.File
 	case kindTerminal:
-		return iconTerminal
+		return icons.Terminal
 	case kindBrowser:
-		return iconGlobe
+		return icons.Globe
 	case kindStack:
-		return iconStack
+		return icons.Stack
 	case kindChart:
-		return iconChart
+		return icons.Chart
 	}
-	return iconNote
+	return icons.Note
 }
 
 // stackPreviewBody shows what the card holds, at a readable size: the
@@ -1215,8 +1218,8 @@ func (d *deck) stackPreviewBody(c *ui.Context, n *block, width float32) {
 		el := ui.Box(c.Key("stack-preview-chart:" + n.ID)).FillWidth().Height(380)
 		hx, hy, over := el.PointerPosition()
 		el.Draw(func(p *ui.Painter, r ui.Rect) {
-			chartView{typ: typ, data: cd, s: 1, t: t,
-				hover: ui.Point{X: r.X + hx, Y: r.Y + hy}, hovering: over}.draw(p, r)
+			chart.View{Type: typ, Data: cd, S: 1, T: t,
+				Hover: ui.Point{X: r.X + hx, Y: r.Y + hy}, Hovering: over}.Draw(p, r)
 		})
 		ui.Text(c, chartSummary(n, cd)).FontSize(11).SingleLine().TextColor(t.TextMuted).Padding(8, 0, 0, 0)
 	}

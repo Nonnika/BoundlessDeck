@@ -1,6 +1,8 @@
 //go:build darwin
 
-package main
+// Package pdf renders the pages of PDF files: by CoreGraphics, through
+// purego (no cgo), on macOS; elsewhere Open reports it cannot.
+package pdf
 
 import (
 	"errors"
@@ -78,10 +80,10 @@ func loadCG() error {
 	return cg.err
 }
 
-// pdfDoc is an open PDF. Its methods are safe from any goroutine, one at
+// Doc is an open PDF. Its methods are safe from any goroutine, one at
 // a time each: CoreGraphics does not draw a document's pages on two
 // threads at once.
-type pdfDoc struct {
+type Doc struct {
 	mu    sync.Mutex
 	ref   uintptr
 	pages int
@@ -89,8 +91,8 @@ type pdfDoc struct {
 
 var errNotPDF = errors.New("不是可以打开的 PDF")
 
-// openPDF opens the PDF at path.
-func openPDF(path string) (*pdfDoc, error) {
+// Open opens the PDF at path.
+func Open(path string) (*Doc, error) {
 	if err := loadCG(); err != nil {
 		return nil, err
 	}
@@ -109,15 +111,15 @@ func openPDF(path string) (*pdfDoc, error) {
 		cg.docRelease(ref)
 		return nil, errors.New("PDF 没有页面")
 	}
-	return &pdfDoc{ref: ref, pages: n}, nil
+	return &Doc{ref: ref, pages: n}, nil
 }
 
 // Pages is how many pages it has.
-func (d *pdfDoc) Pages() int { return d.pages }
+func (d *Doc) Pages() int { return d.pages }
 
 // box returns page i's crop box and how far it turns, clockwise, as a
 // reader shows it.
-func (d *pdfDoc) box(i int) (page uintptr, r cgRect, turn int, err error) {
+func (d *Doc) box(i int) (page uintptr, r cgRect, turn int, err error) {
 	if d.ref == 0 {
 		return 0, cgRect{}, 0, errors.New("PDF 已关闭")
 	}
@@ -135,7 +137,7 @@ func (d *pdfDoc) box(i int) (page uintptr, r cgRect, turn int, err error) {
 }
 
 // PageSize returns page i's size as it shows, in points.
-func (d *pdfDoc) PageSize(i int) (w, h float64, err error) {
+func (d *Doc) PageSize(i int) (w, h float64, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	_, r, turn, err := d.box(i)
@@ -152,7 +154,7 @@ func (d *pdfDoc) PageSize(i int) (w, h float64, err error) {
 const maxPagePixels = 1 << 24
 
 // Render draws page i width pixels wide, on white, upright.
-func (d *pdfDoc) Render(i, width int) (*image.RGBA, error) {
+func (d *Doc) Render(i, width int) (*image.RGBA, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	page, r, turn, err := d.box(i)
@@ -213,7 +215,7 @@ func (d *pdfDoc) Render(i, width int) (*image.RGBA, error) {
 }
 
 // Close lets the document go.
-func (d *pdfDoc) Close() {
+func (d *Doc) Close() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.ref != 0 {

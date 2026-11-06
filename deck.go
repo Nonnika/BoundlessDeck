@@ -15,6 +15,9 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 	"github.com/egoist/mygo/ui/markdown"
+
+	"boundlessdeck/internal/chart"
+	"boundlessdeck/internal/pdf"
 )
 
 type blockKind string
@@ -64,7 +67,7 @@ type block struct {
 	Path string `json:"path,omitempty"`
 	// Text is the body of a note, or the table a chart draws.
 	Text string `json:"text,omitempty"`
-	// Chart is how a 图表 block draws its table (chartTypes); empty draws
+	// Chart is how a 图表 block draws its table (chart.Types); empty draws
 	// bars.
 	Chart string `json:"chart,omitempty"`
 	// URL is the page a browser block shows.
@@ -90,7 +93,7 @@ type block struct {
 type runtime struct {
 	loading bool
 	// chart is a 图表 block's table as read from chartSrc, its text then.
-	chart    *chartData
+	chart    *chart.Data
 	chartSrc string
 	text     string
 	textErr  error
@@ -114,7 +117,7 @@ type runtime struct {
 	// pdf is a PDF open for its preview; pdfImage its page pdfPage as
 	// last rendered, pdfPx pixels wide. pdfGen counts its closings: what
 	// opens or renders after one is dropped.
-	pdf          *pdfDoc
+	pdf          *pdf.Doc
 	pdfErr       error
 	pdfImage     *ui.Bitmap
 	pdfPage      int

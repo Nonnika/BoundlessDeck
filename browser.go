@@ -7,6 +7,8 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"boundlessdeck/internal/icons"
 )
 
 // A browser block shows a web page on the canvas: a native web view where
@@ -354,12 +356,12 @@ func (d *deck) browserBarView(c *ui.Context, n *block, rt *runtime, s float32) {
 	}
 	ui.Row(c).FillWidth().Height(browserBar*s).Padding(0, 4*s).Gap(2*s).AlignItems(ui.Center).
 		BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
-		button("web-back:", iconArrowLeft, "后退", rt.canBack, func() { page().GoBack() })
-		button("web-forward:", iconArrowRight, "前进", rt.canForward, func() { page().GoForward() })
+		button("web-back:", icons.ArrowLeft, "后退", rt.canBack, func() { page().GoBack() })
+		button("web-forward:", icons.ArrowRight, "前进", rt.canForward, func() { page().GoForward() })
 		if rt.webLoading {
-			button("web-stop:", iconX, "停止", rt.web != nil, func() { page().Stop(); rt.webLoading = false })
+			button("web-stop:", icons.X, "停止", rt.web != nil, func() { page().Stop(); rt.webLoading = false })
 		} else {
-			button("web-reload:", iconReload, "重新加载", rt.web != nil, func() { page().Reload() })
+			button("web-reload:", icons.Reload, "重新加载", rt.web != nil, func() { page().Reload() })
 		}
 		addr := ui.TextInput(c.Key("web-address:"+n.ID), &rt.address).Label("地址").
 			Placeholder("输入网址或搜索").FontSize(12*s).Padding(3*s, 8*s).Radius(0).Grow(1).

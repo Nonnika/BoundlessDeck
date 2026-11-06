@@ -1,5 +1,7 @@
 package main
 
+import "boundlessdeck/internal/chart"
+
 // The block schema is what the MCP exposes of a block: every field a client
 // may write, of which kinds, and everything it may only read. It is the one
 // place that knows what a block is made of; the create/update tools, the
@@ -81,7 +83,7 @@ var mcpFields = []mcpField{
 	{
 		Name: "chart", Type: "string", Mutable: true, OnCreate: true,
 		Kinds:       []blockKind{kindChart},
-		Enum:        chartTypeNames(),
+		Enum:        chart.TypeNames(),
 		Description: "图表类型：bar 柱状图、hbar 条形图、line 折线图、area 面积图、pie 饼图。省略为 bar。",
 	},
 	{

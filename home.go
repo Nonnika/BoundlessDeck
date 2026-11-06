@@ -10,6 +10,8 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"boundlessdeck/internal/icons"
 )
 
 // deckDir is the folder inside a deck's folder that holds its canvas.
@@ -562,7 +564,7 @@ func (a *app) homeBlockFrame(c *ui.Context, t *ui.Theme, pp paper) {
 				ui.PrimaryButton(c.Key("open-folder"), "").Label("打开文件夹").Tooltip("⌘O，或把文件夹拖进窗口").
 					Padding(6, 12).Gap(6).Radius(0).
 					Children(func() {
-						ui.Icon(c, iconFolder).FontSize(14)
+						ui.Icon(c, icons.Folder).FontSize(14)
 						ui.Text(c, "打开文件夹…").FontSize(13).FontWeight(600).SingleLine()
 					}).
 					OnClick(func() { go a.pickFolder() })
@@ -679,7 +681,7 @@ func (a *app) trashView(c *ui.Context, t *ui.Theme, cw, ch float32) {
 		}
 		ui.Row(c).Absolute().Left(0).Bottom(36).Width(cw).Gap(8).AlignItems(ui.Center).Justify(ui.Center).
 			Children(func() {
-				ui.Icon(c, iconTrash).FontSize(16).TextColor(red)
+				ui.Icon(c, icons.Trash).FontSize(16).TextColor(red)
 				label := "拖到这里，从列表移除"
 				if over {
 					label = "松开即可移除（文件夹不会被删除）"

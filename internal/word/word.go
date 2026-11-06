@@ -1,4 +1,6 @@
-package main
+// Package word reads Word documents (.docx, and .doc through macOS's
+// textutil) as Markdown for their preview.
+package word
 
 import (
 	"archive/zip"
@@ -22,18 +24,18 @@ import (
 // tables and pictures, read from its XML; a .doc is turned into a .docx
 // first, by macOS's textutil.
 
-// wordDoc is a Word document read for its preview: its Markdown, and the
+// Doc is a Word document read for its preview: its Markdown, and the
 // pictures it shows, by the names the Markdown gives them.
-type wordDoc struct {
-	markdown string
-	media    map[string][]byte
+type Doc struct {
+	Markdown string
+	Media    map[string][]byte
 }
 
-// wordMedia is the scheme of the pictures' names in a wordDoc's Markdown.
-const wordMedia = "docx-media:"
+// MediaScheme is the scheme of the pictures' names in a Doc's Markdown.
+const MediaScheme = "docx-media:"
 
-// readWord reads a .docx, or a .doc by way of textutil, for its preview.
-func readWord(file string) (*wordDoc, error) {
+// Read reads a .docx, or a .doc by way of textutil, for its preview.
+func Read(file string) (*Doc, error) {
 	if strings.EqualFold(filepath.Ext(file), ".doc") {
 		return readDoc(file)
 	}
@@ -41,11 +43,11 @@ func readWord(file string) (*wordDoc, error) {
 	if err != nil {
 		return nil, err
 	}
-	return readDocx(data)
+	return ReadDocx(data)
 }
 
 // readDoc turns a .doc into a .docx with textutil, and reads that.
-func readDoc(file string) (*wordDoc, error) {
+func readDoc(file string) (*Doc, error) {
 	if _, err := exec.LookPath("textutil"); err != nil {
 		return nil, errors.New(".doc 预览需要 macOS 的 textutil")
 	}
@@ -64,13 +66,14 @@ func readDoc(file string) (*wordDoc, error) {
 	if err != nil {
 		return nil, err
 	}
-	return readDocx(data)
+	return ReadDocx(data)
 }
 
 // maxDocxPart bounds what a part of a .docx unpacks to.
 const maxDocxPart = 64 << 20
 
-func readDocx(data []byte) (*wordDoc, error) {
+// ReadDocx reads a .docx from its bytes.
+func ReadDocx(data []byte) (*Doc, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, errors.New("不是可以打开的 Word 文档")
@@ -111,20 +114,20 @@ func readDocx(data []byte) (*wordDoc, error) {
 			}
 		}
 	}
-	doc := &wordDoc{media: map[string][]byte{}}
+	doc := &Doc{Media: map[string][]byte{}}
 	picture := func(id string) string {
 		name, ok := targets[id]
 		if !ok {
 			return ""
 		}
-		if _, ok := doc.media[name]; !ok {
+		if _, ok := doc.Media[name]; !ok {
 			b, err := part(name)
 			if err != nil {
 				return ""
 			}
-			doc.media[name] = b
+			doc.Media[name] = b
 		}
-		return wordMedia + name
+		return MediaScheme + name
 	}
 	numbered := map[string]map[int]bool{}
 	if nb, err := part("word/numbering.xml"); err == nil {
@@ -134,7 +137,7 @@ func readDocx(data []byte) (*wordDoc, error) {
 	if err != nil {
 		return nil, err
 	}
-	doc.markdown = md
+	doc.Markdown = md
 	return doc, nil
 }
 

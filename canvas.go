@@ -9,6 +9,9 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"boundlessdeck/internal/chart"
+	"boundlessdeck/internal/icons"
 )
 
 // view builds the window's frame: the canvas, its blocks and the chrome.
@@ -394,27 +397,27 @@ func (d *deck) toolbar(c *ui.Context) {
 		shade = ui.RGBA(0, 0, 0, 0.4)
 	}
 	ui.Toolbar(c, func() {
-		if toolButton(c.Key("new-note"), iconNote, "QuickLook", "新建 QuickLook（"+newKeyOf(kindNote)+"，或在空白处双击）· 默认 1 小时后消失").Clicked() {
+		if toolButton(c.Key("new-note"), icons.Note, "QuickLook", "新建 QuickLook（"+newKeyOf(kindNote)+"，或在空白处双击）· 默认 1 小时后消失").Clicked() {
 			d.addAtCenter(c, kindNote)
 		}
-		if toolButton(c.Key("new-memo"), iconMemo, "笔记", "新建笔记：在工作目录里建一个 Markdown 文件（"+newKeyOf(kindMemo)+"）").Clicked() {
+		if toolButton(c.Key("new-memo"), icons.Memo, "笔记", "新建笔记：在工作目录里建一个 Markdown 文件（"+newKeyOf(kindMemo)+"）").Clicked() {
 			cw, ch := c.Size()
 			d.newMemo(cw/2, ch/2)
 		}
-		if toolButton(c.Key("new-file"), iconFile, "文件", "链接本地文件（"+newKeyOf(kindFile)+"，也可从访达拖入）").Clicked() {
+		if toolButton(c.Key("new-file"), icons.File, "文件", "链接本地文件（"+newKeyOf(kindFile)+"，也可从访达拖入）").Clicked() {
 			cw, ch := c.Size()
 			go d.pickFile(cw/2, ch/2)
 		}
-		if toolButton(c.Key("new-term"), iconTerminal, "终端", "新建终端（"+newKeyOf(kindTerminal)+"）").Clicked() {
+		if toolButton(c.Key("new-term"), icons.Terminal, "终端", "新建终端（"+newKeyOf(kindTerminal)+"）").Clicked() {
 			d.addAtCenter(c, kindTerminal)
 		}
-		if toolButton(c.Key("new-browser"), iconGlobe, "浏览器", "新建浏览器（"+newKeyOf(kindBrowser)+"）").Clicked() {
+		if toolButton(c.Key("new-browser"), icons.Globe, "浏览器", "新建浏览器（"+newKeyOf(kindBrowser)+"）").Clicked() {
 			d.addAtCenter(c, kindBrowser)
 		}
-		if toolButton(c.Key("new-chart"), iconChart, "图表", "新建图表：柱状图、条形图、折线图、面积图、饼图，双击编辑数据（"+newKeyOf(kindChart)+"）").Clicked() {
+		if toolButton(c.Key("new-chart"), icons.Chart, "图表", "新建图表：柱状图、条形图、折线图、面积图、饼图，双击编辑数据（"+newKeyOf(kindChart)+"）").Clicked() {
 			d.addAtCenter(c, kindChart)
 		}
-		if toolButton(c.Key("new-stack"), iconStack, "块堆", "新建块堆：拖 block 的胶带或标题栏进来，点击后悬停推出卡片、上下边缘滚动，空格长预览（"+newKeyOf(kindStack)+"）").Clicked() {
+		if toolButton(c.Key("new-stack"), icons.Stack, "块堆", "新建块堆：拖 block 的胶带或标题栏进来，点击后悬停推出卡片、上下边缘滚动，空格长预览（"+newKeyOf(kindStack)+"）").Clicked() {
 			d.addAtCenter(c, kindStack)
 		}
 	}).Label("新建").Absolute().Top(chromeTop).Right(12).Padding(5).Gap(2).
@@ -451,7 +454,7 @@ func (d *deck) homePill(c *ui.Context) {
 	ui.Toolbar(c, func() {
 		ui.Button(c.Key("go-home"), "").Label("返回主页").Tooltip("保存并返回主页").
 			Padding(5, 7).Radius(8).
-			Children(func() { ui.Icon(c, iconBack).FontSize(15) }).
+			Children(func() { ui.Icon(c, icons.Back).FontSize(15) }).
 			OnClick(d.onHome)
 		ws := ui.ButtonBase(c.Key("workspace")).Label("切换工作区").Tooltip(shortPath(d.root)+" · 点击切换工作区").
 			Padding(5, 8, 5, 8).Gap(6).Radius(8).Row().AlignItems(ui.Center)
@@ -459,9 +462,9 @@ func (d *deck) homePill(c *ui.Context) {
 			ws = ws.Background(t.SurfaceHover)
 		}
 		ws.Children(func() {
-			ui.Icon(c, iconFolder).FontSize(15)
+			ui.Icon(c, icons.Folder).FontSize(15)
 			ui.Text(c, filepath.Base(d.root)).FontSize(12).FontWeight(600).SingleLine()
-			ui.Icon(c, iconChevronDown).FontSize(13).TextColor(t.TextMuted)
+			ui.Icon(c, icons.ChevronDown).FontSize(13).TextColor(t.TextMuted)
 		}).Menu(d.workspaceMenu)
 	}).Label("工作区").Absolute().Top(chromeTop).Left(chromeLeft(c)).Padding(5).Gap(2).
 		Background(t.Surface).Border(1, t.Border).Radius(12).Shadow(0, 4, 16, 0, shade)
@@ -593,7 +596,7 @@ func (d *deck) addAt(kind blockKind, sx, sy float32) *block {
 	case kindChart:
 		b.Title = "图表"
 		b.W, b.H = 480, 320
-		b.Chart, b.Text = string(chartBar), chartSample
+		b.Chart, b.Text = string(chart.Bar), chart.Sample
 	}
 	b.X, b.Y = d.freeSpot(wx-b.W/2, wy-b.H/2, b.W, b.H)
 	d.addBlock(b)

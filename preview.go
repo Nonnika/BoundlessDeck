@@ -10,6 +10,9 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
+
+	"boundlessdeck/internal/pdf"
+	"boundlessdeck/internal/word"
 )
 
 // preview is how a file block shows its file.
@@ -73,11 +76,11 @@ func (d *deck) loadDocument(n *block, rt *runtime) {
 	path, kind := d.path(n), previewOf(n.Path)
 	read := func() (*document, error) {
 		if kind == previewWord {
-			w, err := readWord(path)
+			w, err := word.Read(path)
 			if err != nil {
 				return nil, err
 			}
-			return &document{markdown: w.markdown, media: w.media}, nil
+			return &document{markdown: w.Markdown, media: w.Media}, nil
 		}
 		f, err := os.Open(path)
 		if err != nil {
@@ -134,8 +137,8 @@ func (d *deck) documentOptions(n *block, rt *runtime, t *ui.Theme, size float32)
 		if rt.doc != nil && rt.doc.media != nil {
 			media := rt.doc.media
 			o.LoadImage = func(url string) (ui.ImageSource, error) {
-				data, ok := media[strings.TrimPrefix(url, wordMedia)]
-				if !ok || !strings.HasPrefix(url, wordMedia) {
+				data, ok := media[strings.TrimPrefix(url, word.MediaScheme)]
+				if !ok || !strings.HasPrefix(url, word.MediaScheme) {
 					return nil, errors.New("文档里没有这张图片")
 				}
 				return ui.DecodeImage(data)
@@ -182,7 +185,7 @@ func (d *deck) openPDFDoc(n *block, rt *runtime) {
 	var gen int
 	start := func() { rt.pdfOpening, gen = true, rt.pdfGen }
 	d.wantLoad("pdf:"+n.ID, n, start, func() func() {
-		doc, err := openPDF(path)
+		doc, err := pdf.Open(path)
 		return func() {
 			if rt.pdfGen != gen {
 				// Closed while it opened: its block or deck went.
@@ -204,7 +207,7 @@ func (d *deck) renderPDFPage(n *block, rt *runtime, page, width int) {
 	}
 	// The document and its generation as the render starts, not as it is
 	// asked for: it may have closed meanwhile.
-	var doc *pdfDoc
+	var doc *pdf.Doc
 	var gen int
 	start := func() { rt.pdfRendering, doc, gen = true, rt.pdf, rt.pdfGen }
 	d.wantLoad("pdf-page:"+n.ID, n, start, func() func() {

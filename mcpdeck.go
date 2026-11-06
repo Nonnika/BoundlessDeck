@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"boundlessdeck/internal/chart"
 )
 
 // mcpArgs is the arguments object of a tool call, kept raw so that a field
@@ -380,11 +382,11 @@ func (d *deck) mcpApplyField(n *block, name string, raw json.RawMessage, dry boo
 			return err
 		}
 		known := false
-		for _, ct := range chartTypes {
-			known = known || string(ct.typ) == s
+		for _, ct := range chart.Types {
+			known = known || string(ct.Type) == s
 		}
 		if !known {
-			return fmt.Errorf("没有图表类型 %q：可用 %s", s, strings.Join(chartTypeNames(), "、"))
+			return fmt.Errorf("没有图表类型 %q：可用 %s", s, strings.Join(chart.TypeNames(), "、"))
 		}
 		n.Chart = s
 	case "items":
