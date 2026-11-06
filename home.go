@@ -28,6 +28,12 @@ type app struct {
 	// keysWin is that window while it is open (shortcuts.go).
 	menuItems []*mygo.MenuItem
 	keysWin   *mygo.Window
+	// setWin is the 设置 window while it is open, setUI what it shows
+	// (settings.go); settings are the user's, kept in settingsFile.
+	setWin       *mygo.Window
+	setUI        *settingsState
+	settings     appSettings
+	settingsFile string
 	// deck is the deck open, nil while the home screen shows.
 	deck *deck
 
@@ -65,6 +71,7 @@ func newApp() *app {
 	a := &app{animate: true}
 	if dir, err := mygo.App.Path(mygo.PathUserData); err == nil {
 		a.recentsFile = filepath.Join(dir, "recents.json")
+		a.settingsFile = filepath.Join(dir, "settings.json")
 	}
 	return a
 }
@@ -170,8 +177,10 @@ func (a *app) openFolder(path string) {
 	d.win = a.win
 	d.onHome = a.beginHome
 	d.load()
-	// The workspace carries its own MCP: opened, it writes the project
-	// config agents read and serves this deck's canvas there.
+	// The workspace carries its own MCP: opened, it serves this deck's
+	// canvas, becomes the deck the global install follows and, if the
+	// user asked for them, writes the project configs agents read.
+	d.projectMCP = a.settings.ProjectMCP
 	d.startMCP()
 	a.deck, a.err = d, ""
 	a.touch(path, len(d.blocks))
@@ -203,6 +212,7 @@ func (a *app) closeDeck() {
 
 func (a *app) setTitle() {
 	a.syncMenu()
+	a.refreshSettings()
 	if a.win == nil {
 		return
 	}

@@ -11,11 +11,13 @@ import (
 	"time"
 )
 
-// Every workspace keeps a project-level MCP config: .boundlessdeck/mcp.json
-// says how to reach this deck's canvas, and the same server is merged into
-// the files the common agents read at startup (.mcp.json for Claude Code,
-// .cursor/mcp.json, .vscode/mcp.json). A workspace therefore loads our MCP
-// as soon as an agent is started in its folder, with no per-user setup.
+// Every workspace keeps a descriptor: .boundlessdeck/mcp.json says how to
+// reach this deck's canvas. When the user asks for it (设置 → 项目级配置,
+// off by default: the folder may be someone's repository), the same server
+// is merged into the files the common agents read at startup (.mcp.json for
+// Claude Code, .cursor/mcp.json, .vscode/mcp.json), so an agent started in
+// the folder loads it with no other setup. Otherwise agents reach the deck
+// through the global install (mcpglobal.go), which follows the deck open.
 const mcpWorkspaceVersion = 1
 
 // mcpWorkspace is .boundlessdeck/mcp.json.
@@ -78,8 +80,10 @@ func mcpProjectFiles(root string) []mcpProjectFile {
 	}
 }
 
-// startMCP makes the workspace's endpoint and writes its project-level
-// configs. Opened again, every deck starts it over.
+// startMCP makes the workspace's endpoint, writes its descriptor (and its
+// project-level configs, when d.projectMCP asks for them) and makes it the
+// active deck the global bridge follows. Opened again, every deck starts it
+// over.
 func (d *deck) startMCP() {
 	if d.root == "" {
 		return
@@ -114,10 +118,13 @@ func (d *deck) startMCP() {
 		ToolNames:       names,
 		ProtocolVersion: mcpProtocolVersion,
 	}
-	ws, err := writeMCPWorkspace(d.root, ep)
+	ws, err := writeMCPWorkspace(d.root, ep, d.projectMCP)
 	if err != nil {
-		d.mcpErr = fmt.Errorf("写项目级 MCP 配置：%w", err)
+		d.mcpErr = fmt.Errorf("写 MCP 配置：%w", err)
 		return
+	}
+	if err := writeMCPActive(d.root, ep); err != nil {
+		ws.Warnings = append(ws.Warnings, "全局 MCP 找不到这个图版："+err.Error())
 	}
 	// Load it back, with every server the project configs declare: the
 	// workspace's project-level MCPs are ready as soon as it opens.
@@ -129,20 +136,22 @@ func (d *deck) startMCP() {
 	d.mcpProject = ws
 }
 
-// stopMCP closes the endpoint; the workspace keeps the configs it wrote.
+// stopMCP closes the endpoint; the workspace keeps the configs it wrote,
+// and the global bridge has no deck to follow until another opens.
 func (d *deck) stopMCP() {
 	if d.mcp == nil {
 		return
 	}
+	clearMCPActive(d.root)
 	d.mcp.close()
 	d.mcp = nil
 	d.mcpProject = nil
 }
 
 // writeMCPWorkspace writes the block schema, this workspace's descriptor
-// and our entry in every project-scoped config, keeping what the user put
-// in those files.
-func writeMCPWorkspace(root string, ep mcpEndpoint) (*mcpWorkspace, error) {
+// and, with project, our entry in every project-scoped config, keeping
+// what the user put in those files.
+func writeMCPWorkspace(root string, ep mcpEndpoint, project bool) (*mcpWorkspace, error) {
 	dir := filepath.Join(root, deckDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -176,17 +185,50 @@ func writeMCPWorkspace(root string, ep mcpEndpoint) (*mcpWorkspace, error) {
 	// The token is a local secret: keep the descriptor out of other users'
 	// reach, as the socket already is.
 	_ = os.Chmod(descriptor, 0o600)
+	if project {
+		ws.Warnings = append(ws.Warnings, writeProjectConfigs(root, ep)...)
+	}
+	return ws, nil
+}
+
+// writeProjectConfigs merges our entry into every project-scoped config of
+// root, saying what failed.
+func writeProjectConfigs(root string, ep mcpEndpoint) []string {
 	entry := map[string]any{
 		"type":    "stdio",
 		"command": ep.Bridge.Command,
 		"args":    ep.Bridge.Args,
 	}
+	var warnings []string
 	for _, f := range mcpProjectFiles(root) {
 		if err := mergeMCPServer(f.Path, f.Key, ep.Name, entry); err != nil {
-			ws.Warnings = append(ws.Warnings, fmt.Sprintf("%s：%v", f.Label, err))
+			warnings = append(warnings, fmt.Sprintf("%s：%v", f.Label, err))
 		}
 	}
-	return ws, nil
+	return warnings
+}
+
+// setProjectMCP turns the project-level configs of the deck open on or
+// off: on, they are written now; off, they are taken out of its folder.
+func (d *deck) setProjectMCP(on bool) error {
+	d.projectMCP = on
+	if d.root == "" {
+		return nil
+	}
+	var err error
+	if on {
+		if d.mcpProject != nil {
+			if w := writeProjectConfigs(d.root, d.mcpProject.Server); len(w) > 0 {
+				err = errors.New(strings.Join(w, "；"))
+			}
+		}
+	} else {
+		err = removeProjectConfigs(d.root)
+	}
+	if ws, lerr := loadMCPWorkspace(d.root); lerr == nil && d.mcp != nil {
+		d.mcpProject = ws
+	}
+	return err
 }
 
 // loadMCPWorkspace reads what a workspace declares: our descriptor, and the
@@ -370,9 +412,12 @@ func readMCPEndpoint(workspace string) (mcpEndpoint, error) {
 }
 
 // mcpProjectSummary is the one-line state the status bar shows.
-func mcpProjectSummary(ws *mcpWorkspace) string {
+func mcpProjectSummary(ws *mcpWorkspace, project bool) string {
 	if ws == nil {
 		return ""
+	}
+	if !project {
+		return "通过全局 MCP 连接（设置 → MCP）"
 	}
 	var extra []string
 	for _, s := range ws.Servers {

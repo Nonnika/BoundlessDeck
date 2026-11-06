@@ -471,7 +471,7 @@ func (d *deck) statusBar(c *ui.Context) {
 func (d *deck) mcpStatus(c *ui.Context, t *ui.Theme) {
 	switch {
 	case d.mcp != nil:
-		tip := mcpProjectSummary(d.mcpProject) + "\n" +
+		tip := mcpProjectSummary(d.mcpProject, d.projectMCP) + "\n" +
 			filepath.Join(deckDir, "mcp.json") + " · " + d.mcp.sock
 		if d.mcpProject != nil && len(d.mcpProject.Warnings) > 0 {
 			tip += "\n" + strings.Join(d.mcpProject.Warnings, "\n")

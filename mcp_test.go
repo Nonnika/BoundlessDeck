@@ -502,7 +502,7 @@ func TestMCPUnixSocketAndBridge(t *testing.T) {
 	// The stdio bridge relays a line and its answer.
 	var out bytes.Buffer
 	in := strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/list"}` + "\n")
-	if err := bridgeLoop(in, &out, d.root, ep); err != nil {
+	if err := bridgeLoop(in, &out, ep, nil); err != nil {
 		t.Fatal(err)
 	}
 	var resp map[string]any
@@ -519,7 +519,7 @@ func TestMCPUnixSocketAndBridge(t *testing.T) {
 	// A bridge that cannot reach the app answers with an error, not a hang.
 	var dead bytes.Buffer
 	deadEP := mcpEndpoint{Socket: filepath.Join(t.TempDir(), "nothing.sock")}
-	if err := bridgeLoop(strings.NewReader(`{"jsonrpc":"2.0","id":3,"method":"ping"}`+"\n"), &dead, d.root, deadEP); err != nil {
+	if err := bridgeLoop(strings.NewReader(`{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"boundlessdeck://deck"}}`+"\n"), &dead, deadEP, nil); err != nil {
 		t.Fatal(err)
 	}
 	var errResp map[string]any

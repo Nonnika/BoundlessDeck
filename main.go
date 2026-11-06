@@ -20,6 +20,7 @@ func main() {
 	}
 	perfInit() // DECK_PERFLOG, DECK_CPUPROFILE (perflog.go)
 	a := newApp()
+	a.loadSettings()
 	// Every command with its shortcut, in the menu bar (menu.go).
 	mygo.App.SetMenu(a.buildMenu())
 	mygo.App.WhenReady(func() {

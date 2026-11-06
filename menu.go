@@ -1,6 +1,8 @@
 package main
 
 import (
+	goruntime "runtime"
+
 	"github.com/egoist/mygo"
 )
 
@@ -60,6 +62,15 @@ func (a *app) buildMenu() *mygo.Menu {
 		}
 	}
 
+	// 设置… is where each platform keeps it: the app menu on macOS, the
+	// end of 文件 elsewhere.
+	settings := &mygo.MenuItem{ID: "settings", Label: "设置…", Accelerator: "CmdOrCtrl+,", Click: func(*mygo.MenuItem, *mygo.Window) {
+		if a.win != nil {
+			a.win.Update(a.showSettings)
+		}
+	}}
+	mac := goruntime.GOOS == "darwin"
+
 	file := []*mygo.MenuItem{
 		{Label: "打开文件夹…", Accelerator: "CmdOrCtrl+O", Click: func(*mygo.MenuItem, *mygo.Window) {
 			go a.pickFolder()
@@ -71,6 +82,9 @@ func (a *app) buildMenu() *mygo.Menu {
 		})},
 		mygo.Separator(),
 		{Role: mygo.RoleClose, Label: "关闭窗口"},
+	}
+	if !mac {
+		file = append(file, mygo.Separator(), settings, mygo.Separator(), &mygo.MenuItem{Role: mygo.RoleQuit, Label: "退出"})
 	}
 
 	add := make([]*mygo.MenuItem, 0, len(newKeys))
@@ -122,8 +136,26 @@ func (a *app) buildMenu() *mygo.Menu {
 		}},
 	}
 
+	// macOS's app menu, as its default but with 设置… where Finder has it.
+	appMenu := []*mygo.MenuItem{
+		{Role: mygo.RoleAbout},
+		mygo.Separator(),
+		settings,
+		mygo.Separator(),
+		{Role: mygo.RoleServices},
+		mygo.Separator(),
+		{Role: mygo.RoleHide},
+		{Role: mygo.RoleHideOthers},
+		{Role: mygo.RoleUnhide},
+		mygo.Separator(),
+		{Role: mygo.RoleQuit},
+	}
+	if !mac {
+		appMenu = nil
+	}
+
 	a.menuItems = []*mygo.MenuItem{
-		{Role: mygo.RoleAppMenu},
+		{Role: mygo.RoleAppMenu, Label: "BoundlessDeck", Submenu: appMenu},
 		{Label: "文件", Submenu: file},
 		{Label: "新建", Submenu: add},
 		{Label: "编辑", Submenu: edit},

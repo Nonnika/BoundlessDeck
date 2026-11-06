@@ -131,11 +131,13 @@ agent 有文件写、shell、网络三把钥匙，同时会读入不可信内容
 
 ### 8.1 已实现（v0.4）
 
-工作区打开即自带 MCP，零配置接入：
+全局装一次，任何文件夹里的 agent 都能接入当前图版：
 
 - **端点**：`<root>/.boundlessdeck/mcp.sock` 上的 JSON-RPC（Streamable HTTP 语义，POST `/mcp`，token 校验，socket 0600）。路径过长或平台没有 Unix socket 时退到 `/tmp` 或 `127.0.0.1` 端口。
-- **项目级自动加载**：打开/新建工作区时写 `.boundlessdeck/mcp.json`（端点、token、tool 列表、项目 server 清单）与 `.boundlessdeck/block-schema.json`，并把同一个 server 合并进 `.mcp.json`（Claude Code）、`.cursor/mcp.json`、`.vscode/mcp.json`；用户已有的 server 和 key 原样保留，坏 JSON 先备份成 `.bak`。这些文件只写 `command + args`，桥在启动时读描述文件拿端点，所以换端口、重启 App 都不用改配置。
-- **stdio 桥**：`boundlessdeck mcp-stdio --workspace DIR`，把 newline-delimited JSON-RPC 转发到 socket；App 没开时对每个请求回 JSON-RPC 错误而不是挂住。排障用 `--check`。
+- **全局安装（默认路径）**：设置窗口（macOS：BoundlessDeck → 设置…，⌘,；Windows/Linux：文件 → 设置…，Ctrl+,）把 `boundlessdeck mcp-stdio`（不带 `--workspace`）合并进 Claude Code（`~/.claude.json`）、Claude 桌面版、Cursor（`~/.cursor/mcp.json`）、VS Code（用户级 `mcp.json`）的用户级配置，可安装、卸载，或在指向另一份 App 时改为当前这份。只改我们这一项，保留文件权限；读不了的配置原样不动。`go run`/`go test` 的临时程序和 macOS 临时位置（AppTranslocation）下的 App 不允许安装。
+- **跟随当前图版**：打开图版时 App 把端点写进用户配置目录的 `BoundlessDeck/active-deck.json`（0600，`os.UserConfigDir`，不依赖 App 名，dev 版与打包版共用），关闭时清掉。不带 `--workspace` 的桥每次连不上或 token 失效都重读它，所以切换图版不用重启 agent。App 没开或没打开图版时，桥自己回答 `initialize`、`tools/list` 等（与 App 同一张表），调用工具返回「先在应用里打开一个文件夹」，agent 不会因为先启动而把 server 标成失败。
+- **项目级配置（可选，默认关）**：打开工作区总会写 `.boundlessdeck/mcp.json`（端点、token、tool 列表、项目 server 清单）与 `.boundlessdeck/block-schema.json`。设置里打开「打开文件夹时写入项目级 MCP 配置」后，才把同一个 server（`--workspace DIR`）合并进 `.mcp.json`（Claude Code）、`.cursor/mcp.json`、`.vscode/mcp.json`；用户已有的 server 和 key 原样保留，坏 JSON 先备份成 `.bak`。默认关闭，因为文件夹常是代码仓库。设置里可从当前图版的文件夹移除这些配置：只删我们这一项，只剩我们时连文件（和空的 `.cursor/`、`.vscode/`）一起删。
+- **stdio 桥**：`boundlessdeck mcp-stdio [--workspace DIR]`，把 newline-delimited JSON-RPC 转发到 socket；连不上时回 JSON-RPC 错误或工具错误结果，不会挂住。排障用 `--check`。
 - **工具面**：`deck_info`、`block_schema`、`list_blocks`、`get_block`、`read_selection`、`create_block`、`update_block`、`update_blocks`、`delete_blocks`、`move_blocks`、`select_blocks`、`undo`、`redo`、`save_deck`。
 - **排版**：`align_blocks`（边/中线，可对齐到某个 block，`spacing` 顺手排成列）、`distribute_blocks`（等间隙/等中心距，首尾不动，挤不下要显式允许重叠）、`arrange_blocks`（行/列/网格，列宽行高取最大，保持各 block 大小）。省略 `ids` 时用选择集；移动与排版作为一次 `changeMoves` 进撤销栈，⌘Z 一次退回。
 - **每个 block 的可写项**：`mcpschema.go` 一张表列全——note 的 `text`，file 的 `path`/`page`，browser 的 `url`，所有 kind 的 `title`/`named`/`x`/`y`/`w`/`h`；其余字段（`id`、`kind`、terminal 的 `term`）只读。表生成工具的 inputSchema，反射测试保证 `block` 新字段必须登记。

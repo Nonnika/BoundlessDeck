@@ -327,6 +327,10 @@ type deck struct {
 	mcp        *mcpServer
 	mcpProject *mcpWorkspace
 	mcpErr     error
+	// projectMCP says to write the project-level MCP configs into the
+	// folder (设置 → 项目级配置); without it agents come through the
+	// global install.
+	projectMCP bool
 
 	// saveMu and saveSeq keep the saves in order: a snapshot marshalled on
 	// the UI thread is written by a goroutine, and only the newest one is.

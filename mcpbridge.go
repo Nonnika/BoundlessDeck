@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,11 +17,12 @@ import (
 	"time"
 )
 
-// mcpBridgeMain runs the stdio side of the workspace's MCP: an agent starts
-// this binary as `boundlessdeck mcp-stdio --workspace DIR`, and it relays
-// newline-delimited JSON-RPC to the running app's Unix socket. The configs
-// a workspace gets (mcpworkspace.go) point here, so no port or token has to
-// be kept up to date in them.
+// mcpBridgeMain runs the stdio side of the MCP: an agent starts this binary
+// as `boundlessdeck mcp-stdio`, and it relays newline-delimited JSON-RPC to
+// the running app's Unix socket. With --workspace DIR (what project configs
+// list) it talks to that folder's deck; without one (what the global
+// configs list, mcpglobal.go) it follows the deck the app has open, so an
+// agent in any folder reaches it. No port or token is kept in the configs.
 //
 // It returns handled=false when the arguments are not the bridge's, and the
 // process should start the app.
@@ -47,24 +49,27 @@ func mcpBridgeMain(argv []string) (handled bool, code int) {
 	if *workspace == "" {
 		*workspace = os.Getenv("BOUNDLESSDECK_WORKSPACE")
 	}
-	if *workspace == "" {
-		*workspace, _ = os.Getwd()
-	}
-	workspacePath, err := filepath.Abs(*workspace)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "boundlessdeck mcp-stdio：", err)
-		return true, 2
+	// find is where the deck's endpoint is now: the workspace's
+	// descriptor, or the app's active deck.
+	find := activeEndpoint
+	if *workspace != "" {
+		workspacePath, err := filepath.Abs(*workspace)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "boundlessdeck mcp-stdio：", err)
+			return true, 2
+		}
+		find = func() (mcpEndpoint, error) { return readMCPEndpoint(workspacePath) }
 	}
 	ep := mcpEndpoint{Transport: "unix", Socket: *socket, Token: *token}
 	if ep.Socket == "" || ep.Token == "" {
-		fromFile, err := readMCPEndpoint(workspacePath)
+		fromFile, err := find()
 		if err != nil {
 			if *check {
 				fmt.Fprintln(os.Stderr, "boundlessdeck mcp-stdio：", err)
 				return true, 1
 			}
-			// Keep answering: the app may open the workspace later, and
-			// the config would otherwise have to change.
+			// Keep answering: the app may open the deck later, and the
+			// config would otherwise have to change.
 			fmt.Fprintln(os.Stderr, "boundlessdeck mcp-stdio：", err)
 		}
 		if ep.Socket == "" {
@@ -73,6 +78,9 @@ func mcpBridgeMain(argv []string) (handled bool, code int) {
 		if ep.Token == "" {
 			ep.Token = fromFile.Token
 		}
+	}
+	if *socket != "" {
+		find = nil // pinned by hand
 	}
 	if *check {
 		status, err := mcpHealth(ep)
@@ -83,7 +91,7 @@ func mcpBridgeMain(argv []string) (handled bool, code int) {
 		fmt.Println(string(status))
 		return true, 0
 	}
-	if err := bridgeLoop(os.Stdin, os.Stdout, workspacePath, ep); err != nil {
+	if err := bridgeLoop(os.Stdin, os.Stdout, ep, find); err != nil {
 		fmt.Fprintln(os.Stderr, "boundlessdeck mcp-stdio：", err)
 		return true, 1
 	}
@@ -91,27 +99,33 @@ func mcpBridgeMain(argv []string) (handled bool, code int) {
 }
 
 // bridgeLoop relays newline-delimited JSON-RPC from in to the deck and its
-// answers back to out. A request the app cannot take gets a JSON-RPC error,
-// so the agent sees why instead of waiting forever.
-func bridgeLoop(in io.Reader, out io.Writer, workspace string, ep mcpEndpoint) error {
+// answers back to out. When the deck does not answer, find (nil for a
+// pinned endpoint) says where it is now: the app may have opened it, or
+// another deck, since. With no deck to reach, the handshake and the lists
+// are answered here, from the same tables the app serves, so an agent
+// started before the app still gets its tools; calling one says why it
+// cannot run.
+func bridgeLoop(in io.Reader, out io.Writer, ep mcpEndpoint, find func() (mcpEndpoint, error)) error {
 	reader := bufio.NewReaderSize(in, 1<<20)
 	writer := bufio.NewWriter(out)
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		line = bytes.TrimSpace(line)
 		if len(line) > 0 {
-			if ep.Socket == "" {
-				// No endpoint yet: try to find one, as the app may have
-				// opened the workspace since this bridge started.
-				if fromFile, err := readMCPEndpoint(workspace); err == nil {
-					ep = fromFile
+			status, body, err := postMCP(ep, line)
+			if (err != nil || status == http.StatusUnauthorized) && find != nil {
+				if now, ferr := find(); ferr == nil && (now.Socket != ep.Socket || now.Token != ep.Token) {
+					ep = now
+					status, body, err = postMCP(ep, line)
+				} else if ferr != nil {
+					err = ferr
 				}
 			}
-			status, body, err := postMCP(ep, line)
 			switch {
 			case err != nil:
-				if id, ok := rpcMessageID(line); ok {
-					writeRPCError(writer, id, -32000, "BoundlessDeck 没有回应："+err.Error())
+				if answer := offlineAnswer(line, err); answer != nil {
+					_, _ = writer.Write(answer)
+					_ = writer.WriteByte('\n')
 				}
 			case status == http.StatusAccepted || len(body) == 0:
 				// A notification: no answer.
@@ -135,6 +149,35 @@ func bridgeLoop(in io.Reader, out io.Writer, workspace string, ep mcpEndpoint) e
 			return readErr
 		}
 	}
+}
+
+// offlineAnswer answers a message while no deck answers (why): the
+// handshake and the lists as the app would, a tool call with an error
+// result the agent reads, anything else with a JSON-RPC error.
+// Notifications get nothing.
+func offlineAnswer(line []byte, why error) []byte {
+	var req rpcRequest
+	if err := json.Unmarshal(line, &req); err != nil {
+		return nil
+	}
+	id, ok := requestID(req.ID)
+	if !ok {
+		return nil
+	}
+	msg := "BoundlessDeck 没有回应：" + why.Error()
+	if errors.Is(why, errNoActiveDeck) {
+		msg = why.Error()
+	}
+	switch req.Method {
+	case "initialize", "ping", "tools/list", "resources/list", "resources/templates/list", "prompts/list", "logging/setLevel":
+		result, rerr := (&mcpServer{}).dispatch(req)
+		if rerr == nil {
+			return mcpMarshal(rpcResponse{JSONRPC: "2.0", ID: id, Result: result})
+		}
+	case "tools/call":
+		return mcpMarshal(rpcResponse{JSONRPC: "2.0", ID: id, Result: mcpToolFailure(errors.New(msg))})
+	}
+	return mcpMarshal(rpcResponse{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: -32000, Message: msg}})
 }
 
 func writeRPCError(w *bufio.Writer, id json.RawMessage, code int, message string) {

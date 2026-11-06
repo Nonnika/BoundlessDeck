@@ -46,7 +46,7 @@ func TestWriteMCPWorkspaceMergesProjectConfigs(t *testing.T) {
 		t.Fatal(err)
 	}
 	ep := testEndpoint(root)
-	ws, err := writeMCPWorkspace(root, ep)
+	ws, err := writeMCPWorkspace(root, ep, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestWriteMCPWorkspaceMergesProjectConfigs(t *testing.T) {
 	}
 
 	// Writing again changes nothing but the timestamp.
-	again, err := writeMCPWorkspace(root, ep)
+	again, err := writeMCPWorkspace(root, ep, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestWriteMCPWorkspaceMergesProjectConfigs(t *testing.T) {
 func TestLoadMCPWorkspaceAddsExternalServers(t *testing.T) {
 	root := t.TempDir()
 	ep := testEndpoint(root)
-	if _, err := writeMCPWorkspace(root, ep); err != nil {
+	if _, err := writeMCPWorkspace(root, ep, true); err != nil {
 		t.Fatal(err)
 	}
 	// A server the user adds to .mcp.json after we wrote it is loaded too.
@@ -156,7 +156,7 @@ func TestMCPConfigKeepsABrokenFileAside(t *testing.T) {
 	if err := os.WriteFile(path, broken, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeMCPWorkspace(root, testEndpoint(root)); err != nil {
+	if _, err := writeMCPWorkspace(root, testEndpoint(root), true); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(path + ".bak"); err != nil || string(data) != string(broken) {
@@ -188,9 +188,11 @@ func TestMCPSocketPathStaysShort(t *testing.T) {
 }
 
 // TestOpeningAFolderStartsItsMCP is the wiring: a workspace created or
-// opened serves its canvas and carries the configs that load it.
+// opened serves its canvas, becomes the deck the global bridge follows,
+// and, with 项目级配置 on, carries the configs that load it.
 func TestOpeningAFolderStartsItsMCP(t *testing.T) {
 	a := testApp(t)
+	a.settings.ProjectMCP = true
 	dir := t.TempDir()
 	a.openFolder(dir)
 	if a.deck == nil || a.deck.mcp == nil {
@@ -199,6 +201,9 @@ func TestOpeningAFolderStartsItsMCP(t *testing.T) {
 	sock := a.deck.mcp.sock
 	if _, err := os.Stat(filepath.Join(dir, ".mcp.json")); err != nil {
 		t.Fatalf(".mcp.json: %v", err)
+	}
+	if act, err := readMCPActive(); err != nil || act.Workspace != dir || act.Server.Socket != sock {
+		t.Fatalf("active deck = %+v, %v", act, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, deckDir, "mcp.json")); err != nil {
 		t.Fatalf("descriptor: %v", err)
@@ -217,6 +222,9 @@ func TestOpeningAFolderStartsItsMCP(t *testing.T) {
 	}
 	if _, err := os.Stat(sock); !os.IsNotExist(err) {
 		t.Fatalf("the socket outlived the workspace: %v", err)
+	}
+	if _, err := readMCPActive(); !os.IsNotExist(err) {
+		t.Fatalf("the active deck outlived it: %v", err)
 	}
 	// The configs stay: the workspace still says how to reach a deck.
 	if _, err := os.Stat(filepath.Join(dir, ".mcp.json")); err != nil {

@@ -92,12 +92,12 @@ func keyGlyphs(acc string) string {
 }
 
 // menuShortcuts are the menu bar's items that have keys, a group per
-// menu, in the menu's order. The app and window menus, macOS's own, are
-// left out.
+// menu, in the menu's order. The window menu, macOS's own, is left out;
+// the app menu shows its 设置….
 func menuShortcuts(items []*mygo.MenuItem) []shortcutGroup {
 	var groups []shortcutGroup
 	for _, top := range items {
-		if top.Role != "" && top.Role != mygo.RoleHelp {
+		if top.Role != "" && top.Role != mygo.RoleHelp && top.Role != mygo.RoleAppMenu {
 			continue
 		}
 		g := shortcutGroup{title: top.Label}
