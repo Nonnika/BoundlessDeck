@@ -129,6 +129,20 @@ agent 有文件写、shell、网络三把钥匙，同时会读入不可信内容
 
 第 2 条几乎是白送的差异化：别人的 agent 只能改文件，你的 agent 能改一块**看得见的画布**。代价是必须先把 §3 的操作协议做干净——它同时服务内置 agent 和外部 agent。
 
+### 8.1 已实现（v0.4）
+
+工作区打开即自带 MCP，零配置接入：
+
+- **端点**：`<root>/.boundlessdeck/mcp.sock` 上的 JSON-RPC（Streamable HTTP 语义，POST `/mcp`，token 校验，socket 0600）。路径过长或平台没有 Unix socket 时退到 `/tmp` 或 `127.0.0.1` 端口。
+- **项目级自动加载**：打开/新建工作区时写 `.boundlessdeck/mcp.json`（端点、token、tool 列表、项目 server 清单）与 `.boundlessdeck/block-schema.json`，并把同一个 server 合并进 `.mcp.json`（Claude Code）、`.cursor/mcp.json`、`.vscode/mcp.json`；用户已有的 server 和 key 原样保留，坏 JSON 先备份成 `.bak`。这些文件只写 `command + args`，桥在启动时读描述文件拿端点，所以换端口、重启 App 都不用改配置。
+- **stdio 桥**：`boundlessdeck mcp-stdio --workspace DIR`，把 newline-delimited JSON-RPC 转发到 socket；App 没开时对每个请求回 JSON-RPC 错误而不是挂住。排障用 `--check`。
+- **工具面**：`deck_info`、`block_schema`、`list_blocks`、`get_block`、`read_selection`、`create_block`、`update_block`、`update_blocks`、`delete_blocks`、`move_blocks`、`select_blocks`、`undo`、`redo`、`save_deck`。
+- **排版**：`align_blocks`（边/中线，可对齐到某个 block，`spacing` 顺手排成列）、`distribute_blocks`（等间隙/等中心距，首尾不动，挤不下要显式允许重叠）、`arrange_blocks`（行/列/网格，列宽行高取最大，保持各 block 大小）。省略 `ids` 时用选择集；移动与排版作为一次 `changeMoves` 进撤销栈，⌘Z 一次退回。
+- **每个 block 的可写项**：`mcpschema.go` 一张表列全——note 的 `text`，file 的 `path`/`page`，browser 的 `url`，所有 kind 的 `title`/`named`/`x`/`y`/`w`/`h`；其余字段（`id`、`kind`、terminal 的 `term`）只读。表生成工具的 inputSchema，反射测试保证 `block` 新字段必须登记。
+- **同一条路径**：写操作走 `addBlock`/`removeBlock`，移动与排版走 `applyPlacements`，与窗口共用撤销栈（加、删、移动、排版）、选择集、`freeSpot` 和原子保存；批量写先整体校验，有一个字段不合法就一个都不写。
+- **资源**：`boundlessdeck://deck`、`//blocks`、`//blocks/{id}`、`//schema`。
+- **可见性**：窗口状态栏显示 `MCP · N 个工具`，tooltip 给出 socket、配置文件和项目 server；写操作会让画布立即重绘并落盘（UI 线程 marshal、goroutine 写、只写最新快照）。
+
 ## 9. 多 agent（明确降级到 v2）
 
 v1 不做"多个 agent 抢同一块画布"。v1 的"多角色"是一个 run 内部的角色切换（研究者→写手→批评者），共享同一条 step 链。真多 agent 需要：黑板/消息总线、卡片租约、冲突合并、预算分配，成本高、演示价值大于使用价值。

@@ -28,8 +28,30 @@ DECK_SNAPSHOT=1 go test -run TestSnapshot .   # 重画 docs/canvas-snapshot.png
 | `main.go` | 应用入口：`WindowOptions{Content: ui.View(d.view)}`、`StateKey`、`OnFileDrop`、关窗保存并挂断终端 |
 | `deck.go` | 数据与状态：`block`、`camera`、增删/撤销重做、`freeSpot`、拖放、`deck.json` 读写 |
 | `canvas.go` | 一帧的画布：网格、输入仲裁（平移/缩放/框选/拖动）、工具栏、状态栏、文件对话框 |
-| `blocks.go` | 单个 block 的渲染：标题栏、note、file（editor / bitmap）、terminal（懒启动） |
+| `blocks.go` | 单个 block 的渲染：标题栏、note、file（editor / bitmap）、terminal（懒启动）、stack（钱包卡片） |
+| `stack.go` | 块堆 block：`Items` 收起的 block ID、点击翻卡、空格长久预览、取出；被收进的 block 仍在 `d.blocks` 里，只是不画在画布上 |
+| `memo.go` | 笔记 block：deck 根目录里的 Markdown 文件，渲染、编辑、自动写盘、外部改动回读 |
 | `canvas_test.go` | 15 个 `ui.NewTester` 测试：相机数学、输入、加删、撤销、LOD、持久化 |
+| `mcpschema.go` | block 字段的唯一真相：每种 kind 的可写/只读字段、默认值、约束，生成工具 schema 与 `.boundlessdeck/block-schema.json` |
+| `mcpdeck.go` | MCP 的读写语义：字段校验、原子 patch、创建/删除/移动/选择、对外 JSON 形状 |
+| `mcplayout.go` | 排版：对齐、等距分布、行/列/网格排列；只改 x/y，经 `applyPlacements` 成为一次可撤销的移动 |
+| `mcpserver.go` | 工作区的 MCP 端点：Unix socket 上的 JSON-RPC（tools/resources）、token、UI 线程调度 |
+| `mcpworkspace.go` | 工作区级配置：`.boundlessdeck/mcp.json`、`.mcp.json`、`.cursor/mcp.json`、`.vscode/mcp.json` 的写入/合并/加载 |
+| `mcpbridge.go` | stdio ↔ socket 桥：`boundlessdeck mcp-stdio --workspace DIR` |
+
+## MCP（画布对外接口）
+
+外部 agent（Claude Code、Cursor、VS Code）通过工作区自己的 MCP 读写这张画布，和窗口里的人是同一条路径。
+
+- **schema 只有一份**：`mcpschema.go` 的 `mcpFields`。给 `block` 加字段就必须在表里登记类型、是否可写、属于哪些 kind；`TestMCPSchemaCoversEveryBlockField` 用反射盯着，漏了就红。不要手写第二份字段列表。
+- **写操作只有一条路**：`mcpPatchBlock` → `addBlock`/`removeBlock`，与 UI 共用撤销栈、`freeSpot`、选择集和保存。批量写先 `mcpValidatePatch` 干跑，全部合法才落笔。
+- **移动与排版可撤销**：`mcplayout.go` 先算目标位置、再经 `applyPlacements` 一次性写入，产生一条 `changeMoves`（记 before/after），⌘Z/`undo` 一档退回整次排版。不要在排版函数里直接改 `b.X/b.Y`，也不要绕过 `applyPlacements`——否则会丢撤销记录。
+- **排版工具**：`align_blocks`（`align` + `to`=bounds/first/last/block ID，可选 `spacing` 排成列）、`distribute_blocks`（`axis`、`mode`=gaps/centers、`allowOverlap`）、`arrange_blocks`（`layout`=row/column/grid、`columns`、`gapX/gapY`、`originX/originY`、`order`=ids/position）。省略 `ids` 用选择集。
+- **线程**：HTTP handler 在 goroutine 里，碰 deck 一律走 `mcpServer.onUI`（`win.Update`，15s 超时）。`win == nil` 的测试里直接执行。
+- **工作区即端点**：`openFolder` 里 `d.startMCP()` 起 socket（`<root>/.boundlessdeck/mcp.sock`；路径过长或平台没有 Unix socket 时退到 `/tmp` 或 127.0.0.1 端口）并把项目级配置写进工作区；`closeDeck` 里 `d.stopMCP()`。配置是**合并**：用户已有的 server、key 原样保留；坏 JSON 先备份成 `.bak`。
+- **保存**：MCP 写操作调 `requestSave`：UI 线程 marshal，goroutine 写盘，`saveSeq` 保证只有最新快照落地；无窗口时同步写。
+- **桥**：项目配置只写 `command + args`，不写端口；桥启动时读 `.boundlessdeck/mcp.json` 拿 socket 与 token。手动排障：`./boundlessdeck mcp-stdio --workspace DIR --check`。
+- 状态栏右下角显示 `MCP · N 个工具`，tooltip 里有 socket、描述文件与项目 server；启动失败显示 `MCP 未启动`。
 
 ## 帧模型（改代码前必读）
 
@@ -52,6 +74,8 @@ DECK_SNAPSHOT=1 go test -run TestSnapshot .   # 重画 docs/canvas-snapshot.png
 - **block 只能通过 `addBlock` 进入 deck，只能通过 `detach` 离开。** 撤销栈依赖这一点，否则会出现"某条路径加的 block 撤不掉"。
 - `detach` 会挂断终端（`hangUp`）；撤销回来时 `terminalBody` 重新启动一个。删掉的 shell 不留僵尸进程。
 - 新 block 一律经 `freeSpot` 落位，不精确叠在旧 block 上。
+- **块堆只改 `Items`，不搬 block。** 收进/取出走 `stackAdd` / `stackRemove` / `setStackItems`，经 `changeStack` 记 before/after 成为一次可撤销的变更；被收进的 block 仍由 `addBlock`/`detach` 管理，`visible()` 与 `selectIn` 跳过它们。不要从 `d.blocks` 里删掉堆里的 block，否则撤销、终端恢复和 MCP 的 ID 都会断。
+- 覆盖层（如块堆的长预览）**不要在容器上挂 `HandleInput`**：它会先拿到按下，子按钮就点不动。背景层负责点外部关闭，子控件各自挂 handler（`stackButton`）。
 - 链接外部文件的路径经 `linkPath` 相对化到工作区根；工作区因此可以整体搬移。
 - `runtime`（编辑器、位图、终端）**永不进 JSON**，重启后重建。
 - 写盘走原子写：临时文件 + rename，失败静默（后续要加错误提示）。
@@ -62,9 +86,11 @@ DECK_SNAPSHOT=1 go test -run TestSnapshot .   # 重画 docs/canvas-snapshot.png
 
 ```jsonc
 { "version": 1, "root": "<工作区根>", "camX": 0, "camY": 0, "camS": 1,
-  "blocks": [ { "id": "b1a2c3", "kind": "note|file|terminal", "title": "", "x": 0, "y": 0, "w": 360, "h": 260,
-                "path": "相对工作区根的文件路径", "text": "笔记正文" } ] }
+  "blocks": [ { "id": "b1a2c3", "kind": "note|memo|file|terminal|browser|stack", "title": "", "x": 0, "y": 0, "w": 360, "h": 260,
+                "path": "相对工作区根的文件路径", "text": "笔记正文", "items": ["b4d5e6"] } ] }
 ```
+
+`items` 只属于 `stack`：堆里的 block ID，按卡片顺序；被收进的 block 仍在 `blocks` 里。`version` 仍是 1，新字段是可选的增量。
 
 改结构必须升 `version` 并在 `load()` 里加迁移。
 
@@ -77,7 +103,7 @@ DECK_SNAPSHOT=1 go test -run TestSnapshot .   # 重画 docs/canvas-snapshot.png
 
 ## 现状与下一步
 
-已完成：native 骨架、相机与输入、block 增删 + 撤销重做 + 拖放落位、file（文本/图片）与 terminal 两种 block、LOD、持久化。
+已完成：native 骨架、相机与输入、block 增删 + 撤销重做 + 拖放落位、file（文本/图片/md/pdf/word 预览）、terminal、browser、memo、块堆（收 block、翻卡、空格长久预览）、LOD、持久化、工作区 MCP（见上）。
 进行中（M1）：markdown 预览、失效态、`mygo.WatchFiles` 刷新、大文件分段、外部打开。
 之后（M2）：代码卡可编辑 + 写盘冲突 + `⌘↵` 运行器。
 未做（M3+）：终端与画布快捷键仲裁、block resize、小地图、搜索、i18n、打包签名。
