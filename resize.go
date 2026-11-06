@@ -11,15 +11,15 @@ const (
 // resizeSize is the side of a block's resize handle on the screen: about
 // the folded corner of a QuickLook block, which is its handle.
 func (d *deck) resizeSize() float32 {
-	return max(14, 22*d.cam.S)
+	return max(14, 22*d.lay.S)
 }
 
 // resizeBox is the handle's box in window DIPs, in the block's
 // bottom-right corner.
 func (d *deck) resizeBox(n *block) ui.Rect {
 	size := d.resizeSize()
-	sx, sy := d.cam.toScreen(n.X, n.Y)
-	return ui.Rect{X: sx + n.W*d.cam.S - size, Y: sy + n.H*d.cam.S - size, W: size, H: size}
+	sx, sy := d.lay.toScreen(n.X, n.Y)
+	return ui.Rect{X: sx + n.W*d.lay.S - size, Y: sy + n.H*d.lay.S - size, W: size, H: size}
 }
 
 // resizeView builds the handle that resizes a block from its bottom-right
@@ -27,7 +27,7 @@ func (d *deck) resizeBox(n *block) ui.Rect {
 // the handle as it is; other blocks show a grip of diagonal lines.
 func (d *deck) resizeView(c *ui.Context, n *block) {
 	size := d.resizeSize()
-	if n.W*d.cam.S < size*3 || n.H*d.cam.S < size*3 {
+	if n.W*d.lay.S < size*3 || n.H*d.lay.S < size*3 {
 		return
 	}
 	b := d.resizeBox(n)
@@ -62,7 +62,9 @@ func drawGrip(p *ui.Painter, r ui.Rect, color ui.Color) {
 // corner, keeping its proportions.
 func (d *deck) onResizeInput(ev ui.InputEvent, n *block) bool {
 	b := d.resizeBox(n)
-	px, py := b.X+ev.X, b.Y+ev.Y
+	px, py := d.layerToWindow(b.X+ev.X, b.Y+ev.Y)
+	// The wheel moved as far in the window: the layer's axes are scaled.
+	ev.DX, ev.DY = d.layerDelta(ev.DX, ev.DY)
 	switch ev.Kind {
 	case ui.InputScroll, ui.InputZoom:
 		ev.X, ev.Y = px, py

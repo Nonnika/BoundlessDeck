@@ -20,8 +20,8 @@ type tape struct {
 // tilted a few degrees one way or the other, the same each frame for the
 // same block.
 func (d *deck) tapeOf(n *block) tape {
-	s := d.cam.S
-	sx, sy := d.cam.toScreen(n.X, n.Y)
+	s := d.lay.S
+	sx, sy := d.lay.toScreen(n.X, n.Y)
 	w := n.W * s
 	l := min(96*s, w*0.6)
 	th := 30 * s
@@ -164,7 +164,9 @@ func drawTape(p *ui.Painter, tp tape, dx, dy float32, look tapeLook) {
 // onTapeInput selects the block by its tape, and moves it.
 func (d *deck) onTapeInput(ev ui.InputEvent, n *block) bool {
 	b := d.tapeOf(n).box()
-	px, py := b.X+ev.X, b.Y+ev.Y
+	px, py := d.layerToWindow(b.X+ev.X, b.Y+ev.Y)
+	// The wheel moved as far in the window: the layer's axes are scaled.
+	ev.DX, ev.DY = d.layerDelta(ev.DX, ev.DY)
 	switch ev.Kind {
 	case ui.InputScroll, ui.InputZoom:
 		ev.X, ev.Y = px, py

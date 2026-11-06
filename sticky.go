@@ -150,8 +150,8 @@ func (d *deck) markdownFor(pp paper, size float32, dark bool) *markdown.Options 
 func (d *deck) stickyView(c *ui.Context, n *block) {
 	t := c.Theme()
 	pp := paperFor(t)
-	s := d.cam.S
-	sx, sy := d.cam.toScreen(n.X, n.Y)
+	s := d.lay.S
+	sx, sy := d.lay.toScreen(n.X, n.Y)
 	w, h := n.W*s, n.H*s
 	fold := 22 * s
 
@@ -176,7 +176,8 @@ func (d *deck) stickyView(c *ui.Context, n *block) {
 		}).
 		HandleInput(func(ev ui.InputEvent) bool { return d.onBlockInput(ev, n) })
 
-	if s < lodScale {
+	shown := d.contentShown(card) // its body comes and goes blurred
+	if shown <= 0 {
 		card.Draw(func(p *ui.Painter, r ui.Rect) {
 			p.Fill(r, pp.top, 0)
 			d.drawFarTitle(p, r, n, 10, pp.text)
@@ -204,7 +205,7 @@ func (d *deck) stickyView(c *ui.Context, n *block) {
 			ui.Text(c, n.Title).FontSize(titleSize).FontWeight(600).SingleLine().Grow(1).
 				TextColor(pp.text)
 		})
-		body := ui.Box(c).Grow(1).FillWidth().Clip()
+		body := fadeContent(ui.Box(c).Grow(1).FillWidth().Clip(), shown)
 		if editing && d.editPart == editBody {
 			body.Padding(6*s, 8*s, fold, 8*s).Children(func() {
 				ui.TextArea(c.Key("note-body:"+n.ID), &n.Text).Bind(&d.editInput).AutoFocus().Fill().

@@ -11,6 +11,7 @@ import (
 )
 
 func main() {
+	perfInit() // DECK_PERFLOG, DECK_CPUPROFILE (perflog.go)
 	a := newApp()
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{

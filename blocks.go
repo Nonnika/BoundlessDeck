@@ -20,8 +20,8 @@ func (d *deck) blockView(c *ui.Context, n *block) {
 		return
 	}
 	t := c.Theme()
-	s := d.cam.S
-	sx, sy := d.cam.toScreen(n.X, n.Y)
+	s := d.lay.S
+	sx, sy := d.lay.toScreen(n.X, n.Y)
 	w, h := n.W*s, n.H*s
 
 	card := ui.Box(c.Key("block:"+n.ID)).Absolute().Left(sx).Top(sy).Size(w, h).
@@ -34,8 +34,9 @@ func (d *deck) blockView(c *ui.Context, n *block) {
 	card = card.Clip().HandleInput(func(ev ui.InputEvent) bool { return d.onBlockInput(ev, n) })
 
 	// Below the LOD threshold a card is its frame and its title alone: no
-	// editor, no terminal, no bitmaps.
-	if s < lodScale {
+	// editor, no terminal, no bitmaps. Its content comes and goes blurred.
+	shown := d.contentShown(card)
+	if shown <= 0 {
 		card.Draw(func(p *ui.Painter, r ui.Rect) {
 			d.drawFarTitle(p, r, n, 8, t.Text)
 		})
@@ -44,11 +45,44 @@ func (d *deck) blockView(c *ui.Context, n *block) {
 
 	card.Children(func() {
 		d.titleBar(c, n)
-		ui.Box(c).Grow(1).FillWidth().Clip().Children(func() {
+		fadeContent(ui.Box(c).Grow(1).FillWidth().Clip(), shown).Children(func() {
 			d.body(c, n)
 			d.bodyCover(c, n)
 		})
 	})
+}
+
+// As the zoom crosses lodScale, a card's content does not pop in or out:
+// it comes clear from a blur, or blurs away, over contentFade. It starts
+// contentBlur DIPs blurred, and transparent.
+const (
+	contentFade = 280 * time.Millisecond
+	contentBlur = 10
+)
+
+// contentShown is how much of the card's content shows: 0, its frame and
+// title alone, below lodScale; 1 above; between while it comes or goes.
+// A card seen for the first time shows as it is, with no fade.
+func (d *deck) contentShown(card ui.Element) float32 {
+	target := float32(0)
+	if d.lay.S >= lodScale {
+		target = 1
+	}
+	v := max(card.AnimateWith("content", target, contentFade, ui.EaseInOut), 0)
+	if target == 1 {
+		// Coming: built at once, fully blurred, so that what it loads is
+		// there by the time it is clear.
+		v = max(v, 0.001)
+	}
+	return v
+}
+
+// fadeContent blurs and fades a card's content as much as it does not show.
+func fadeContent(e ui.Element, shown float32) ui.Element {
+	if shown >= 1 {
+		return e
+	}
+	return e.Blur((1 - shown) * contentBlur).Opacity(shown)
 }
 
 // titleFontSize is the size of a block's title at 100%: the canvas's zoom
@@ -59,7 +93,7 @@ const titleFontSize = 12
 // frame alone: where and as large as its title bar would show it, padX
 // from the left at 100%, and cut at the block's edges.
 func (d *deck) drawFarTitle(p *ui.Painter, r ui.Rect, n *block, padX float32, color ui.Color) {
-	s := d.cam.S
+	s := d.lay.S
 	size := titleFontSize * s
 	y := r.Y + (d.titleHeight(n)-size*1.25)/2
 	p.Clip(r, 0, func() {
@@ -71,7 +105,7 @@ func (d *deck) drawFarTitle(p *ui.Painter, r ui.Rect, n *block, padX float32, co
 // on it, without a drag, edits it (onBlockInput).
 func (d *deck) titleBar(c *ui.Context, n *block) {
 	t := c.Theme()
-	s := d.cam.S
+	s := d.lay.S
 	ui.Row(c).Height(d.titleHeight(n)).Padding(0, 8*s).AlignItems(ui.Center).Children(func() {
 		if d.editing == n && d.editPart == editTitle {
 			in := ui.TextInput(c.Key("title:"+n.ID), &n.Title).Bind(&d.editInput).AutoFocus().
@@ -124,7 +158,7 @@ func (d *deck) textBody(c *ui.Context, n *block) {
 		})
 	default:
 		// The text grows and shrinks with the canvas, as the block does.
-		if size := editorFontSize * d.cam.S; rt.editor.Font.Size != size {
+		if size := editorFontSize * d.lay.S; rt.editor.Font.Size != size {
 			rt.editor.Font.Size = size
 		}
 		editor.View(c, rt.editor).Grow(1).FillWidth().FocusBind(&d.focusBlock, n.ID)
@@ -145,7 +179,7 @@ func (d *deck) imageBody(c *ui.Context, n *block) {
 			ui.Text(c, "加载中…").FontSize(12).TextColor(t.TextMuted)
 		})
 	default:
-		src, alpha, s := rt.source, rt.imgAlpha, d.cam.S
+		src, alpha, s := rt.source, rt.imgAlpha, d.lay.S
 		dark := t.Dark
 		ui.Box(c).Grow(1).FillWidth().
 			Draw(func(p *ui.Painter, r ui.Rect) {
@@ -209,9 +243,17 @@ func (d *deck) terminalBody(c *ui.Context, n *block) {
 	}
 	// The terminal's text grows and shrinks with the canvas, as the block
 	// does: its grid keeps its rows and columns, and nothing reflows.
-	if size := terminalFontSize * d.cam.S; rt.termFont != size {
-		rt.term.SetFont(terminal.Font{Size: size})
-		rt.termFont = size
+	// After MyGo's text system lets go of its fonts (fontsForgotten), the
+	// terminal is handed a font it has not seen, so it shapes its rows anew
+	// rather than drawing glyphs of fonts that are gone.
+	epoch := fontEpoch()
+	if size := terminalFontSize * d.lay.S; rt.termFont != size || rt.termEpoch != epoch {
+		f := terminal.Font{Size: size}
+		if epoch%2 == 1 {
+			f.LineHeight = 1 + 1e-6 // the same rows, as another font to the terminal
+		}
+		rt.term.SetFont(f)
+		rt.termFont, rt.termEpoch = size, epoch
 	}
 	terminal.View(c, rt.term).Grow(1).FillWidth().FocusBind(&d.focusBlock, n.ID)
 }
@@ -253,8 +295,8 @@ func hasScroller(n *block) bool {
 //     and then jumping. Its first step starts the zoom (zoomTerminal), the
 //     cover takes the rest, until ⌘ is let go of or the wheel rests.
 func (d *deck) bodyCover(c *ui.Context, n *block) {
-	if !hasScroller(n) {
-		return
+	if !hasScroller(n) || d.editing == n && d.editPart == editBody {
+		return // what is typed in takes its presses and the wheel itself
 	}
 	now := time.Now()
 	termZoom := d.termZoomBlock == n && now.Before(d.termZoomUntil) && c.Modifiers()&ui.Cmd != 0
@@ -271,24 +313,28 @@ func (d *deck) bodyCover(c *ui.Context, n *block) {
 	// A browser's bar stays uncovered: only its page takes the wheel.
 	var top float32
 	if n.Kind == kindBrowser {
-		top = browserBar * d.cam.S
+		top = browserBar * d.lay.S
 	}
 	ui.Box(c.Key("cover:"+n.ID)).Absolute().Left(0).Top(top).
-		Size(n.W*d.cam.S, n.H*d.cam.S-d.titleHeight(n)-top).
+		Size(n.W*d.lay.S, n.H*d.lay.S-d.titleHeight(n)-top).
 		HandleInput(func(ev ui.InputEvent) bool {
-			sx, sy := d.cam.toScreen(n.X, n.Y)
-			px, py := sx+ev.X, sy+d.titleHeight(n)+top+ev.Y
+			sx, sy := d.lay.toScreen(n.X, n.Y)
+			px, py := d.layerToWindow(sx+ev.X, sy+d.titleHeight(n)+top+ev.Y)
+			// The wheel moved as far in the window: the layer's axes are scaled.
+			ev.DX, ev.DY = d.layerDelta(ev.DX, ev.DY)
 			switch ev.Kind {
 			case ui.InputScroll:
 				if termZoom {
 					d.termZoomUntil = time.Now().Add(termZoomHold)
 					d.zoomAt(px, py, wheelZoom(ev.DY))
+					d.zoomGesture()
 					return true
 				}
 				ev.X, ev.Y = px, py
 				return d.onCanvasInput(ev)
 			case ui.InputZoom:
 				d.zoomAt(px, py, ev.Scale)
+				d.zoomGesture()
 				return true
 			case ui.InputPointerDown:
 				if ev.Button != 0 {
@@ -332,7 +378,6 @@ func (d *deck) loadText(n *block, rt *runtime) {
 		return
 	}
 	path := d.path(n)
-	rt.loading = true
 	read := func() (string, error) {
 		f, err := os.Open(path)
 		if err != nil {
@@ -349,25 +394,14 @@ func (d *deck) loadText(n *block, rt *runtime) {
 	makeState := func(text string) *editor.State {
 		return &editor.State{
 			Buffer:      editor.NewBuffer(text),
-			Font:        ui.Font{Size: editorFontSize * d.cam.S},
+			Font:        ui.Font{Size: editorFontSize * d.lay.S},
 			ReadOnly:    true,
 			LineNumbers: editor.LineNumbersOn,
 		}
 	}
-	if d.win == nil { // tests: no goroutine to hand results to
+	d.wantLoad("text:"+n.ID, n, func() { rt.loading = true }, func() func() {
 		text, err := read()
-		rt.loading = false
-		if err != nil {
-			rt.textErr = err
-			return
-		}
-		rt.text = text
-		rt.editor = makeState(text)
-		return
-	}
-	go func() {
-		text, err := read()
-		d.win.Update(func() {
+		return func() {
 			rt.loading = false
 			if err != nil {
 				rt.textErr = err
@@ -375,8 +409,8 @@ func (d *deck) loadText(n *block, rt *runtime) {
 			}
 			rt.text = text
 			rt.editor = makeState(text)
-		})
-	}()
+		}
+	})
 }
 
 // loadImage decodes the picture once, off the main thread.
@@ -384,7 +418,6 @@ func (d *deck) loadImage(n *block, rt *runtime) {
 	if rt.imgDone || rt.imgErr != nil {
 		return
 	}
-	rt.imgDone = true
 	path := d.path(n)
 	decode := func() (ui.ImageSource, bool, error) {
 		data, err := os.ReadFile(path)
@@ -394,17 +427,10 @@ func (d *deck) loadImage(n *block, rt *runtime) {
 		src, err := ui.DecodeImage(data)
 		return src, mayBeSeeThrough(path, data), err
 	}
-	if d.win == nil {
+	d.wantLoad("image:"+n.ID, n, func() { rt.imgDone = true }, func() func() {
 		src, alpha, err := decode()
-		rt.imgErr, rt.source, rt.imgAlpha = err, src, alpha
-		return
-	}
-	go func() {
-		src, alpha, err := decode()
-		d.win.Update(func() {
-			rt.imgErr, rt.source, rt.imgAlpha = err, src, alpha
-		})
-	}()
+		return func() { rt.imgErr, rt.source, rt.imgAlpha = err, src, alpha }
+	})
 }
 
 // startTerminal runs the shell in a pseudo-terminal of its own: where the
@@ -413,7 +439,6 @@ func (d *deck) startTerminal(n *block, rt *runtime) {
 	if rt.starting || rt.term != nil {
 		return
 	}
-	rt.starting = true
 	root, st, history := d.root, n.Term, restored(n.Term)
 	newTerm := func() (*terminal.Terminal, error) {
 		return terminal.New(terminal.Options{
@@ -455,19 +480,19 @@ func (d *deck) startTerminal(n *block, rt *runtime) {
 		})
 	}
 	if d.win == nil {
-		rt.starting = false
 		rt.termErr = errNoWindow
 		return
 	}
-	gen := rt.termGen
-	go func() {
+	var gen int
+	start := func() { rt.starting, gen = true, rt.termGen }
+	d.wantLoad("terminal:"+n.ID, n, start, func() func() {
 		term, err := newTerm()
 		if err == nil && len(history) > 0 {
 			// What the terminal showed as the deck closed, before the
 			// new shell starts under it.
 			term.Feed(history)
 		}
-		d.win.Update(func() {
+		return func() {
 			if rt.termGen != gen {
 				// Hung up while it started: its block or deck is gone.
 				if term != nil {
@@ -478,8 +503,8 @@ func (d *deck) startTerminal(n *block, rt *runtime) {
 			rt.starting = false
 			rt.termErr = err
 			rt.term = term
-		})
-	}()
+		}
+	})
 }
 
 // zoomTerminal zooms the canvas as a terminal's zoom asks, about the
@@ -494,6 +519,7 @@ func (d *deck) zoomTerminal(n *block, z terminal.Zoom) {
 	// the wheel itself (terminalZoomCatcher).
 	sx, sy := d.cam.toScreen(n.X+n.W/2, n.Y+n.H/2)
 	d.zoomAt(sx, sy, wheelZoom(-40*float32(z.Steps)))
+	d.zoomGesture()
 	d.termZoomBlock, d.termZoomUntil = n, time.Now().Add(termZoomHold)
 }
 

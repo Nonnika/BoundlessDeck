@@ -53,15 +53,17 @@ func (d *deck) startBrowser(n *block, rt *runtime) {
 		rt.webErr = errNoWindow
 		return
 	}
-	rt.webStarting = true
-	win, gen, start := d.win, rt.webGen, n.URL
-	go func() {
+	win := d.win
+	var gen int
+	var start string
+	begin := func() { rt.webStarting, gen, start = true, rt.webGen, n.URL }
+	d.wantLoad("browser:"+n.ID, n, begin, func() func() {
 		// Blank at first: it loads its page once its listeners are on, so
 		// that the page's first redirect is let through (webScheme).
 		v, err := win.NewWebView(mygo.WebViewOptions{
 			Page: mygo.PageOptions{Untrusted: true},
 		})
-		win.Update(func() {
+		return func() {
 			if rt.webGen != gen {
 				// Closed while it started: its block or deck went.
 				if v != nil {
@@ -78,8 +80,8 @@ func (d *deck) startBrowser(n *block, rt *runtime) {
 			if err := v.Page().LoadURL(start); err != nil {
 				rt.webLoading, rt.webFailed = false, err.Error()
 			}
-		})
-	}()
+		}
+	})
 }
 
 // followPage keeps the block up with its page. The page's events come on
@@ -178,7 +180,7 @@ func (d *deck) browserBody(c *ui.Context, n *block) {
 		rt.address = n.URL
 	}
 	d.startBrowser(n, rt)
-	s := d.cam.S
+	s := d.lay.S
 	d.browserBarView(c, n, rt, s)
 
 	ui.Box(c).Grow(1).FillWidth().Children(func() {
@@ -190,7 +192,9 @@ func (d *deck) browserBody(c *ui.Context, n *block) {
 		case rt.web == nil:
 			bodyMessage(c, "打开中…", t.TextMuted)
 		default:
-			snap, held := d.zoomPage(c, rt, s)
+			// The page takes the canvas's zoom, as it shows: its layer is
+			// scaled to it (zoomlayer.go).
+			snap, held := d.zoomPage(c, rt, d.cam.S)
 			switch {
 			case snap != nil:
 				// Zooming: the page as a picture, scaled with the block.
@@ -199,7 +203,8 @@ func (d *deck) browserBody(c *ui.Context, n *block) {
 				// Zooming, its picture not taken yet: the page held at the
 				// size it has its zoom for, so that it lays out nothing
 				// anew meanwhile.
-				z := rt.webZoom
+				// A web view covers its box as the layer's scale shows it.
+				z := rt.webZoom / d.layerScale()
 				ui.WebView(c, rt.web).Absolute().Left(0).Top(0).
 					Size(n.W*z, (n.H-titleHeightAt1-browserBar)*z).FocusBind(&d.focusBlock, n.ID)
 			default:
@@ -249,6 +254,9 @@ func (d *deck) zoomPage(c *ui.Context, rt *runtime, s float32) (snap ui.ImageSou
 	case now.Before(rt.webRedrawn):
 		c.After(rt.webRedrawn.Sub(now))
 	default:
+		if rt.webSnap != nil {
+			rt.webSnapOld = rt.webSnap
+		}
 		rt.webSnap = nil // the next zoom takes a picture of the page anew
 		return nil, false
 	}
@@ -256,6 +264,10 @@ func (d *deck) zoomPage(c *ui.Context, rt *runtime, s float32) (snap ui.ImageSou
 		// No picture yet: the page as it was, until there is one. Only
 		// while it has not taken the new zoom: it then shows at its size.
 		return nil, rt.webZoom != s
+	}
+	if rt.webSnap == nil && rt.webSnapOld != nil {
+		// The last zoom's picture, until this one's comes.
+		return rt.webSnapOld, false
 	}
 	return rt.webSnap, false
 }
@@ -330,7 +342,7 @@ func (d *deck) inBrowserBody(x, y float32) bool {
 			continue
 		}
 		sx, sy := d.cam.toScreen(n.X, n.Y)
-		top := sy + d.titleHeight(n)
+		top := sy + titleHeightAt1*d.cam.S
 		if x >= sx && x < sx+n.W*d.cam.S && y >= top && y < sy+n.H*d.cam.S {
 			return true
 		}
@@ -353,6 +365,6 @@ func (rt *runtime) closeBrowser() {
 		rt.web.Destroy()
 	}
 	rt.web, rt.webErr, rt.webStarting, rt.webZoom = nil, nil, false, 0
-	rt.webSnap, rt.webCapturing, rt.webSeenS = nil, false, 0
+	rt.webSnap, rt.webSnapOld, rt.webCapturing, rt.webSeenS = nil, nil, false, 0
 	rt.webLoading, rt.canBack, rt.canForward = false, false, false
 }

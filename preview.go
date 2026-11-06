@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"image"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,7 +55,6 @@ func (d *deck) loadDocument(n *block, rt *runtime) {
 		return
 	}
 	path, kind := d.path(n), previewOf(n.Path)
-	rt.loading = true
 	read := func() (*document, error) {
 		if kind == previewWord {
 			w, err := readWord(path)
@@ -77,17 +75,10 @@ func (d *deck) loadDocument(n *block, rt *runtime) {
 		}
 		return &document{markdown: string(buf[:k])}, nil
 	}
-	done := func(doc *document, err error) {
-		rt.loading, rt.doc, rt.docErr = false, doc, err
-	}
-	if d.win == nil { // tests: no goroutine to hand results to
-		done(read())
-		return
-	}
-	go func() {
+	d.wantLoad("document:"+n.ID, n, func() { rt.loading = true }, func() func() {
 		doc, err := read()
-		d.win.Update(func() { done(doc, err) })
-	}()
+		return func() { rt.loading, rt.doc, rt.docErr = false, doc, err }
+	})
 }
 
 // documentBody shows a .md or Word file rendered, scrolling once the block
@@ -104,7 +95,7 @@ func (d *deck) documentBody(c *ui.Context, n *block) {
 		bodyMessage(c, "加载中…", t.TextMuted)
 		return
 	}
-	s := d.cam.S
+	s := d.lay.S
 	opts := d.documentOptions(n, rt, t, docFontSize*s)
 	ui.Scroll(c.Key("doc:"+n.ID)).Grow(1).FillWidth().Focusable().FocusBind(&d.focusBlock, n.ID).
 		Children(func() {
@@ -124,7 +115,8 @@ func (d *deck) documentBody(c *ui.Context, n *block) {
 func (d *deck) documentOptions(n *block, rt *runtime, t *ui.Theme, size float32) *markdown.Options {
 	if rt.mdOpts == nil {
 		o := &markdown.Options{}
-		if media := rt.doc.media; media != nil {
+		if rt.doc != nil && rt.doc.media != nil {
+			media := rt.doc.media
 			o.LoadImage = func(url string) (ui.ImageSource, error) {
 				data, ok := media[strings.TrimPrefix(url, wordMedia)]
 				if !ok || !strings.HasPrefix(url, wordMedia) {
@@ -170,18 +162,12 @@ func (d *deck) openPDFDoc(n *block, rt *runtime) {
 	if rt.pdf != nil || rt.pdfErr != nil || rt.pdfOpening {
 		return
 	}
-	path, gen := d.path(n), rt.pdfGen
-	rt.pdfOpening = true
-	done := func(doc *pdfDoc, err error) {
-		rt.pdfOpening, rt.pdf, rt.pdfErr = false, doc, err
-	}
-	if d.win == nil {
-		done(openPDF(path))
-		return
-	}
-	go func() {
+	path := d.path(n)
+	var gen int
+	start := func() { rt.pdfOpening, gen = true, rt.pdfGen }
+	d.wantLoad("pdf:"+n.ID, n, start, func() func() {
 		doc, err := openPDF(path)
-		d.win.Update(func() {
+		return func() {
 			if rt.pdfGen != gen {
 				// Closed while it opened: its block or deck went.
 				if doc != nil {
@@ -189,39 +175,39 @@ func (d *deck) openPDFDoc(n *block, rt *runtime) {
 				}
 				return
 			}
-			done(doc, err)
-		})
-	}()
+			rt.pdfOpening, rt.pdf, rt.pdfErr = false, doc, err
+		}
+	})
 }
 
 // renderPDFPage renders the page the block shows, width pixels wide, off
 // the main thread, unless it shows already or one renders.
-func (d *deck) renderPDFPage(rt *runtime, page, width int) {
+func (d *deck) renderPDFPage(n *block, rt *runtime, page, width int) {
 	if rt.pdfRendering || (rt.pdfPage == page && rt.pdfPx == width && rt.pdfImage != nil) {
 		return
 	}
-	rt.pdfRendering = true
-	doc, gen := rt.pdf, rt.pdfGen
-	done := func(img *image.RGBA, err error) {
-		rt.pdfRendering = false
-		if err != nil {
-			rt.pdfErr = err
-			return
+	// The document and its generation as the render starts, not as it is
+	// asked for: it may have closed meanwhile.
+	var doc *pdfDoc
+	var gen int
+	start := func() { rt.pdfRendering, doc, gen = true, rt.pdf, rt.pdfGen }
+	d.wantLoad("pdf-page:"+n.ID, n, start, func() func() {
+		if doc == nil {
+			return func() { rt.pdfRendering = false }
 		}
-		rt.pdfImage, rt.pdfPage, rt.pdfPx = ui.NewBitmap(img), page, width
-	}
-	if d.win == nil {
-		done(doc.Render(page, width))
-		return
-	}
-	go func() {
 		img, err := doc.Render(page, width)
-		d.win.Update(func() {
-			if rt.pdfGen == gen {
-				done(img, err)
+		return func() {
+			if rt.pdfGen != gen {
+				return
 			}
-		})
-	}()
+			rt.pdfRendering = false
+			if err != nil {
+				rt.pdfErr = err
+				return
+			}
+			rt.pdfImage, rt.pdfPage, rt.pdfPx = ui.NewBitmap(img), page, width
+		}
+	})
 }
 
 // pdfBody shows a page of a PDF, crisp at any zoom, with the pages to turn
@@ -240,8 +226,8 @@ func (d *deck) pdfBody(c *ui.Context, n *block) {
 	}
 	pages := rt.pdf.Pages()
 	n.Page = min(max(n.Page, 0), pages-1)
-	s := d.cam.S
-	d.renderPDFPage(rt, n.Page, pdfWidth(n.W*s))
+	s := d.lay.S
+	d.renderPDFPage(n, rt, n.Page, pdfWidth(n.W*s))
 
 	ui.Column(c).Grow(1).FillWidth().Background(pdfBackdrop(t)).Children(func() {
 		ui.Box(c).Grow(1).FillWidth().Padding(8 * s).Children(func() {
@@ -258,7 +244,7 @@ func (d *deck) pdfBody(c *ui.Context, n *block) {
 // pdfPager turns the pages of a PDF: ‹ 3 / 12 ›, under the page.
 func (d *deck) pdfPager(c *ui.Context, n *block, pages int) {
 	t := c.Theme()
-	s := min(d.cam.S, 1.5)
+	s := min(d.lay.S, 1.5)
 	ui.Row(c).FillWidth().Padding(0, 0, 8*s, 0).Justify(ui.Center).Children(func() {
 		ui.Row(c).Gap(2*s).AlignItems(ui.Center).Padding(2*s).
 			Background(t.Surface.Alpha(0.92)).Border(1, t.Border).Children(func() {

@@ -12,18 +12,22 @@ import (
 
 // view builds the window's frame: the canvas, its blocks and the chrome.
 func (d *deck) view(c *ui.Context) {
+	d.perfBegin()
+	var built []*block
+	defer func() { d.perfEnd(built) }()
 	cw, ch := c.Size()
 	d.viewW, d.viewH = cw, ch
+	d.dragBand = c.TitleBar().Height
 	t := c.Theme()
 
 	if c.Shortcut(ui.Cmd, ui.Key0) {
 		d.fitAll(cw, ch)
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyEqual) {
-		d.zoomAt(cw/2, ch/2, 1.2)
+		d.zoomStep(cw/2, ch/2, 1)
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyMinus) {
-		d.zoomAt(cw/2, ch/2, 1/1.2)
+		d.zoomStep(cw/2, ch/2, -1)
 	}
 	// While a block's title or a QuickLook body is edited, ⌘Z and ⌘D are
 	// the input's: the window's shortcuts would otherwise take them first.
@@ -110,8 +114,10 @@ func (d *deck) onCanvasInput(ev ui.InputEvent) bool {
 	case ui.InputScroll:
 		d.canvasScrollUntil = time.Now().Add(gestureHold)
 		if ev.Mods&ui.Cmd != 0 || ev.Mods&ui.Ctrl != 0 {
+			perff("event ⌘-wheel dy %.1f precise %v at %.0f,%.0f", ev.DY, ev.Precise, ev.X, ev.Y)
 			// A notch zooms about the pointer; a touchpad's pixels zoom less.
 			d.zoomAt(ev.X, ev.Y, wheelZoom(ev.DY))
+			d.zoomGesture()
 			return true
 		}
 		if ev.Mods&ui.Shift != 0 && ev.DX == 0 {
@@ -121,9 +127,17 @@ func (d *deck) onCanvasInput(ev ui.InputEvent) bool {
 		d.cam.Y += ev.DY / d.cam.S
 		return true
 	case ui.InputZoom:
+		perff("event pinch ×%.4f at %.0f,%.0f", ev.Scale, ev.X, ev.Y)
+		perfStart()
 		d.zoomAt(ev.X, ev.Y, ev.Scale)
+		d.zoomGesture()
 		return true
 	case ui.InputPointerDown:
+		// Empty canvas in the band along the top is the window's to drag
+		// (titlebar.go).
+		if ev.Button == 0 && ev.Y < d.dragBand {
+			return false
+		}
 		if ev.Button != 0 {
 			d.panning = true
 			d.panFrom = point{ev.X, ev.Y}
@@ -275,8 +289,10 @@ func (d *deck) dragTo(n *block, px, py float32) {
 // titleHeightAt1 is the height of a block's title bar at 100%.
 const titleHeightAt1 = 26
 
+// titleHeight is the height of a block's title bar in its layer, laid
+// out with the layout camera (zoomlayer.go).
 func (d *deck) titleHeight(n *block) float32 {
-	return titleHeightAt1 * d.cam.S
+	return titleHeightAt1 * d.lay.S
 }
 
 func (d *deck) marqueeView(c *ui.Context) {

@@ -20,10 +20,24 @@ type blockKind string
 
 const (
 	kindNote     blockKind = "note"
+	kindMemo     blockKind = "memo" // 笔记: a Markdown file of the deck's folder (memo.go)
 	kindFile     blockKind = "file"
 	kindTerminal blockKind = "terminal"
 	kindBrowser  blockKind = "browser"
+	kindStack    blockKind = "stack" // 块堆: a wallet of blocks held off the canvas (stack.go)
 )
+
+// blockKinds is every kind, in the order the toolbar and the MCP list them.
+var blockKinds = []blockKind{kindNote, kindMemo, kindFile, kindTerminal, kindBrowser, kindStack}
+
+// kindNames is blockKinds as strings.
+func kindNames() []string {
+	out := make([]string, len(blockKinds))
+	for i, k := range blockKinds {
+		out[i] = string(k)
+	}
+	return out
+}
 
 // errNoWindow is why a block that needs the window's native views shows
 // nothing in tests.
@@ -55,6 +69,9 @@ type block struct {
 	// Term is what a terminal block kept of its terminal as the deck
 	// closed, to start a new one from.
 	Term *termState `json:"term,omitempty"`
+	// Items are the blocks a 块堆 holds, by ID, the top card first. A
+	// block in a stack stays in the deck but is not drawn on the canvas.
+	Items []string `json:"items,omitempty"`
 
 	// rt is what the block keeps between frames: never saved.
 	rt *runtime
@@ -106,7 +123,10 @@ type runtime struct {
 	// While the canvas zooms, webSnap is a picture of the page, shown in
 	// its place (zoomPage); webSeenS the zoom of the last frame, and
 	// webZoomRest and webRedrawn when the page takes the zoom and shows.
-	webSnap      *ui.Bitmap
+	webSnap *ui.Bitmap
+	// webSnapOld is the picture the last zoom took, shown while the next
+	// is taken: the layer can show as a bitmap then (layerCached).
+	webSnapOld   *ui.Bitmap
 	webCapturing bool
 	webSeenS     float32
 	webZoomRest  time.Time
@@ -127,6 +147,38 @@ type runtime struct {
 	// does closing the deck keep what it shows (keepTerminals).
 	termUsed bool
 	termFont float32 // the font size the terminal was last given
+	// termEpoch is the fontEpoch the terminal was last given its font in.
+	termEpoch int
+
+	// A 笔记's text as edited (memo) and as its file holds it (memoSaved),
+	// read once memoLoaded; memoMod is the file's time as last read or
+	// written, memoCheck when it was last looked at, memoSeen and
+	// memoEdited the text as the last frame saw it and when it changed.
+	memo        string
+	memoSaved   string
+	memoSeen    string
+	memoLoaded  bool
+	memoErr     error
+	memoSaveErr error
+	memoSaving  bool
+	memoMod     time.Time
+	memoCheck   time.Time
+	memoEdited  time.Time
+
+	// liveScroll is how far a QuickLook's or 笔记's live preview is
+	// scrolled (livePreview).
+	liveScroll ui.ScrollState
+
+	// stackPick is the card of a 块堆 pushed out, or last out: the index
+	// into its items this frame; stackOut says it is out now. stackScroll
+	// is how far its cards are scrolled, in cards. stackFocus is its card,
+	// which takes the focus as it is clicked; stackHadFocus says it has
+	// had it since it opened (losing it puts the card back).
+	stackPick     int
+	stackOut      bool
+	stackScroll   float32
+	stackFocus    ui.Handle
+	stackHadFocus bool
 }
 
 func newRuntime() *runtime { return &runtime{} }
@@ -176,6 +228,22 @@ type deck struct {
 	onHome func()
 
 	cam camera
+	// lay is the camera the blocks were laid out with, the same as cam
+	// but while a zoom goes on (zoomlayer.go); zoomSettle is when that
+	// zoom rests.
+	lay        camera
+	zoomSettle time.Time
+	// zoomAnchor is the point of the window the last zoom was about;
+	// snap is the zoom's glide to a zoom level once it rests.
+	zoomAnchor point
+	snap       zoomSnap
+	// perf is what the performance log measures of a frame (perflog.go).
+	perf perfFrame
+	// dragBand is the height of the band along the top whose empty canvas
+	// drags the window (titlebar.go): zero without one.
+	dragBand float32
+	// loads are the blocks' loads, waiting or running (loadqueue.go).
+	loads loadQueue
 	// viewW and viewH are the window's size, in DIPs, as the last frame
 	// built it.
 	viewW, viewH float32
@@ -257,6 +325,7 @@ func (d *deck) zoomAt(sx, sy float32, factor float32) {
 	if factor <= 0 {
 		return
 	}
+	d.zoomAnchor = point{sx, sy}
 	wx, wy := d.cam.toWorld(sx, sy)
 	d.cam.S *= factor
 	d.cam.clamp()
