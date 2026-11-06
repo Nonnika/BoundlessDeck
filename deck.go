@@ -284,6 +284,12 @@ type deck struct {
 	// focusBlock is the ID of the block whose terminal or text has the
 	// keyboard focus, "" when none has: only it takes the wheel.
 	focusBlock string
+	// active is the ID of the block the user works in: the one whose
+	// focus (focusBlock) was last in it. It stays when the focus goes out
+	// of the window's own content, as to a web page clicked, whose native
+	// view then has the keyboard; only a press on the canvas or on another
+	// block ends it. Its body takes the wheel (bodyCover).
+	active string
 	// canvasScrollUntil is when the canvas's last scroll stops being a
 	// gesture under way (gestureHold).
 	canvasScrollUntil time.Time

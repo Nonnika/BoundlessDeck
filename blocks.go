@@ -36,6 +36,10 @@ func (d *deck) blockView(c *ui.Context, n *block) {
 		// A click on the pile takes the focus from the toolbar, so that
 		// space opens its preview rather than pressing the last button.
 		card = card.Focusable().Bind(&d.ensureRuntime(n).stackFocus)
+	} else {
+		// A press on the block where nothing in it takes the focus, as
+		// its title or its browser's bar, leaves the focus in the block.
+		card = card.FocusBind(&d.focusBlock, cardFocus(n))
 	}
 
 	// Below the LOD threshold a card is its frame and its title alone: no
@@ -310,7 +314,7 @@ func (d *deck) bodyCover(c *ui.Context, n *block) {
 	now := time.Now()
 	termZoom := d.termZoomBlock == n && now.Before(d.termZoomUntil) && c.Modifiers()&ui.Cmd != 0
 	gesture := now.Before(d.canvasScrollUntil)
-	if d.focusBlock == n.ID && !gesture && !termZoom {
+	if d.active == n.ID && !gesture && !termZoom {
 		return
 	}
 	// A frame to take the cover away once the gesture rests.

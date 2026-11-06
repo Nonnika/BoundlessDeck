@@ -118,3 +118,69 @@ func TestAPageGoesAnywhereOnTheWebButNotToTheDisk(t *testing.T) {
 		}
 	}
 }
+
+// A press on a browser block where nothing takes the focus, as its title
+// or its bar, leaves the block focused; only the canvas takes it away.
+func TestPressingABrowserKeepsItFocused(t *testing.T) {
+	d := testDeck(t)
+	n := &block{ID: "w", Kind: kindBrowser, Title: "浏览器", URL: "https://a.example", X: 100, Y: 260, W: 600, H: 300}
+	d.blocks = append(d.blocks, n)
+	tt := ui.NewTester(d.view, 1100, 700)
+	tt.Frame()
+
+	// The block is at (100,260): its title, its bar under it. (Tests have
+	// no page to focus: its address bar holds the focus.)
+	if err := tt.Click("地址"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if d.focusBlock != addressFocus(n) {
+		t.Fatalf("a click on the address bar focused %q", d.focusBlock)
+	}
+	back, _ := tt.Find("后退")
+	reload, _ := tt.Find("重新加载")
+	for _, at := range [][2]float32{
+		{back.X + back.W/2, back.Y + back.H/2},
+		{reload.X + reload.W/2, reload.Y + reload.H/2},
+		{reload.X + reload.W + 2, reload.Y + 1}, // the bar between
+		{400, 272},                              // the title
+	} {
+		tt.ClickAt(at[0], at[1])
+		tt.Frame()
+		if !d.blockFocused(n) {
+			t.Fatalf("a click at %v in the block left the focus %q", at, d.focusBlock)
+		}
+		d.stopEditing()
+		tt.Frame()
+	}
+
+	// A click on the page itself: its native view takes the keyboard, and
+	// MyGo lets go of its focus (webViewPress), as here. The block is still
+	// the one worked in: its page keeps the wheel.
+	d.focusBlock = ""
+	tt.Frame()
+	tt.Frame()
+	if d.active != n.ID {
+		t.Fatalf("with the page clicked the block worked in is %q", d.active)
+	}
+
+	// A press on another block ends it.
+	tt.ClickAt(200, 90) // note a's title
+	tt.Frame()
+	if d.active == n.ID {
+		t.Fatal("a press on another block left the browser the one worked in")
+	}
+	d.stopEditing()
+	tt.Frame()
+
+	tt.ClickAt(400, 450) // the page, under its cover again
+	tt.Frame()
+	if d.active != n.ID {
+		t.Fatalf("a click on the page made %q the one worked in", d.active)
+	}
+	tt.ClickAt(900, 650)
+	tt.Frame()
+	if d.focusBlock != "" || d.active != "" {
+		t.Fatalf("a click on the canvas left the focus %q, the block worked in %q", d.focusBlock, d.active)
+	}
+}

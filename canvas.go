@@ -19,6 +19,7 @@ func (d *deck) view(c *ui.Context) {
 	cw, ch := c.Size()
 	d.viewW, d.viewH = cw, ch
 	d.dragBand = c.TitleBar().Height
+	d.trackActive()
 	t := c.Theme()
 
 	if c.Shortcut(ui.Cmd, ui.Key0) {
@@ -183,7 +184,7 @@ func (d *deck) onCanvasInput(ev ui.InputEvent) bool {
 		}
 		// A press on the canvas takes the focus from the blocks: none
 		// takes the wheel then.
-		d.focusBlock = ""
+		d.focusBlock, d.active = "", ""
 		if ev.Clicks == 2 {
 			d.addAt(kindNote, ev.X, ev.Y)
 			return true
@@ -276,6 +277,9 @@ func (d *deck) onBlockInput(ev ui.InputEvent, n *block) bool {
 	case ui.InputPointerDown:
 		if ev.Button != 0 {
 			return false
+		}
+		if d.active != n.ID {
+			d.active = "" // a press on another block: the one worked in is left
 		}
 		if ev.Mods&ui.Shift != 0 {
 			d.sel[n.ID] = !d.sel[n.ID]

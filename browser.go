@@ -25,6 +25,43 @@ const searchURL = "https://www.bing.com/search?q="
 // bar has the keyboard.
 func addressFocus(n *block) string { return "addr:" + n.ID }
 
+// cardFocus is what d.focusBlock holds while the block's card itself has
+// the focus: pressed where nothing in it takes the focus (its title, its
+// browser's bar). The block stays focused: only a press on the canvas,
+// or in another block, takes the focus from it.
+func cardFocus(n *block) string { return "card:" + n.ID }
+
+// blockFocused says whether the focus is in n: its content, its address
+// bar or its card.
+func (d *deck) blockFocused(n *block) bool {
+	return focusOwner(d.focusBlock) == n.ID
+}
+
+// focusOwner is the ID of the block a focusBlock value is in, "" for none.
+func focusOwner(v string) string {
+	for _, prefix := range []string{"addr:", "card:"} {
+		if id, ok := strings.CutPrefix(v, prefix); ok {
+			return id
+		}
+	}
+	return v
+}
+
+// trackActive keeps d.active up with the focus, each frame: the block the
+// focus is in becomes the one worked in. A focus gone from the content
+// (to a web page's native view) leaves it; a block gone ends it.
+func (d *deck) trackActive() {
+	if owner := focusOwner(d.focusBlock); owner != "" {
+		d.active = owner
+	}
+	if d.active == "" {
+		return
+	}
+	if n := d.blockByID(d.active); n == nil || d.stackedIDs()[n.ID] {
+		d.active = ""
+	}
+}
+
 // normalizeAddress turns what is typed in the address bar into a URL: an
 // address as it is, a host without its scheme over https (http for this
 // machine), and words a search.
@@ -303,7 +340,9 @@ func (d *deck) browserBarView(c *ui.Context, n *block, rt *runtime, s float32) {
 	t := c.Theme()
 	icon := 15 * s
 	button := func(key string, svg *ui.SVG, label string, enabled bool, fn func()) {
+		// KeepFocus: the page, or the address bar, keeps the keyboard.
 		ui.Button(c.Key(key+n.ID), "").Label(label).Padding(4*s, 6*s).Radius(0).Disabled(!enabled).
+			KeepFocus().
 			Children(func() { ui.Icon(c, svg).FontSize(icon) }).
 			OnClick(fn)
 	}

@@ -182,7 +182,7 @@ func (d *deck) stickyView(c *ui.Context, n *block) {
 	if d.sel[n.ID] {
 		card = card.Border(2, t.Accent)
 	}
-	card = card.Clip().
+	card = card.Clip().FocusBind(&d.focusBlock, cardFocus(n)).
 		Draw(func(p *ui.Painter, r ui.Rect) {
 			p.FillGradient(r, ui.LinearGradient{From: pp.top, To: pp.bottom, Angle: 180}, 0)
 		}).
