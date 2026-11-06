@@ -5,3 +5,5 @@ node_modules/
 mygo_windows_*.syso
 /boundlessdeck
 /.boundlessdeck/
+/video/
+.DS_Store
