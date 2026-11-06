@@ -15,8 +15,9 @@ func zoomDeck(tb testing.TB) *deck {
 	d := newDeck()
 	d.root = tb.TempDir()
 	d.file = filepath.Join(d.root, "deck.json")
-	for _, f := range []string{"deck.go", "README.md"} {
-		b, err := os.ReadFile(f)
+	// The app's own source and the repository's README, one level up.
+	for f, src := range map[string]string{"deck.go": "deck.go", "README.md": filepath.Join("..", "README.md")} {
+		b, err := os.ReadFile(src)
 		if err != nil {
 			tb.Fatal(err)
 		}

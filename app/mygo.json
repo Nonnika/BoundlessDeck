@@ -2,6 +2,6 @@
   "name": "BoundlessDeck",
   "identifier": "com.boundlessdeck.app",
   "version": "0.1.0",
-  "out": "build",
+  "out": "../build",
   "macos": { "minimumSystemVersion": "13.0" }
 }

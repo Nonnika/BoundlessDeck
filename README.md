@@ -11,8 +11,8 @@
 ## 运行
 
 ```sh
-go tool mygo dev      # 开发模式，改 .go 自动重启
-go tool mygo build    # 打包到 build/<os>-<arch>/
+go tool mygo dev ./app    # 开发模式，改 .go 自动重启
+go tool mygo build ./app  # 打包到 build/<os>-<arch>/
 ```
 
 macOS 13+（终端用 libghostty-vt）。
@@ -20,8 +20,8 @@ macOS 13+（终端用 libghostty-vt）。
 ## 开发
 
 ```sh
-go test ./...                        # 画布与持久化的单测（无窗口）
+go test ./...                                    # 画布与持久化的单测（无窗口）
 go test -race ./...
-go tool mygo vet .                   # 检查原生 UI 的构建期生命周期问题
-DECK_SNAPSHOT=1 go test -run TestSnapshot .   # 重画 docs/canvas-snapshot.png
+go tool mygo vet ./app                           # 检查原生 UI 的构建期生命周期问题
+DECK_SNAPSHOT=1 go test -run TestSnapshot ./app  # 重画 docs/canvas-snapshot.png
 ```

@@ -28,10 +28,10 @@ func TestSnapshot(t *testing.T) {
 	tt := ui.NewTester(d.view, 1100, 700)
 	tt.Frame()
 	img := tt.Image()
-	if err := os.MkdirAll("docs", 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join("..", "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Create(filepath.Join("docs", "canvas-snapshot.png"))
+	f, err := os.Create(filepath.Join("..", "docs", "canvas-snapshot.png"))
 	if err != nil {
 		t.Fatal(err)
 	}

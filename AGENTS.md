@@ -11,12 +11,12 @@ BoundlessDeck：原生 UI（MyGo 自己绘制，**不是 WebView**）的无限�
 ## 命令
 
 ```sh
-go tool mygo dev      # 开发模式：编译 → 启动 → 改 .go 自动重启
-go tool mygo build    # 打包 build/<os>-<arch>/
-go test ./...         # 无窗口渲染测试（ui.NewTester）
+go tool mygo dev ./app                           # 开发模式：编译 → 启动 → 改 .go 自动重启
+go tool mygo build ./app                         # 打包 build/<os>-<arch>/
+go test ./...                                    # 无窗口渲染测试（ui.NewTester）
 go test -race ./...
-go tool mygo vet .    # 检查原生 UI 的构建期生命周期（必跑）
-DECK_SNAPSHOT=1 go test -run TestSnapshot .   # 重画 docs/canvas-snapshot.png
+go tool mygo vet ./app                           # 检查原生 UI 的构建期生命周期（必跑）
+DECK_SNAPSHOT=1 go test -run TestSnapshot ./app  # 重画 docs/canvas-snapshot.png
 ```
 
 `mygo` 通过 `go.mod` 的 `tool` 指令提供，不要去找全局安装的 `mygo`。
@@ -44,7 +44,7 @@ DECK_SNAPSHOT=1 go test -run TestSnapshot .   # 重画 docs/canvas-snapshot.png
 | `internal/pdf` | PDF 渲染（macOS 走 CoreGraphics，其他平台报不支持）；`pdftest` 为测试生成 PDF |
 | `internal/icons` | 工具栏图标（Lucide） |
 
-根目录是唯一的 `package main`：各种 block、画布、MCP 工具都是 `*deck` 的方法，Go 要求同一个包的文件在同一目录，所以它们留在一起；不依赖 deck 的独立部分放 `internal/`，测试跟着走。
+应用是 `app/` 里唯一的 `package main`（连同 `mygo.json` 与 `resources/`）；下表中的 `.go` 文件都在 `app/` 下。各种 block、画布、MCP 工具都是 `*deck` 的方法，Go 要求同一个包的文件在同一目录，所以它们留在一起；不依赖 deck 的独立部分放仓库根目录的 `internal/`，测试跟着走。
 
 ## MCP（画布对外接口）
 
@@ -106,7 +106,7 @@ DECK_SNAPSHOT=1 go test -run TestSnapshot .   # 重画 docs/canvas-snapshot.png
 - 用 `ui.NewTester(d.view, w, h)` 驱动：`Press/Move/Release/ClickAt/Wheel/Pinch/Key/Image`。注意 `Tester.Wheel` 不带修饰键（引擎会用事件里的 `Mods` 覆盖），测 `⌘+滚轮` 要直接构造 `ui.InputEvent` 调 `onCanvasInput`。
 - 新增交互 = 新增一个断言真实状态的测试（相机数值、`d.blocks`、`d.sel`），不要只测"没崩"。
 - 视觉改动跑一次快照并肉眼比对 `docs/canvas-snapshot.png`。
-- 提交前：`gofmt -l .` 无输出、`go test ./...`、`go tool mygo vet .`。
+- 提交前：`gofmt -l .` 无输出、`go test ./...`、`go tool mygo vet ./app`。
 
 ## 现状与下一步
 

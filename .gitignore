@@ -2,8 +2,10 @@ node_modules/
 /dist/
 /build/
 /.mygo/
+/app/.mygo/
 mygo_windows_*.syso
 /boundlessdeck
+/app/app
 /.boundlessdeck/
 /video/
 .DS_Store

@@ -24,7 +24,7 @@ func TestHomeSnapshot(t *testing.T) {
 		{Path: "/Users/demo/Notes/research", Blocks: 6, OpenedAt: now.Add(-5 * time.Hour)},
 		{Path: "/Users/demo/Old/archive", Blocks: 2, OpenedAt: now.Add(-72 * time.Hour), missing: true},
 	}
-	if err := os.MkdirAll("docs", 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join("..", "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, dark := range []bool{false, true} {
@@ -35,7 +35,7 @@ func TestHomeSnapshot(t *testing.T) {
 		if dark {
 			name = "home-snapshot-dark.png"
 		}
-		f, err := os.Create(filepath.Join("docs", name))
+		f, err := os.Create(filepath.Join("..", "docs", name))
 		if err != nil {
 			t.Fatal(err)
 		}
