@@ -217,14 +217,61 @@ func (d *deck) stickyView(c *ui.Context, n *block) {
 			})
 			return
 		}
-		// Reading, the body leaves its presses to the card, where a click
-		// edits it.
-		body.Padding(12*s, 14*s, fold+4*s, 14*s).IgnoreInput(true).Children(func() {
-			if n.Text == "" {
-				ui.Text(c, "点击编辑，支持 Markdown").FontSize(bodySize).TextColor(pp.muted)
-				return
-			}
-			markdown.View(c, n.Text, d.markdownFor(pp, bodySize, t.Dark))
+		// Reading, it is a live preview: focused, it scrolls, and a click
+		// on it edits it.
+		body.Children(func() {
+			d.livePreview(c, n, [4]float32{12 * s, 14 * s, fold + 4*s, 14 * s}, func() {
+				if n.Text == "" {
+					ui.Text(c, "点击编辑，支持 Markdown").FontSize(bodySize).TextColor(pp.muted)
+					return
+				}
+				markdown.View(c, n.Text, d.markdownFor(pp, bodySize, t.Dark))
+			})
 		})
 	})
+}
+
+// livePreviewed reports whether the block reads in a livePreview.
+func livePreviewed(n *block) bool { return n.Kind == kindNote || n.Kind == kindMemo }
+
+// livePreview shows a QuickLook or 笔记 body rendered, as it reads, in a
+// scroller of its own. Not focused, it lies under the block's bodyCover: a
+// two-finger pan over it moves the canvas, and a click focuses it. Focused,
+// the wheel scrolls what it shows, and a click on it edits it. pad is its
+// padding, top, right, bottom, left.
+func (d *deck) livePreview(c *ui.Context, n *block, pad [4]float32, content func()) {
+	rt := d.ensureRuntime(n)
+	ui.Scroll(c.Key("live:"+n.ID)).TrackScroll(&rt.liveScroll).Fill().Focusable().FocusBind(&d.focusBlock, n.ID).
+		Children(func() {
+			ui.Column(c.Key("live-page:"+n.ID)).FillWidth().Padding(pad[0], pad[1], pad[2], pad[3]).
+				HandleInput(func(ev ui.InputEvent) bool {
+					if ev.Kind == ui.InputScroll {
+						// The card and the canvas around it would take the
+						// wheel before the scroller could: the page scrolls
+						// itself. ⌘ or Ctrl and the wheel zoom the canvas.
+						if ev.Mods&(ui.Cmd|ui.Ctrl) != 0 {
+							return false
+						}
+						rt.liveScroll.Y = min(max(rt.liveScroll.Y+ev.DY, 0), rt.liveScroll.MaxY)
+						return true
+					}
+					if ev.Kind != ui.InputPointerDown || ev.Button != 0 {
+						return false
+					}
+					if ev.Mods&ui.Shift != 0 {
+						d.sel[n.ID] = !d.sel[n.ID]
+						return true
+					}
+					d.sel = map[string]bool{}
+					d.startEditing(n, editBody)
+					return true
+				}).
+				Children(func() {
+					// Its text and links leave their presses to the page.
+					ui.Column(c).FillWidth().IgnoreInput(true).Children(content)
+				})
+		})
+	if n.Kind == kindNote {
+		d.bodyCover(c, n) // a 笔记's card puts it on, as every card's
+	}
 }
