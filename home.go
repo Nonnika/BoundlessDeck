@@ -164,6 +164,9 @@ func (a *app) openFolder(path string) {
 	d.win = a.win
 	d.onHome = a.beginHome
 	d.load()
+	// The workspace carries its own MCP: opened, it writes the project
+	// config agents read and serves this deck's canvas there.
+	d.startMCP()
 	a.deck, a.err = d, ""
 	a.touch(path, len(d.blocks))
 	a.setTitle()
@@ -185,6 +188,7 @@ func (a *app) closeDeck() {
 		return
 	}
 	d.keepTerminals()
+	d.stopMCP()
 	d.save()
 	d.closeAll()
 	a.touch(d.root, len(d.blocks))

@@ -313,6 +313,13 @@ type deck struct {
 	undo []change
 	redo []change
 
+	// mcp is the workspace's MCP endpoint, nil while none runs; mcpProject
+	// is the project-level config it wrote and loaded, mcpErr why it could
+	// not start.
+	mcp        *mcpServer
+	mcpProject *mcpWorkspace
+	mcpErr     error
+
 	// saveMu and saveSeq keep the saves in order: a snapshot marshalled on
 	// the UI thread is written by a goroutine, and only the newest one is.
 	saveMu  sync.Mutex

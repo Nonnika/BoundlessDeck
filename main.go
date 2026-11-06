@@ -5,12 +5,19 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
 func main() {
+	// The same binary is the workspace MCP's stdio side: project configs
+	// start it as `boundlessdeck mcp-stdio --workspace DIR`, and it relays
+	// to the running app. Anything else starts the window.
+	if handled, code := mcpBridgeMain(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	perfInit() // DECK_PERFLOG, DECK_CPUPROFILE (perflog.go)
 	a := newApp()
 	mygo.App.WhenReady(func() {

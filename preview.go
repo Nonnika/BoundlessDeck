@@ -23,6 +23,22 @@ const (
 	previewWord                    // .docx and .doc, rendered as Markdown
 )
 
+// String names the preview, as the MCP reports a file block's and as
+// tests expect it.
+func (p preview) String() string {
+	switch p {
+	case previewImage:
+		return "image"
+	case previewMarkdown:
+		return "markdown"
+	case previewPDF:
+		return "pdf"
+	case previewWord:
+		return "word"
+	}
+	return "text"
+}
+
 func previewOf(path string) preview {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg":
