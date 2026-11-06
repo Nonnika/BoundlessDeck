@@ -100,6 +100,7 @@ func (d *deck) view(c *ui.Context) {
 		d.toolbar(c)
 		d.statusBar(c)
 		d.stackPreviewView(c)
+		d.pluckView(c)
 	})
 }
 
@@ -262,6 +263,11 @@ func (d *deck) onBlockInput(ev ui.InputEvent, n *block) bool {
 	}
 	// The wheel moved as far in the window: the layer's axes are scaled.
 	ev.DX, ev.DY = d.layerDelta(ev.DX, ev.DY)
+	// A card's corner held, or the card out of its pile: the pointer is
+	// the pluck's until let go.
+	if n.Kind == kindStack && d.pluckInput(ev, n, px, py) {
+		return true
+	}
 	// A browser's bar and page take their presses themselves: its
 	// buttons and address bar, which the card would take them from.
 	if n.Kind == kindBrowser && !inTitle {
@@ -294,6 +300,11 @@ func (d *deck) onBlockInput(ev ui.InputEvent, n *block) bool {
 			// title, once released.
 			d.beginDrag(n, px, py)
 		case n.Kind == kindStack:
+			// A press on a card's top-right corner, held, plucks the
+			// card out (stackpluck.go).
+			if card, corner := d.stackCornerAt(n, ev.X, ev.Y-d.titleHeight(n)); card != nil {
+				d.startPluck(n, card, corner, px, py)
+			}
 			// A click on the pile opens it: hovering then pushes its
 			// cards out.
 			d.openStack(n, ev.X, ev.Y-d.titleHeight(n))

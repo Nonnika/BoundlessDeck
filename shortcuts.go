@@ -41,6 +41,7 @@ var gestureGroups = []shortcutGroup{
 		{"长预览", []string{"空格"}},
 		{"切换卡片", []string{"←", "→"}},
 		{"关闭长预览", []string{"空格 / Esc"}},
+		{"取出卡片", []string{"长按卡片右上角并拖出"}},
 	}},
 	{"QuickLook 与笔记", []shortcutRow{
 		{"结束编辑", []string{"⌘↩ / Esc"}},

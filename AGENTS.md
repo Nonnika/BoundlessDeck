@@ -30,7 +30,7 @@ DECK_SNAPSHOT=1 go test -run TestSnapshot .   # 重画 docs/canvas-snapshot.png
 | `canvas.go` | 一帧的画布：网格、输入仲裁（平移/缩放/框选/拖动）、工具栏、状态栏、文件对话框 |
 | `blocks.go` | 单个 block 的渲染：标题栏、note、file（editor / bitmap）、terminal（懒启动）、stack（钱包卡片） |
 | `chart.go` | 图表 block：`Text` 里的表格（逗号/Tab/Markdown 表格）画成柱状/条形/折线/面积/饼图（`block.Chart`），标题栏切换类型、双击或表格按钮编辑数据 |
-| `stack.go` | 块堆 block：`Items` 收起的 block ID、点击翻卡、空格长久预览、取出；被收进的 block 仍在 `d.blocks` 里，只是不画在画布上 |
+| `stack.go` | 块堆 block：`Items` 收起的 block ID、点击翻卡、空格长久预览、长按右上角拖出（`stackpluck.go`）；被收进的 block 仍在 `d.blocks` 里，只是不画在画布上 |
 | `memo.go` | 笔记 block：deck 根目录里的 Markdown 文件，渲染、编辑、自动写盘、外部改动回读 |
 | `canvas_test.go` | 15 个 `ui.NewTester` 测试：相机数学、输入、加删、撤销、LOD、持久化 |
 | `mcpschema.go` | block 字段的唯一真相：每种 kind 的可写/只读字段、默认值、约束，生成工具 schema 与 `.boundlessdeck/block-schema.json` |
@@ -75,7 +75,7 @@ DECK_SNAPSHOT=1 go test -run TestSnapshot .   # 重画 docs/canvas-snapshot.png
 - **block 只能通过 `addBlock` 进入 deck，只能通过 `detach` 离开。** 撤销栈依赖这一点，否则会出现"某条路径加的 block 撤不掉"。
 - `detach` 会挂断终端（`hangUp`）；撤销回来时 `terminalBody` 重新启动一个。删掉的 shell 不留僵尸进程。
 - 新 block 一律经 `freeSpot` 落位，不精确叠在旧 block 上。
-- **块堆只改 `Items`，不搬 block。** 收进/取出走 `stackAdd` / `stackRemove` / `setStackItems`，经 `changeStack` 记 before/after 成为一次可撤销的变更；被收进的 block 仍由 `addBlock`/`detach` 管理，`visible()` 与 `selectIn` 跳过它们。不要从 `d.blocks` 里删掉堆里的 block，否则撤销、终端恢复和 MCP 的 ID 都会断。
+- **块堆只改 `Items`，不搬 block。** 收进/取出走 `stackAdd` / `stackRemove` / `stackTake` / `setStackItems`，经 `changeStack` 记 before/after 成为一次可撤销的变更；被收进的 block 仍由 `addBlock`/`detach` 管理，`visible()` 与 `selectIn` 跳过它们。不要从 `d.blocks` 里删掉堆里的 block，否则撤销、终端恢复和 MCP 的 ID 都会断。
 - 覆盖层（如块堆的长预览）**不要在容器上挂 `HandleInput`**：它会先拿到按下，子按钮就点不动。背景层负责点外部关闭，子控件各自挂 handler（`stackButton`）。
 - 链接外部文件的路径经 `linkPath` 相对化到工作区根；工作区因此可以整体搬移。
 - `runtime`（编辑器、位图、终端）**永不进 JSON**，重启后重建。

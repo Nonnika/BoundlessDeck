@@ -90,7 +90,7 @@ func TestClickingAStackPushesTheHoveredCardOut(t *testing.T) {
 	// Space previews the card out.
 	tt.Key(0, ui.KeySpace)
 	tt.Frame()
-	if d.previewStack != st || !tt.HasText("第 1 / 2 张") {
+	if d.previewStack != st || !tt.HasText("A") {
 		t.Fatalf("space opened %v: %v", d.previewStack, tt.Texts())
 	}
 	tt.Key(0, ui.KeySpace)
@@ -158,8 +158,8 @@ func TestSpaceOpensALastingStackPreview(t *testing.T) {
 	if d.previewStack != st {
 		t.Fatalf("space opened %v, want the selected stack", d.previewStack)
 	}
-	if !tt.HasText("第 1 / 2 张") {
-		t.Fatalf("the preview does not say which card it shows: %v", tt.Texts())
+	if !tt.HasText("A") || tt.HasText("B") {
+		t.Fatalf("the preview does not show the card picked: %v", tt.Texts())
 	}
 
 	// The preview is long: it stays frame after frame, until space again.
@@ -168,26 +168,22 @@ func TestSpaceOpensALastingStackPreview(t *testing.T) {
 		t.Fatal("the preview closed by itself")
 	}
 
-	// Its buttons work: turn a card, take one out, close.
-	if err := tt.Click("›"); err != nil {
-		t.Fatalf("next button: %v", err)
-	}
+	// The arrows turn its cards; it holds no bar of buttons.
+	tt.Key(0, ui.KeyRight)
 	tt.Frame()
-	if got := d.ensureRuntime(st).stackPick; got != 1 {
-		t.Fatalf("the next button shows card %d, want 1", got)
+	if got := d.ensureRuntime(st).stackPick; got != 1 || !tt.HasText("B") {
+		t.Fatalf("→ shows card %d, want 1: %v", got, tt.Texts())
 	}
-	if err := tt.Click("取出"); err != nil {
-		t.Fatalf("take button: %v", err)
+	for _, gone := range []string{"关闭", "取出", "›", "第 2 / 2 张"} {
+		if tt.HasText(gone) {
+			t.Fatalf("the preview still shows %q", gone)
+		}
 	}
-	tt.Frame()
-	if len(st.Items) != 1 || !d.stackedIDs()["a"] {
-		t.Fatalf("taking one out left %v, want [a] on the canvas", st.Items)
-	}
-	if err := tt.Click("关闭"); err != nil {
-		t.Fatalf("close button: %v", err)
-	}
+
+	// A click outside it closes it.
+	tt.ClickAt(20, 300)
 	if d.previewStack != nil {
-		t.Fatal("the close button left the preview open")
+		t.Fatal("a click on the backdrop left the preview open")
 	}
 
 	// Space opens it again once the stack is selected.
@@ -324,5 +320,150 @@ func TestDroppingABlockByItsTapeCollectsIt(t *testing.T) {
 	}
 	if !d.stackedIDs()["a"] {
 		t.Fatal("the tape drop did not hide the block")
+	}
+}
+
+func TestAStackCardOutShowsItsMarkdownRendered(t *testing.T) {
+	d, st := stackDeck(t)
+	d.blocks[0].Text = "# 标题一\n\n- **粗体**条目\n- 第二条"
+	d.blocks[1].Text = "## 另一张\n\n正文"
+	tt := ui.NewTester(d.view, 900, 600)
+	tt.Frame()
+
+	// Open the pile and push a out: its face shows the Markdown rendered.
+	tt.ClickAt(700, 200)
+	tt.Move(700, 128)
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+	if rt := d.ensureRuntime(st); !rt.stackOut || rt.stackPick != 0 {
+		t.Fatalf("card %d is out (%v), want card 0", rt.stackPick, rt.stackOut)
+	}
+	if !tt.HasText("标题一") || tt.HasText("# 标题一") {
+		t.Fatalf("a's face does not show its Markdown rendered: %v", tt.Texts())
+	}
+}
+
+func TestTheStackPreviewGrowsOutOfItsCardAndGoesBack(t *testing.T) {
+	d, st := stackDeck(t)
+	tt := ui.NewTester(d.view, 900, 600)
+	tt.Frame()
+	tt.ClickAt(700, 200) // opens the pile, card b out
+	tt.Advance(time.Second)
+	tt.Frame()
+
+	tt.Key(0, ui.KeySpace)
+	tt.Frame()
+	if d.previewStack != st || d.previewFrom.W <= 0 {
+		t.Fatalf("space opened %v, growing from %v", d.previewStack, d.previewFrom)
+	}
+	tt.Advance(time.Second)
+	tt.Frame()
+
+	// Closed, it shrinks back into the card before the pile shows it again.
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	if d.previewStack != nil || d.previewLeaving != st {
+		t.Fatalf("escape left the preview %v, going back %v", d.previewStack, d.previewLeaving)
+	}
+	if !tt.HasText("B") {
+		t.Fatal("the preview vanished at once instead of going back into its card")
+	}
+	tt.Advance(time.Second)
+	tt.Frame()
+	tt.Frame()
+	if d.previewLeaving != nil || tt.HasText("B") {
+		t.Fatalf("the preview is still going back: %v", d.previewLeaving)
+	}
+
+	// Space while it goes back opens it again from where it is.
+	tt.Key(0, ui.KeySpace)
+	tt.Frame()
+	tt.Key(0, ui.KeySpace)
+	tt.Frame()
+	tt.Key(0, ui.KeySpace)
+	if d.previewStack != st || d.previewLeaving != nil {
+		t.Fatalf("space while going back left %v open, %v going back", d.previewStack, d.previewLeaving)
+	}
+}
+
+func TestHoldingACardsCornerPlucksItOutOfTheStack(t *testing.T) {
+	d, st := stackDeck(t)
+	tt := ui.NewTester(d.view, 900, 600)
+	tt.Frame()
+
+	// The body starts at y 106: b's header lies at 150–182, its kind at
+	// the right, by x 868.
+	tt.Press(850, 160)
+	tt.Frame()
+	if d.pluck == nil || d.pluck.n.ID != "b" || d.pluck.active {
+		t.Fatalf("pressing b's corner holds %+v", d.pluck)
+	}
+	tt.Advance(pluckHold + 100*time.Millisecond)
+	tt.Frame()
+	if d.pluck == nil || !d.pluck.active {
+		t.Fatal("holding the corner did not take the card out")
+	}
+	tt.Move(300, 450)
+	tt.Frame()
+	if !tt.HasText("松手放到这里") {
+		t.Fatalf("over the canvas the card out says %v", tt.Texts())
+	}
+	tt.Release(300, 450)
+	tt.Frame()
+	b := d.blockByID("b")
+	if len(st.Items) != 1 || d.stackedIDs()["b"] {
+		t.Fatalf("letting go over the canvas left the stack holding %v", st.Items)
+	}
+	// Its top-right corner stays where it was grabbed: 18 left of it.
+	if abs(b.X-118) > 1 || abs(b.Y-440) > 1 || !d.sel["b"] {
+		t.Fatalf("b landed at (%v,%v), selected %v; want (118,440)", b.X, b.Y, d.sel)
+	}
+	d.undoLast()
+	if len(st.Items) != 2 {
+		t.Fatalf("undo left the stack holding %v", st.Items)
+	}
+}
+
+func TestAPluckedCardLetGoOverItsStackGoesBack(t *testing.T) {
+	d, st := stackDeck(t)
+	tt := ui.NewTester(d.view, 900, 600)
+	tt.Frame()
+
+	// A short press is a click: nothing comes out.
+	tt.Press(850, 160)
+	tt.Frame()
+	tt.Release(850, 160)
+	tt.Advance(time.Second)
+	tt.Frame()
+	if d.pluck != nil {
+		t.Fatal("a click on the corner left a hold")
+	}
+
+	tt.Press(850, 160)
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+	tt.Move(700, 300)
+	tt.Frame()
+	if !tt.HasText("松手放回") {
+		t.Fatalf("over its own stack the card out says %v", tt.Texts())
+	}
+	tt.Release(700, 300)
+	tt.Frame()
+	if len(st.Items) != 2 || st.Items[1] != "b" || d.pluck != nil {
+		t.Fatalf("let go over its stack, the items are %v", st.Items)
+	}
+
+	// Escape puts it back too.
+	tt.Press(850, 160)
+	tt.Frame()
+	tt.Advance(time.Second)
+	tt.Frame()
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	tt.Release(300, 450)
+	if len(st.Items) != 2 || d.pluck != nil {
+		t.Fatalf("escape left the items %v, the pluck %v", st.Items, d.pluck)
 	}
 }

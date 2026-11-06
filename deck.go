@@ -322,6 +322,18 @@ type deck struct {
 	// previewStack is the 块堆 whose long preview (space) is open, nil
 	// when none is.
 	previewStack *block
+	// previewLeaving is the 块堆 whose long preview, closed, still shrinks
+	// back into its card; nil once it is home.
+	previewLeaving *block
+	// previewFrom is where, in the window, the card the long preview shows
+	// lies in its stack: the preview grows out of it and goes back into
+	// it. previewFresh asks the preview just opened to start there.
+	previewFrom  ui.Rect
+	previewFresh bool
+	// pluck is a 块堆 card's corner held, or the card out of its pile
+	// following the pointer (stackpluck.go); nil when none is.
+	pluck    *stackPluck
+	pluckSeq int
 	// chartAsked is the 图表 block whose kind menu was last asked for.
 	chartAsked *block
 	// stackOpen is the 块堆 a click opened: hovering it pushes its cards
@@ -338,6 +350,10 @@ type deck struct {
 	previewMD     markdown.Options
 	previewMDSize float32
 	previewMDDark bool
+	// faceMD is the same for the faces of a 块堆's cards.
+	faceMD     markdown.Options
+	faceMDSize float32
+	faceMDDark bool
 
 	undo []change
 	redo []change
@@ -582,6 +598,9 @@ func (d *deck) detach(index int) *block {
 	d.blocks = append(d.blocks[:index], d.blocks[index+1:]...)
 	if d.previewStack == b {
 		d.previewStack = nil
+	}
+	if d.previewLeaving == b {
+		d.previewLeaving = nil
 	}
 	d.hangUp(b)
 	return b

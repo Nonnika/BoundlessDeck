@@ -109,6 +109,33 @@ func (d *deck) stepStack(st *block, delta int) {
 	d.ensureRuntime(st).stackPick = ((idx+delta)%len(members) + len(members)) % len(members)
 }
 
+// openStackPreview opens st's long preview: its card comes out of the
+// pile and grows to the middle of the window. One still going back into
+// st turns around where it is.
+func (d *deck) openStackPreview(st *block) {
+	if d.previewFresh = d.previewLeaving != st; d.previewFresh {
+		d.previewFrom = ui.Rect{} // the pile says where its card is
+	}
+	d.previewStack, d.previewLeaving = st, nil
+}
+
+// closeStackPreview closes the long preview: it shrinks back into its
+// card (stackPreviewView), and the pile closes up behind it.
+func (d *deck) closeStackPreview() {
+	if d.previewStack != nil {
+		d.previewLeaving, d.previewStack = d.previewStack, nil
+	}
+}
+
+// previewShown is the stack whose long preview shows, open or going back
+// into its card.
+func (d *deck) previewShown() *block {
+	if d.previewStack != nil {
+		return d.previewStack
+	}
+	return d.previewLeaving
+}
+
 // selectedStack is the stack the selection names, if it names exactly one.
 func (d *deck) selectedStack() *block {
 	if len(d.sel) != 1 {
@@ -181,12 +208,22 @@ func (d *deck) stackRemove(st, n *block) {
 	if st == nil || n == nil || !containsID(st.Items, n.ID) {
 		return
 	}
+	x, y := d.freeSpot(st.X+st.W+28, st.Y, n.W, n.H)
+	d.stackTake(st, n, x, y)
+}
+
+// stackTake takes n out of st and puts it on the canvas at (x, y), in
+// world coordinates, selected. The membership change undoes.
+func (d *deck) stackTake(st, n *block, x, y float32) {
+	if st == nil || n == nil || !containsID(st.Items, n.ID) {
+		return
+	}
 	d.applyStackEdits([]stackEdit{{
 		stack:  st,
 		before: copyIDs(st.Items),
 		after:  withoutID(st.Items, n.ID),
 	}})
-	n.X, n.Y = d.freeSpot(st.X+st.W+28, st.Y, n.W, n.H)
+	n.X, n.Y = x, y
 	d.sel = map[string]bool{n.ID: true}
 	d.requestSave()
 }
@@ -269,6 +306,9 @@ func (d *deck) syncStacked() {
 	if d.previewStack != nil && d.indexOf(d.previewStack) < 0 {
 		d.previewStack = nil
 	}
+	if d.previewLeaving != nil && d.indexOf(d.previewLeaving) < 0 {
+		d.previewLeaving = nil
+	}
 	if d.stackOpen != nil && d.indexOf(d.stackOpen) < 0 {
 		d.closeStack()
 	}
@@ -324,14 +364,18 @@ func (d *deck) validateStackItems(selfID string, ids []string) error {
 // Space typed into a terminal or an editor belongs to it.
 func (d *deck) stackKeys(c *ui.Context) {
 	d.watchStack(c)
+	if d.pluck != nil && d.pluck.active && c.Shortcut(0, ui.KeyEscape) {
+		d.pluck = nil // the card out goes back
+		return
+	}
 	if d.previewStack != nil {
 		if c.Shortcut(0, ui.KeySpace) {
-			d.previewStack = nil
+			d.closeStackPreview()
 			return
 		}
 	} else if d.editing == nil && d.focusBlock == "" && c.Shortcut(0, ui.KeySpace) {
 		if st := d.selectedStack(); st != nil && len(d.stackMembers(st)) > 0 {
-			d.previewStack = st
+			d.openStackPreview(st)
 		}
 	}
 	st := d.previewStack
@@ -339,7 +383,7 @@ func (d *deck) stackKeys(c *ui.Context) {
 		return
 	}
 	if c.Shortcut(0, ui.KeyEscape) {
-		d.previewStack = nil
+		d.closeStackPreview()
 		return
 	}
 	if c.Shortcut(0, ui.KeyRight) {
@@ -365,6 +409,8 @@ func kindLabel(k blockKind) string {
 		return "浏览器"
 	case kindStack:
 		return "块堆"
+	case kindChart:
+		return "图表"
 	}
 	return string(k)
 }
@@ -401,6 +447,8 @@ func (d *deck) stackSnippet(n *block) string {
 			return n.URL
 		}
 		return "空白页面"
+	case kindChart:
+		return chartSummary(n, d.chartDataOf(n))
 	}
 	return ""
 }
@@ -516,7 +564,7 @@ func (d *deck) closeStack() {
 // card it pushed out goes back. An open long preview keeps it.
 func (d *deck) watchStack(c *ui.Context) {
 	st := d.stackOpen
-	if st == nil || d.previewStack != nil {
+	if st == nil || d.previewShown() != nil {
 		return
 	}
 	if d.indexOf(st) < 0 || d.stackedIDs()[st.ID] || len(d.sel) != 1 || !d.sel[st.ID] ||
@@ -552,6 +600,9 @@ const stackEdgeSpeed = 5
 var (
 	stackScrollAnim = ui.Animation{Duration: 160 * time.Millisecond, Ease: ui.EaseOut}
 	stackCardAnim   = ui.Animation{Spring: ui.SpringOptions{Duration: 380 * time.Millisecond, Bounce: 0.18}}
+	// The long preview growing out of its card and the pile moving apart.
+	stackPreviewAnim = ui.Animation{Spring: ui.SpringOptions{Duration: 420 * time.Millisecond, Bounce: 0.1}}
+	stackSpreadAnim  = ui.Animation{Spring: ui.SpringOptions{Duration: 460 * time.Millisecond, Bounce: 0.14}}
 )
 
 // stackTint is the color a card of kind k is marked with.
@@ -567,6 +618,8 @@ func stackTint(k blockKind) ui.Color {
 		return ui.Hex("#6B7280")
 	case kindBrowser:
 		return ui.Hex("#8B5CF6")
+	case kindChart:
+		return ui.Hex("#D9480F")
 	}
 	return ui.Hex("#6B7280")
 }
@@ -586,6 +639,38 @@ func (d *deck) stackFace(n *block) string {
 		return n.Path
 	}
 	return d.stackSnippet(n)
+}
+
+// stackFaceMarkdown is the Markdown a card's face shows rendered — a
+// QuickLook's text, a 笔记's file, a .md or Word file — asking for what
+// is still to load; "" when it holds none, or none yet, and its face is
+// stackFace's line.
+func (d *deck) stackFaceMarkdown(n *block) string {
+	var src string
+	switch n.Kind {
+	case kindNote:
+		src = n.Text
+	case kindMemo:
+		rt := d.ensureRuntime(n)
+		d.loadMemo(n, rt)
+		if rt.memoLoaded {
+			src = rt.memo
+		}
+	case kindFile:
+		if p := previewOf(n.Path); p != previewMarkdown && p != previewWord {
+			return ""
+		}
+		rt := d.ensureRuntime(n)
+		d.loadDocument(n, rt)
+		if rt.doc != nil {
+			src = rt.doc.markdown
+		}
+	}
+	if strings.TrimSpace(src) == "" {
+		return ""
+	}
+	// No more than a face can show.
+	return cutText(src, 2000)
 }
 
 // stackTextFace is the first lines of Markdown, without the marks that
@@ -611,7 +696,10 @@ type stackCard struct {
 	index       int
 	y           float32
 	lifted      float32 // 0 in its slot, 1 pushed out
+	apart       float32 // 0 in the pile, 1 out of the long preview's way
 	title, face string
+	md          string     // Markdown the face shows rendered, rather than face
+	chart       *chartData // a 图表's table, drawn small on its face
 }
 
 // faceShows says whether the face of cards[i], below its header, shows
@@ -636,6 +724,16 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 	t := c.Theme()
 	s := d.lay.S
 	_, members := d.stackPicked(n)
+	if d.pluck != nil && d.pluck.active && d.pluck.from == n {
+		// The card plucked out is under the pointer, not in the pile.
+		rest := make([]*block, 0, len(members))
+		for _, m := range members {
+			if !d.plucking(m) {
+				rest = append(rest, m)
+			}
+		}
+		members = rest
+	}
 	drop := d.dropHere(n)
 	if len(members) == 0 {
 		box := ui.Box(c).Grow(1).FillWidth().Padding(14*s).Border(1, t.Border).Radius(10)
@@ -661,7 +759,7 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 	rt.stackScroll = min(max(rt.stackScroll, 0), g.max)
 	target, anim := rt.stackScroll, stackScrollAnim
 	_, py, over := box.PointerPosition()
-	if open && over && d.previewStack == nil && d.dragging == nil && !d.layerMoved() {
+	if open && over && d.previewShown() == nil && d.dragging == nil && d.pluck == nil && !d.layerMoved() {
 		switch {
 		case py < g.band && rt.stackScroll > 0:
 			target = 0
@@ -680,7 +778,8 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 			anim = ui.Animation{Duration: time.Duration(abs(target-rt.stackScroll) / stackEdgeSpeed * float32(time.Second)), Ease: ui.Linear}
 		}
 	}
-	if d.previewStack == n {
+	shown := d.previewShown() == n
+	if shown {
 		// The long preview turns the cards: the one it shows is out, and
 		// in view.
 		rt.stackOut = true
@@ -689,13 +788,22 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 		target = rt.stackScroll
 	}
 	sc := box.AnimateTo("scroll", target, anim)
+	held, heldCard := d.pluckHeld(c, box, n)
 	if target != rt.stackScroll {
 		rt.stackScroll = sc
 	}
 	out := -1
-	if rt.stackOut && (open || d.previewStack == n) {
+	if rt.stackOut && (open || shown) {
 		out = rt.stackPick
 	}
+
+	// The long preview open, the card it shows has come out of the pile
+	// and the others move apart, out of its way, until it is back.
+	spreadTo := float32(0)
+	if d.previewStack == n {
+		spreadTo = 1
+	}
+	spread := box.AnimateTo("spread", spreadTo, stackSpreadAnim)
 
 	cards := make([]stackCard, 0, 8)
 	for i, m := range members {
@@ -709,6 +817,26 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 		reveal = box.AnimateTo("reveal:"+m.ID, reveal, stackCardAnim)
 		lifted = box.AnimateTo("lift:"+m.ID, lifted, stackCardAnim)
 		y := g.slot(i, sc) + reveal - lifted*g.lift
+		var apart float32
+		switch {
+		case out < 0:
+		case i < out:
+			apart = spread
+			y -= spread * (g.peek*1.5 + float32(out-i-1)*g.peek*0.6)
+		case i > out:
+			apart = spread
+			y += spread * (g.peek*2 + float32(i-out-1)*g.peek*0.6)
+		}
+		if shown && i == out {
+			// It is the preview now: where it lies is where the preview
+			// grows from and goes back into.
+			if b := box.Bounds(); b.W > 0 && g.w > 0 {
+				k := b.W / g.w
+				w := g.w - 2*g.pad + lifted*8*s
+				d.previewFrom = ui.Rect{X: b.X + (g.pad-lifted*4*s)*k, Y: b.Y + y*k, W: w * k, H: g.cardH * k}
+			}
+			continue
+		}
 		if float32(i)-sc < -3 || y > g.h || y+g.cardH < 0 {
 			continue
 		}
@@ -716,7 +844,7 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 		if strings.TrimSpace(title) == "" {
 			title = defaultTitle(m)
 		}
-		cards = append(cards, stackCard{n: m, index: i, y: y, lifted: lifted, title: title})
+		cards = append(cards, stackCard{n: m, index: i, y: y, lifted: lifted, apart: apart, title: title})
 	}
 	// Only the cards whose face shows, not covered by the card in front,
 	// load what they hold and lay it out: the others show their header.
@@ -725,10 +853,14 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 			continue
 		}
 		k := &cards[i]
-		if k.n.Kind == kindMemo {
-			d.loadMemo(k.n, d.ensureRuntime(k.n))
+		switch {
+		case k.n.Kind == kindChart:
+			k.chart = d.chartDataOf(k.n)
+		default:
+			if k.md = d.stackFaceMarkdown(k.n); k.md == "" {
+				k.face = d.stackFace(k.n)
+			}
 		}
-		k.face = d.stackFace(k.n)
 	}
 
 	count := len(members)
@@ -737,7 +869,7 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 	case drop:
 		pill = "松手收进这一堆"
 	case out >= 0:
-		pill = fmt.Sprintf("%d / %d · 空格长预览", out+1, count)
+		pill = fmt.Sprintf("%d / %d · 空格长预览 · 长按右上角取出", out+1, count)
 	case open:
 		pill = fmt.Sprintf("%d 张 · 悬停推出 · 上下边缘滚动", count)
 	default:
@@ -753,7 +885,7 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 		radius := 9 * s
 		p.Clip(r, 0, func() {
 			for _, k := range cards {
-				l := k.lifted
+				l := k.lifted - k.apart*0.75 // apart, it steps back
 				card := ui.Rect{
 					X: r.X + g.pad - l*4*s,
 					Y: r.Y + k.y,
@@ -767,8 +899,19 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 				p.Clip(card, radius, func() {
 					// The header: what peeks out of the slot.
 					p.Fill(ui.Rect{X: card.X, Y: card.Y, W: card.W, H: 3 * s}, tint.Alpha(0.85), 0)
+					if k.n == heldCard {
+						// Its corner held: the stripe fills from the
+						// corner until the card comes out.
+						w := card.W * held
+						p.Fill(ui.Rect{X: card.X + card.W - w, Y: card.Y, W: w, H: 3 * s}, t.Accent, 0)
+						p.Fill(ui.Rect{X: card.X + card.W - pluckCornerW*s, Y: card.Y + 3*s, W: pluckCornerW * s, H: g.peek - 3*s},
+							t.Accent.Alpha(0.08+0.1*held), 0)
+					}
 					p.Fill(ui.Rect{X: card.X + 12*s, Y: card.Y + g.peek/2 - 3*s, W: 6 * s, H: 6 * s}, tint, 3*s)
 					label := ui.Span{Text: kindLabel(k.n.Kind), Size: 10 * s, Color: t.TextMuted}
+					if k.n == heldCard {
+						label.Color = t.Accent
+					}
 					lw, _ := p.MeasureText(0, label)
 					right := card.X + card.W - 12*s
 					p.RichText(right-lw, card.Y+g.peek/2-6.5*s, 0, label)
@@ -782,8 +925,42 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 						p.RichText(card.X+14*s, card.Y+g.peek+8*s, card.W-28*s,
 							ui.Span{Text: k.face, Size: 11 * s, Color: t.TextMuted})
 					}
+					if k.chart != nil {
+						chartView{typ: chartTypeOf(k.n), data: k.chart, s: s, t: t, compact: true}.draw(p,
+							ui.Rect{X: card.X + 10*s, Y: card.Y + g.peek + 6*s, W: card.W - 20*s, H: g.cardH - g.peek - 12*s})
+					}
 				})
 			}
+		})
+	})
+	// The faces holding Markdown show it rendered, each clipped to what
+	// the card in front leaves of it.
+	box.Children(func() {
+		for i, k := range cards {
+			if k.md == "" {
+				continue
+			}
+			l := k.lifted - k.apart*0.75
+			top := k.y + g.peek + 1*s
+			bottom := min(k.y+g.cardH-4*s, g.h)
+			if i+1 < len(cards) {
+				bottom = min(bottom, cards[i+1].y)
+			}
+			if bottom-top < 4*s {
+				continue
+			}
+			w := g.w - 2*g.pad + l*8*s - 28*s
+			ui.Box(c.Key("stack-face:"+k.n.ID)).Absolute().
+				Left(g.pad-l*4*s+14*s).Top(top).Size(w, bottom-top).
+				Clip().IgnoreInput(true).Children(func() {
+				ui.Column(c).Width(w).Padding(7*s, 0, 0, 0).Children(func() {
+					markdown.View(c, k.md, d.faceMarkdown(t, 11*s, t.Dark))
+				})
+			})
+		}
+	})
+	box.DrawOver(func(p *ui.Painter, r ui.Rect) {
+		p.Clip(r, 0, func() {
 			// How far the cards are scrolled, when they scroll.
 			if scrollMax > 0 {
 				track := r.H - 2*g.pad
@@ -812,6 +989,9 @@ func (d *deck) stackBody(c *ui.Context, n *block) {
 // dropHere says whether a block being dragged is over st, ready to be
 // let go into it: what the pile highlights as it is dragged over.
 func (d *deck) dropHere(st *block) bool {
+	if p := d.pluck; p != nil && p.active {
+		return d.stackAt(p.at.X, p.at.Y, nil) == st
+	}
 	if d.dragging == nil || d.dragging == st {
 		return false
 	}
@@ -821,17 +1001,21 @@ func (d *deck) dropHere(st *block) bool {
 // stackPreviewView is the long preview space opens: a panel in the
 // window, over the canvas, showing the card on top of a stack at a
 // readable size. It stays until space or escape, or a click outside it.
+// It grows out of the card's place in the pile to the middle of the
+// window, and closed, shrinks back into it (previewLeaving) before the
+// card shows in the pile again.
 func (d *deck) stackPreviewView(c *ui.Context) {
-	st := d.previewStack
+	st := d.previewShown()
 	if st == nil || d.indexOf(st) < 0 {
-		d.previewStack = nil
+		d.previewStack, d.previewLeaving = nil, nil
 		return
 	}
 	idx, members := d.stackPicked(st)
 	if len(members) == 0 {
-		d.previewStack = nil
+		d.previewStack, d.previewLeaving = nil, nil
 		return
 	}
+	open := d.previewStack == st
 	cw, ch := c.Size()
 	w := min(float32(560), cw-48)
 	h := min(float32(620), ch-96)
@@ -839,87 +1023,71 @@ func (d *deck) stackPreviewView(c *ui.Context) {
 	t := c.Theme()
 	top := members[idx]
 
-	ui.Box(c.Key("stack-preview-backdrop")).Absolute().Left(0).Top(0).Size(cw, ch).
-		Background(ui.RGBA(0, 0, 0, 0.34)).
+	backdrop := ui.Box(c.Key("stack-preview-backdrop")).Absolute().Left(0).Top(0).Size(cw, ch)
+	// How far it has grown: 0 the card in the pile, 1 the panel. Just
+	// opened, it starts at the card: the value starts at its first target.
+	target := float32(0)
+	if open && !d.previewFresh {
+		target = 1
+	}
+	if d.previewFresh {
+		d.previewFresh = false
+		c.Invalidate()
+	}
+	k := backdrop.AnimateTo("grow", target, stackPreviewAnim)
+	if !open && k <= 0.002 {
+		d.previewLeaving = nil // back in its card
+		return
+	}
+	backdrop.Background(ui.RGBA(0, 0, 0, 0.34*min(max(k, 0), 1))).
 		HandleInput(func(ev ui.InputEvent) bool {
-			if ev.Kind == ui.InputPointerDown {
-				d.previewStack = nil
+			if ev.Kind == ui.InputPointerDown && d.previewStack != nil {
+				d.closeStackPreview()
 				return true
 			}
 			return false
 		})
 
+	// From the card's box to the panel's, scaled and moved: the panel is
+	// laid out once, at its size.
+	from := d.previewFrom
+	if from.W <= 0 || from.H <= 0 {
+		// The card out of view: it grows from the middle.
+		from = ui.Rect{X: x + w*0.1, Y: y + h*0.1, W: w * 0.8, H: h * 0.8}
+	}
+	cx, cy := from.X+(x-from.X)*k, from.Y+(y-from.Y)*k
+	sx, sy := (from.W+(w-from.W)*k)/w, (from.H+(h-from.H)*k)/h
 	shade := ui.RGBA(0, 0, 0, 0.20)
 	if t.Dark {
 		shade = ui.RGBA(0, 0, 0, 0.5)
 	}
-	ui.Box(c.Key("stack-preview:"+st.ID)).Absolute().Left(x).Top(y).Size(w, h).
-		Background(t.Surface).Border(1, t.Border).Radius(14).
-		Shadow(0, 10, 40, 0, shade).Clip().
-		Children(func() {
-			ui.Row(c).FillWidth().Padding(14, 16).Gap(10).AlignItems(ui.Center).Children(func() {
+	panel := ui.Box(c.Key("stack-preview:"+st.ID)).Absolute().Left(x).Top(y).Size(w, h).
+		Background(t.Surface.Mix(stackTint(top.Kind), 0.1*(1-min(max(k, 0), 1)))).
+		Border(1, t.Border).Radius(14).Shadow(0, 10, 40, 0, shade).Clip()
+	if k < 0.999 {
+		panel = panel.TransformOrigin(0, 0).Scale(sx, sy).Translate(cx-x, cy-y)
+	}
+	if !open {
+		panel = panel.IgnoreInput(true) // going back: the canvas has the pointer
+	}
+	// What it shows comes clear as it grows, and goes as it shrinks.
+	panel.Children(func() {
+		ui.Column(c).Fill().Opacity(min(max((k-0.35)/0.6, 0), 1)).Children(func() {
+			ui.Row(c).FillWidth().Padding(14, 16, 4, 16).Gap(10).AlignItems(ui.Center).Children(func() {
 				ui.Icon(c, kindIcon(top.Kind)).FontSize(18)
-				ui.Column(c).Grow(1).Gap(2).Children(func() {
-					title := top.Title
-					if strings.TrimSpace(title) == "" {
-						title = defaultTitle(top)
-					}
-					ui.Text(c, title).FontSize(16).FontWeight(600).SingleLine().TextColor(t.Text)
-					ui.Textf(c, "%s · 第 %d / %d 张", kindLabel(top.Kind), idx+1, len(members)).
-						FontSize(11).SingleLine().TextColor(t.TextMuted)
-				})
-				stackButton(c, "stack-preview-close:"+st.ID, "关闭", "关闭", "关闭长预览（空格）",
-					func() { d.previewStack = nil })
+				title := top.Title
+				if strings.TrimSpace(title) == "" {
+					title = defaultTitle(top)
+				}
+				ui.Text(c, title).FontSize(16).FontWeight(600).SingleLine().Grow(1).TextColor(t.Text)
 			})
-			ui.Box(c).FillWidth().Height(1).Background(t.Border)
 			ui.Scroll(c.Key("stack-preview-body:"+st.ID)).Grow(1).FillWidth().
-				Padding(16, 20).Children(func() {
+				Padding(12, 20, 16, 20).Children(func() {
 				ui.Column(c).FillWidth().Gap(8).Children(func() {
 					d.stackPreviewBody(c, top, w-40)
 				})
 			})
-			ui.Box(c).FillWidth().Height(1).Background(t.Border)
-			ui.Row(c).FillWidth().Padding(10, 14).Gap(8).AlignItems(ui.Center).Children(func() {
-				stackButton(c, "stack-preview-prev:"+st.ID, "上一张", "‹", "上一张（←）",
-					func() { d.stepStack(st, -1) })
-				stackButton(c, "stack-preview-next:"+st.ID, "下一张", "›", "下一张（→）",
-					func() { d.stepStack(st, 1) })
-				ui.Text(c, "空格或 Esc 关闭").FontSize(11).TextColor(t.TextMuted)
-				ui.Box(c).Grow(1)
-				stackButton(c, "stack-preview-take:"+st.ID, "取出", "取出", "放回画布，堆的这一张空出来",
-					func() {
-						d.stackRemove(st, top)
-						if len(d.stackMembers(st)) == 0 {
-							d.previewStack = nil
-						}
-					})
-			})
 		})
-}
-
-// stackButton is a control of the long preview. It takes its presses
-// itself rather than through ui.Button, which would take the focus and
-// with it the keys the preview listens for.
-func stackButton(c *ui.Context, key, label, text, tip string, onClick func()) ui.Element {
-	t := c.Theme()
-	el := ui.Box(c.Key(key)).Padding(4, 10).Radius(8).Label(label).Tooltip(tip).
-		Cursor(ui.CursorPointer).Background(t.SurfaceHover).Border(1, t.Border)
-	if el.Hovered() {
-		el = el.Background(t.SurfacePressed)
-	}
-	return el.HandleInput(func(ev ui.InputEvent) bool {
-		switch ev.Kind {
-		case ui.InputPointerDown:
-			return ev.Button == 0
-		case ui.InputPointerUp:
-			if ev.Button == 0 {
-				onClick()
-			}
-			return true
-		}
-		return false
-	}).Children(func() {
-		ui.Text(c, text).FontSize(12).SingleLine().TextColor(t.Text)
 	})
 }
 
@@ -937,6 +1105,8 @@ func kindIcon(k blockKind) *ui.SVG {
 		return iconGlobe
 	case kindStack:
 		return iconStack
+	case kindChart:
+		return iconChart
 	}
 	return iconNote
 }
@@ -1040,6 +1210,15 @@ func (d *deck) stackPreviewBody(c *ui.Context, n *block, width float32) {
 		ui.Text(c, cutText(n.URL, 300)).FontSize(13).TextColor(t.Text).Padding(10, 0, 0, 0)
 	case kindStack:
 		ui.Textf(c, "另一个块堆 · %d 个 block", len(d.stackMembers(n))).FontSize(13).TextColor(t.Text)
+	case kindChart:
+		cd, typ := d.chartDataOf(n), chartTypeOf(n)
+		el := ui.Box(c.Key("stack-preview-chart:" + n.ID)).FillWidth().Height(380)
+		hx, hy, over := el.PointerPosition()
+		el.Draw(func(p *ui.Painter, r ui.Rect) {
+			chartView{typ: typ, data: cd, s: 1, t: t,
+				hover: ui.Point{X: r.X + hx, Y: r.Y + hy}, hovering: over}.draw(p, r)
+		})
+		ui.Text(c, chartSummary(n, cd)).FontSize(11).SingleLine().TextColor(t.TextMuted).Padding(8, 0, 0, 0)
 	}
 }
 
@@ -1047,10 +1226,22 @@ func (d *deck) stackPreviewBody(c *ui.Context, n *block, width float32) {
 // with. It is separate from the QuickLook bodies' options: both are on
 // screen at once, at different sizes.
 func (d *deck) stackMarkdown(t *ui.Theme, size float32, dark bool) *markdown.Options {
-	if d.previewMD.Theme == nil || d.previewMDSize != size || d.previewMDDark != dark {
-		d.previewMD.Theme = &markdown.Theme{
+	return stackMDOptions(&d.previewMD, &d.previewMDSize, &d.previewMDDark, t, size, dark, t.Text)
+}
+
+// faceMarkdown is the options a card's face renders Markdown with, in
+// the muted color its face shows in.
+func (d *deck) faceMarkdown(t *ui.Theme, size float32, dark bool) *markdown.Options {
+	return stackMDOptions(&d.faceMD, &d.faceMDSize, &d.faceMDDark, t, size, dark, t.TextMuted)
+}
+
+// stackMDOptions makes o's theme anew when the size or the light or dark
+// changed since it was made.
+func stackMDOptions(o *markdown.Options, oSize *float32, oDark *bool, t *ui.Theme, size float32, dark bool, text ui.Color) *markdown.Options {
+	if o.Theme == nil || *oSize != size || *oDark != dark {
+		o.Theme = &markdown.Theme{
 			FontSize:       size,
-			Text:           t.Text,
+			Text:           text,
 			Muted:          t.TextMuted,
 			Strong:         t.Text,
 			Link:           t.Accent,
@@ -1059,7 +1250,7 @@ func (d *deck) stackMarkdown(t *ui.Theme, size float32, dark bool) *markdown.Opt
 			QuoteBar:       t.Border,
 			QuoteText:      t.TextMuted,
 		}
-		d.previewMDSize, d.previewMDDark = size, dark
+		*oSize, *oDark = size, dark
 	}
-	return &d.previewMD
+	return o
 }
