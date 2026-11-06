@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -299,6 +300,11 @@ type deck struct {
 
 	undo []change
 	redo []change
+
+	// saveMu and saveSeq keep the saves in order: a snapshot marshalled on
+	// the UI thread is written by a goroutine, and only the newest one is.
+	saveMu  sync.Mutex
+	saveSeq uint64
 }
 
 type marquee struct {
@@ -659,13 +665,9 @@ func (d *deck) load() {
 	}
 }
 
-// save writes the workspace atomically: a temporary file, then a rename.
-func (d *deck) save() {
-	path := d.deckFile()
-	if path == "" {
-		return
-	}
-	w := workspace{
+// workspaceSnapshot is the deck as deck.json holds it.
+func (d *deck) workspaceSnapshot() *workspace {
+	return &workspace{
 		Version: 1,
 		Root:    d.root,
 		CamX:    d.cam.X,
@@ -673,18 +675,56 @@ func (d *deck) save() {
 		CamS:    d.cam.S,
 		Blocks:  d.blocks,
 	}
-	data, err := json.MarshalIndent(&w, "", "  ")
+}
+
+// save writes the workspace atomically, here and now: a temporary file,
+// then a rename.
+func (d *deck) save() { d.writeSave(true) }
+
+// requestSave writes the workspace without holding the UI thread for the
+// disk: the state is marshalled here, while it is steady, and written from
+// a goroutine. Only the newest snapshot is written, and never two at once.
+func (d *deck) requestSave() { d.writeSave(false) }
+
+func (d *deck) writeSave(wait bool) {
+	path := d.deckFile()
+	if path == "" {
+		return
+	}
+	data, err := json.MarshalIndent(d.workspaceSnapshot(), "", "  ")
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	d.saveMu.Lock()
+	d.saveSeq++
+	seq := d.saveSeq
+	d.saveMu.Unlock()
+	write := func() {
+		d.saveMu.Lock()
+		defer d.saveMu.Unlock()
+		if seq != d.saveSeq {
+			return // a newer snapshot is there to write
+		}
+		_ = writeFileAtomic(path, data)
+	}
+	if wait || d.win == nil {
+		write()
 		return
+	}
+	go write()
+}
+
+// writeFileAtomic writes data to path through a temporary file and a
+// rename, so that a reader never sees half a file.
+func writeFileAtomic(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return
+		return err
 	}
-	_ = os.Rename(tmp, path)
+	return os.Rename(tmp, path)
 }
 
 func (d *deck) seed() {
