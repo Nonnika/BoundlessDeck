@@ -1,8 +1,24 @@
 package main
 
-import "github.com/egoist/mygo/ui"
+import (
+	goruntime "runtime"
 
-// The window has no title bar of its own (mygo.TitleBarHidden): the
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
+)
+
+// windowTitleBar is the main window's title bar: hidden on macOS, as below;
+// on Windows the system's own, since its window buttons drawn over the
+// canvas would cover the toolbar at the top right. Without a hidden title
+// bar c.TitleBar() is zero: no drag band, and the chrome starts at the edge.
+func windowTitleBar() mygo.TitleBarStyle {
+	if goruntime.GOOS == "windows" {
+		return mygo.TitleBarDefault
+	}
+	return mygo.TitleBarHidden
+}
+
+// On macOS the window has no title bar of its own (mygo.TitleBarHidden): the
 // canvas and the home screen run up to its top edge, under the traffic
 // lights, which sit level with the deck's top row (trafficLights).
 //

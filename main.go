@@ -32,8 +32,9 @@ func main() {
 			MinHeight:       420,
 			BackgroundColor: "light-dark(#f6f7f9, #0f1115)",
 			StateKey:        "main",
-			// The canvas runs up under the traffic lights (titlebar.go).
-			TitleBarStyle:        mygo.TitleBarHidden,
+			// macOS: the canvas runs up under the traffic lights; Windows
+			// keeps its title bar (titlebar.go).
+			TitleBarStyle:        windowTitleBar(),
 			TrafficLightPosition: &mygo.Point{X: trafficLights.X, Y: trafficLights.Y},
 			Content:              ui.View(a.view),
 		})

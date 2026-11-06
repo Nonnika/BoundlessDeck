@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo"
@@ -82,5 +83,39 @@ func TestShortcutsWindowListsEveryMenuKey(t *testing.T) {
 		if !listed[want] {
 			t.Fatalf("the window does not list %s", want)
 		}
+	}
+}
+
+// TestMenuBarHasSettingsAndHelpOffMac: MyGo hides RoleHelp off macOS, and
+// its submenu with it; there the bar carries 设置 (clicked straight) and a
+// plain 帮助 with 键盘快捷键.
+func TestMenuBarHasSettingsAndHelpOffMac(t *testing.T) {
+	was := menuForMac
+	defer func() { menuForMac = was }()
+	menuForMac = false
+	a := &app{}
+	a.buildMenu()
+	var labels []string
+	var help, settings *mygo.MenuItem
+	for _, it := range a.menuItems {
+		if it.Role == mygo.RoleAppMenu {
+			continue
+		}
+		labels = append(labels, it.Label)
+		switch it.Label {
+		case "帮助":
+			help = it
+		case "设置":
+			settings = it
+		}
+	}
+	if got := strings.Join(labels, " "); got != "文件 新建 编辑 视图 窗口 设置 帮助" {
+		t.Fatalf("bar = %q", got)
+	}
+	if settings.Click == nil || settings.Submenu != nil {
+		t.Fatal("设置 on the bar should be clicked straight, with no submenu")
+	}
+	if help.Role != "" || len(help.Submenu) == 0 || help.Submenu[0].ID != "shortcuts" {
+		t.Fatalf("帮助 = role %q, %d items: want a plain menu with 键盘快捷键", help.Role, len(help.Submenu))
 	}
 }

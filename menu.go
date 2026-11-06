@@ -48,6 +48,11 @@ func deckItems() []string {
 }
 
 // buildMenu makes the menu bar of the app.
+// menuForMac builds the menu as macOS has it (an app menu, 帮助 by its
+// role); elsewhere 设置 and 帮助 are plain items of the bar. A variable so
+// tests on one platform build the other's.
+var menuForMac = goruntime.GOOS == "darwin"
+
 func (a *app) buildMenu() *mygo.Menu {
 	// onDeck runs fn on the deck open, as the window's frames do.
 	onDeck := func(fn func(d *deck)) func(*mygo.MenuItem, *mygo.Window) {
@@ -70,7 +75,7 @@ func (a *app) buildMenu() *mygo.Menu {
 			a.win.Update(a.showSettings)
 		}
 	}}
-	mac := goruntime.GOOS == "darwin"
+	mac := menuForMac
 
 	file := []*mygo.MenuItem{
 		{Label: "打开文件夹…", Accelerator: "CmdOrCtrl+O", Click: func(*mygo.MenuItem, *mygo.Window) {
@@ -162,7 +167,18 @@ func (a *app) buildMenu() *mygo.Menu {
 		{Label: "编辑", Submenu: edit},
 		{Label: "视图", Submenu: view},
 		{Role: mygo.RoleWindowMenu, Label: "窗口"},
-		{Role: mygo.RoleHelp, Label: "帮助", Submenu: help},
+	}
+	if mac {
+		a.menuItems = append(a.menuItems, &mygo.MenuItem{Role: mygo.RoleHelp, Label: "帮助", Submenu: help})
+	} else {
+		// MyGo drops RoleHelp off macOS (it is the menu with the search
+		// field there), and its submenu with it: a plain 帮助 instead. And
+		// 设置 on the bar itself, clicked straight, as there is no app menu
+		// to find it in; 文件 keeps 设置… for its Ctrl+, (a bar item shows
+		// no keys).
+		a.menuItems = append(a.menuItems,
+			&mygo.MenuItem{ID: "settings-bar", Label: "设置", Click: settings.Click},
+			&mygo.MenuItem{Label: "帮助", Submenu: help})
 	}
 	a.menu = mygo.NewMenu(a.menuItems)
 	return a.menu
