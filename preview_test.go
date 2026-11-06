@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -64,6 +65,7 @@ func TestFilesPreviewByKind(t *testing.T) {
 	if goruntime.GOOS != "darwin" {
 		t.Skip("PDFs render on macOS")
 	}
+	holdZoom(t)
 	d := previewDeck(t)
 	tt := ui.NewTester(d.view, 1100, 700)
 	tt.Frame()
@@ -95,9 +97,14 @@ func TestFilesPreviewByKind(t *testing.T) {
 	if pdf.Page != 1 || !tt.HasText("2 / 2") || pdf.rt.pdfPage != 1 {
 		t.Fatalf("after next: page %d, rendered %d", pdf.Page, pdf.rt.pdfPage)
 	}
-	// Zoomed in, the page renders again, sharper.
+	// Zoomed in, the page renders again, sharper, once the zoom rests.
 	before := pdf.rt.pdfPx
 	tt.Pinch(500, 350, 2)
+	tt.Frame()
+	if pdf.rt.pdfPx != before {
+		t.Fatalf("mid-pinch the page rendered again, %d px wide", pdf.rt.pdfPx)
+	}
+	d.zoomSettle = time.Time{}
 	tt.Frame()
 	tt.Frame()
 	if pdf.rt.pdfPx <= before {

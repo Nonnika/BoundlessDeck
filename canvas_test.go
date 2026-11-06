@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -319,6 +320,13 @@ func TestClickEditsAQuickLookBody(t *testing.T) {
 	tt.Frame()
 
 	// Block a is 200×120 at (100, 80): its body is below the title bar.
+	// The first click focuses its preview, the next edits it.
+	tt.ClickAt(200, 160)
+	tt.Frame()
+	tt.Frame()
+	if d.editing != nil || d.focusBlock != "a" {
+		t.Fatalf("first click: editing %v, focus %q; want the preview focused", d.editing, d.focusBlock)
+	}
 	tt.ClickAt(200, 160)
 	tt.Frame()
 	tt.Frame()
@@ -769,5 +777,87 @@ func TestEveryBlocksTitleCanBeRenamed(t *testing.T) {
 	e.load()
 	if e.blocks[0].Title != "会议记录" || !e.blocks[0].Named {
 		t.Fatalf("loaded %q named %v", e.blocks[0].Title, e.blocks[0].Named)
+	}
+}
+
+// Crossing the LOD threshold, a card's content blurs away, or comes clear
+// from a blur, rather than popping out or in.
+func TestCardContentFadesAcrossTheLODThreshold(t *testing.T) {
+	d := testDeck(t)
+	const body = "点击编辑，支持 Markdown" // what an empty QuickLook body shows
+	tt := ui.NewTester(d.view, 900, 600)
+	tt.Frame()
+	if !tt.HasText(body) {
+		t.Fatal("above the threshold, the body does not show")
+	}
+
+	d.cam.S = 0.2
+	tt.Frame()
+	if !tt.HasText(body) {
+		t.Fatal("the body went at once: no fade")
+	}
+	tt.Advance(contentFade + 50*time.Millisecond)
+	tt.Frame()
+	tt.Frame()
+	if tt.HasText(body) {
+		t.Fatal("faded out, the body is still built")
+	}
+
+	d.cam.S = 1
+	tt.Frame()
+	if !tt.HasText(body) {
+		t.Fatal("coming back, the body is not built at once")
+	}
+}
+
+// A QuickLook's preview is live: not focused, a pan over it moves the
+// canvas; a click focuses it, and the wheel then scrolls its text.
+func TestAQuickLookPreviewScrollsOnceFocused(t *testing.T) {
+	d := testDeck(t)
+	a := d.blocks[0]
+	a.Text = strings.Repeat("一行字\n\n", 60)
+	tt := ui.NewTester(d.view, 900, 600)
+	tt.Frame()
+
+	tt.Scroll(200, 160, 0, 40)
+	tt.Frame()
+	if abs(d.cam.Y-40) > 0.01 {
+		t.Fatalf("camera at y %v, want 40: the unfocused note took the pan", d.cam.Y)
+	}
+	time.Sleep(gestureHold) // that pan is over
+	tt.Frame()
+
+	x, y := d.cam.toScreen(a.X+a.W/2, a.Y+a.H/2)
+	tt.ClickAt(x, y)
+	tt.Frame()
+	tt.Frame()
+	if d.focusBlock != a.ID || d.editing != nil {
+		t.Fatalf("focus %q, editing %v: want the preview focused, not edited", d.focusBlock, d.editing)
+	}
+	camY := d.cam.Y
+	tt.Scroll(x, y, 0, 40)
+	tt.Frame()
+	if d.cam.Y != camY {
+		t.Fatalf("camera moved to y %v: the focused preview did not take the wheel", d.cam.Y)
+	}
+	if a.rt.liveScroll.Y <= 0 {
+		t.Fatalf("the preview scrolled to %v, want down", a.rt.liveScroll.Y)
+	}
+	if !tt.HasText("一行字") {
+		t.Fatal("the preview shows no text")
+	}
+
+	// Escape ends an edit with the preview still focused.
+	tt.ClickAt(x, y)
+	tt.Frame()
+	tt.Frame()
+	if d.editing != a {
+		t.Fatal("a click on the focused preview did not edit it")
+	}
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	tt.Frame()
+	if d.editing != nil || d.focusBlock != a.ID {
+		t.Fatalf("after Escape: editing %v, focus %q", d.editing, d.focusBlock)
 	}
 }
