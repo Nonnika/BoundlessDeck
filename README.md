@@ -10,6 +10,8 @@
 
 ## 运行
 
+常用任务都在 `Makefile` 里，`make` 列出全部（`make dev`、`make build-windows`、`make check`……）。
+
 ```sh
 go tool mygo dev ./app    # 开发模式，改 .go 自动重启
 go tool mygo build ./app  # 打包到 build/<os>-<arch>/

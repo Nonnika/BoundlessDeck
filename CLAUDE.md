@@ -10,6 +10,8 @@ Product/architecture docs (Chinese): `docs/requirements.md` (v0.2 native archite
 
 ## Commands
 
+The `Makefile` wraps these (`make` lists its tasks; `make check` = fmt-check + vet + test before a commit).
+
 ```sh
 go tool mygo dev ./app                                   # run in dev mode; restarts on .go changes
 go tool mygo build ./app                                 # package into build/<os>-<arch>/ (config in app/mygo.json)
