@@ -356,13 +356,39 @@ const homeTop = 96
 
 func (a *app) homeHead(c *ui.Context, t *ui.Theme) {
 	ui.Column(c).Gap(12).Children(func() {
-		// Pulled together: Deck's line box has room above its capitals.
-		ui.Column(c).Gap(-14).Children(func() {
-			boundlessWord(c, t)
-			ui.Text(c, "Deck").FontSize(96).FontWeight(800).LetterSpacing(-3).LineHeight(0.9).
-				TextColor(t.Text)
+		ui.Row(c).Gap(20).AlignItems(ui.End).Children(func() {
+			// Pulled together: Deck's line box has room above its capitals.
+			ui.Column(c).Gap(-14).Children(func() {
+				boundlessWord(c, t)
+				ui.Text(c, "Deck").FontSize(96).FontWeight(800).LetterSpacing(-3).LineHeight(0.9).
+					TextColor(t.Text)
+			})
+			robotMark(c, t, 88)
 		})
 		endless(c, t)
+	})
+}
+
+// robotMark is the robot of the app icon (resources/icon.svg): a dark
+// face with two eyes in a halo fading downward, size wide and tall.
+func robotMark(c *ui.Context, t *ui.Theme, size float32) {
+	halo, inner := ui.Hex("#d9e2fc"), ui.RGBA(255, 255, 255, 1)
+	face, eye := ui.Hex("#202129"), ui.RGB(255, 255, 255)
+	if t.Dark {
+		halo, inner = t.Accent.Alpha(0.35), ui.RGBA(255, 255, 255, 0.08)
+		face, eye = ui.Hex("#e8eaf2"), ui.Hex("#202129")
+	}
+	// The icon's robot is drawn on a 252-wide halo.
+	k := size / 252
+	ui.Box(c).Size(size, size).Label("BoundlessDeck").Draw(func(p *ui.Painter, r ui.Rect) {
+		at := func(x, y, w, h float32) ui.Rect {
+			return ui.Rect{X: r.X + x*k, Y: r.Y + y*k, W: w * k, H: h * k}
+		}
+		p.FillGradient(r, ui.LinearGradient{From: halo, To: halo.Alpha(0), Angle: 180, End: 0.95}, size/2)
+		p.FillGradient(at(20, 24, 212, 212), ui.LinearGradient{From: inner, To: inner.Alpha(0), Angle: 180}, 106*k)
+		p.Fill(at(48, 92, 156, 94), face, 47*k)
+		p.Fill(at(91, 120, 20, 40), eye, 10*k)
+		p.Fill(at(141, 120, 20, 40), eye, 10*k)
 	})
 }
 
