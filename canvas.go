@@ -4,6 +4,7 @@ import (
 	"math"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -445,19 +446,54 @@ func (d *deck) homePill(c *ui.Context) {
 	if t.Dark {
 		shade = ui.RGBA(0, 0, 0, 0.4)
 	}
-	ui.Row(c).Absolute().Top(chromeTop).Left(chromeLeft(c)).Padding(5).
-		Background(t.Surface).Border(1, t.Border).Radius(12).Shadow(0, 4, 16, 0, shade).
-		Children(func() {
-			ui.Button(c.Key("go-home"), "").Label("返回主页").Tooltip("保存并返回主页（"+shortPath(d.root)+"）").
-				Padding(5, 10, 5, 6).Gap(6).Radius(8).
-				Children(func() {
-					ui.Icon(c, iconBack).FontSize(15)
-					ui.Icon(c, iconFolder).FontSize(15)
-					ui.Text(c, filepath.Base(d.root)).FontSize(12).FontWeight(600).SingleLine()
-				}).
-				OnClick(d.onHome)
-		})
+	// A toolbar, as the one at the right: its buttons have no face of
+	// their own until hovered, the pill's alone shows.
+	ui.Toolbar(c, func() {
+		ui.Button(c.Key("go-home"), "").Label("返回主页").Tooltip("保存并返回主页").
+			Padding(5, 7).Radius(8).
+			Children(func() { ui.Icon(c, iconBack).FontSize(15) }).
+			OnClick(d.onHome)
+		ws := ui.ButtonBase(c.Key("workspace")).Label("切换工作区").Tooltip(shortPath(d.root)+" · 点击切换工作区").
+			Padding(5, 8, 5, 8).Gap(6).Radius(8).Row().AlignItems(ui.Center)
+		if ws.Hovered() {
+			ws = ws.Background(t.SurfaceHover)
+		}
+		ws.Children(func() {
+			ui.Icon(c, iconFolder).FontSize(15)
+			ui.Text(c, filepath.Base(d.root)).FontSize(12).FontWeight(600).SingleLine()
+			ui.Icon(c, iconChevronDown).FontSize(13).TextColor(t.TextMuted)
+		}).Menu(d.workspaceMenu)
+	}).Label("工作区").Absolute().Top(chromeTop).Left(chromeLeft(c)).Padding(5).Gap(2).
+		Background(t.Surface).Border(1, t.Border).Radius(12).Shadow(0, 4, 16, 0, shade)
 }
+
+// workspaceMenu lists the workspaces opened lately, this one checked, to
+// switch to, and opens another. Home is the pill's back button.
+func (d *deck) workspaceMenu(m *ui.Menu) {
+	var paths []string
+	if d.workspaces != nil {
+		paths = d.workspaces()
+	}
+	if !slices.Contains(paths, d.root) {
+		paths = append([]string{d.root}, paths...)
+	}
+	for i, path := range paths {
+		if i == maxWorkspaceItems {
+			break
+		}
+		label := filepath.Base(path) + "    " + shortPath(filepath.Dir(path))
+		if m.Item(label).Checked(path == d.root).Chosen() && path != d.root && d.onOpen != nil {
+			d.onOpen(path)
+		}
+	}
+	m.Separator()
+	if m.Item("打开文件夹…").Shortcut(ui.Cmd, ui.KeyO).Chosen() && d.onPick != nil {
+		d.onPick()
+	}
+}
+
+// maxWorkspaceItems is how many workspaces the menu lists.
+const maxWorkspaceItems = 12
 
 // statusBar shows the zoom and what is selected, at the window's bottom left.
 func (d *deck) statusBar(c *ui.Context) {

@@ -235,6 +235,12 @@ type deck struct {
 	file      string
 	// onHome closes the deck for the home screen; nil in tests.
 	onHome func()
+	// The workspace menu of the home pill: the folders opened lately,
+	// the latest first (this one among them), opening one of them, and
+	// asking for another. Nil in tests that leave them out.
+	workspaces func() []string
+	onOpen     func(path string)
+	onPick     func()
 
 	cam camera
 	// lay is the camera the blocks were laid out with, the same as cam

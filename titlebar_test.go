@@ -12,7 +12,7 @@ import (
 func TestTheDeckRunsUnderTheTitleBar(t *testing.T) {
 	d := testDeck(t)
 	d.onHome = func() {}
-	d.blocks[0].Y = 2 // its title bar in the band
+	d.blocks[0].X, d.blocks[0].Y = 420, 2 // its title bar in the band, clear of the pill
 	tt := ui.NewTester(d.view, 1100, 700)
 	tt.SetTitleBar(ui.TitleBar{Height: 61, Left: 78})
 	tt.Frame()
@@ -24,8 +24,8 @@ func TestTheDeckRunsUnderTheTitleBar(t *testing.T) {
 	// Empty canvas in the band: the canvas leaves the press alone, so the
 	// selection stays (a press on the canvas would clear it).
 	d.sel = map[string]bool{"b": true}
-	tt.Press(500, 30)
-	tt.Release(500, 30)
+	tt.Press(300, 30) // left of the toolbar
+	tt.Release(300, 30)
 	if !d.sel["b"] {
 		t.Fatal("a press on the canvas in the title bar's band was the canvas's")
 	}

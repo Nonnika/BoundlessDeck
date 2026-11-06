@@ -176,6 +176,9 @@ func (a *app) openFolder(path string) {
 	d.file = filepath.Join(path, deckDir, "deck.json")
 	d.win = a.win
 	d.onHome = a.beginHome
+	d.workspaces = a.recentPaths
+	d.onOpen = a.beginOpen
+	d.onPick = func() { go a.pickFolder() }
 	d.load()
 	// The workspace carries its own MCP: opened, it serves this deck's
 	// canvas, becomes the deck the global install follows and, if the
@@ -254,6 +257,18 @@ func (a *app) touch(path string, blocks int) {
 	}
 	a.recents = out
 	a.saveRecents()
+}
+
+// recentPaths are the folders opened lately that are still there, the
+// latest first: the workspaces the deck's menu switches to.
+func (a *app) recentPaths() []string {
+	out := make([]string, 0, len(a.recents))
+	for _, r := range a.recents {
+		if !r.missing {
+			out = append(out, r.Path)
+		}
+	}
+	return out
 }
 
 func (a *app) forget(path string) {

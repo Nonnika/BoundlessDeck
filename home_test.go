@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -276,5 +277,42 @@ func TestGoingHomeBlursOutAndHomeComesClear(t *testing.T) {
 	tt.Frame()
 	if a.blur != 0 || !tt.HasText(filepath.Base(dir)) {
 		t.Fatalf("home blurred %v, shows %q", a.blur, tt.Texts())
+	}
+}
+
+// The workspace's name at the top left lists the folders opened lately:
+// choosing one switches to it.
+func TestTheWorkspaceMenuSwitchesWorkspaces(t *testing.T) {
+	a := testApp(t)
+	first, second := filepath.Join(t.TempDir(), "甲"), filepath.Join(t.TempDir(), "乙")
+	for _, dir := range []string{first, second} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.openFolder(first)
+	a.openFolder(second)
+	tt := ui.NewTester(a.view, 1100, 700)
+	tt.Frame()
+
+	if err := tt.Click("切换工作区"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	items := tt.Menu()
+	want := []string{
+		"乙    " + shortPath(filepath.Dir(second)), "甲    " + shortPath(filepath.Dir(first)),
+		"-", "打开文件夹…",
+	}
+	if strings.Join(items, "|") != strings.Join(want, "|") {
+		t.Fatalf("the menu lists %q, want %q", items, want)
+	}
+	if err := tt.ChooseMenuItem(want[1]); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	tt.Frame()
+	if a.deck == nil || a.deck.root != first {
+		t.Fatalf("choosing 甲 opened %v", a.deck)
 	}
 }
