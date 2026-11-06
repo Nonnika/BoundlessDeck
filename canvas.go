@@ -47,6 +47,12 @@ func (d *deck) view(c *ui.Context) {
 	// turn its cards.
 	d.stackKeys(c)
 
+	// QuickLook blocks whose time is up go; the frame comes again when
+	// the next goes or its time left reads otherwise.
+	if wake := d.expireNotes(); wake > 0 {
+		c.After(wake)
+	}
+
 	d.settleLayer(c)
 	ui.Box(c).Fill().Background(t.Background).Children(func() {
 		ui.Box(c).Fill().Clip().
@@ -364,7 +370,7 @@ func (d *deck) toolbar(c *ui.Context) {
 		shade = ui.RGBA(0, 0, 0, 0.4)
 	}
 	ui.Toolbar(c, func() {
-		if toolButton(c.Key("new-note"), iconNote, "QuickLook", "新建 QuickLook（"+newKeyOf(kindNote)+"，或在空白处双击）").Clicked() {
+		if toolButton(c.Key("new-note"), iconNote, "QuickLook", "新建 QuickLook（"+newKeyOf(kindNote)+"，或在空白处双击）· 默认 1 小时后消失").Clicked() {
 			d.addAtCenter(c, kindNote)
 		}
 		if toolButton(c.Key("new-memo"), iconMemo, "笔记", "新建笔记：在工作目录里建一个 Markdown 文件（"+newKeyOf(kindMemo)+"）").Clicked() {
@@ -531,6 +537,7 @@ func (d *deck) addAt(kind blockKind, sx, sy float32) *block {
 	switch kind {
 	case kindNote:
 		b.Title = "QuickLook"
+		b.Expires = d.now().Add(noteLife).UnixMilli()
 	case kindFile:
 		b.Title = "文件"
 		b.W, b.H = 560, 420

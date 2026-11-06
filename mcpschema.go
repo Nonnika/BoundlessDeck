@@ -11,20 +11,23 @@ package main
 // mcpSchemaVersion is the version of this schema: bumped when a field's
 // name, type or meaning changes, so that a client that cached the schema
 // knows to read it again.
-const mcpSchemaVersion = 2
+const mcpSchemaVersion = 3
 
 // mcpField is one field of a block as the MCP sees it. Mutable fields are
 // writable through update_block (and create_block when OnCreate); the rest
 // are read-only.
 type mcpField struct {
-	Name        string      `json:"name"`
-	Type        string      `json:"type"` // string, number, integer, boolean, object
-	Mutable     bool        `json:"mutable"`
-	OnCreate    bool        `json:"onCreate,omitempty"`
-	Kinds       []blockKind `json:"kinds,omitempty"` // empty: every kind
-	Min         *float64    `json:"min,omitempty"`
-	Enum        []string    `json:"enum,omitempty"`
-	Description string      `json:"description"`
+	Name     string      `json:"name"`
+	Type     string      `json:"type"` // string, number, integer, boolean, object
+	Mutable  bool        `json:"mutable"`
+	OnCreate bool        `json:"onCreate,omitempty"`
+	Kinds    []blockKind `json:"kinds,omitempty"` // empty: every kind
+	Min      *float64    `json:"min,omitempty"`
+	Enum     []string    `json:"enum,omitempty"`
+	// Derived fields are not kept in a block: they read and write another
+	// field in other terms (ttlMinutes is expires counted from now).
+	Derived     bool   `json:"derived,omitempty"`
+	Description string `json:"description"`
 }
 
 func mcpNum(v float64) *float64 { return &v }
@@ -74,6 +77,16 @@ var mcpFields = []mcpField{
 		Name: "text", Type: "string", Mutable: true, OnCreate: true,
 		Kinds:       []blockKind{kindNote, kindMemo},
 		Description: "正文（Markdown）。note 存在 deck 里；memo 直接写进它的文件（覆盖整个文件），读 memo 的内容请读 absPath 指向的文件。",
+	},
+	{
+		Name: "expires", Type: "integer", Mutable: true, OnCreate: true, Min: mcpNum(0),
+		Kinds:       []blockKind{kindNote},
+		Description: "QuickLook 自动消失的时刻，Unix 毫秒；0 为永久保留。新建 note 不给时默认 1 小时后消失。到时它会被删除（用户可 ⌘Z 找回）；关闭期间到期的在打开 deck 时直接移除。只想说“多久后消失”时用 ttlMinutes。",
+	},
+	{
+		Name: "ttlMinutes", Type: "number", Mutable: true, OnCreate: true, Min: mcpNum(0), Derived: true,
+		Kinds:       []blockKind{kindNote},
+		Description: "从现在起多少分钟后消失（可带小数），写入时换算成 expires；0 为永久保留。读出的是剩余分钟数（保留一位小数，永久的为 0）。不能与 expires 同时给。",
 	},
 	{
 		Name: "page", Type: "integer", Mutable: true, OnCreate: true, Min: mcpNum(0),

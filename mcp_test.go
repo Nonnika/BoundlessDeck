@@ -100,6 +100,14 @@ func TestMCPSchemaCoversEveryBlockField(t *testing.T) {
 			t.Errorf("block 的字段 %q（%s）没有在 mcpFields 里描述", name, typ.Field(i).Name)
 		}
 	}
+	for _, f := range mcpFields {
+		if f.Derived {
+			if seen[f.Name] {
+				t.Errorf("派生字段 %q 不该存在 block 里", f.Name)
+			}
+			seen[f.Name] = true
+		}
+	}
 	for name := range known {
 		if !seen[name] {
 			t.Errorf("mcpFields 描述了 block 没有的字段 %q", name)

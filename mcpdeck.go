@@ -135,6 +135,14 @@ func (d *deck) mcpFieldsJSON(n *block) map[string]any {
 	switch n.Kind {
 	case kindNote:
 		out["text"] = n.Text
+		out["expires"] = n.Expires
+		out["ttlMinutes"] = 0.0
+		if at, ok := expiresAt(n); ok {
+			out["expiresAt"] = at.Format(time.RFC3339)
+			// Rounded up, so a block with any time left never reads as kept.
+			left := at.Sub(d.now()).Minutes()
+			out["ttlMinutes"] = max(math.Ceil(left*10)/10, 0.1)
+		}
 	case kindMemo:
 		out["path"] = n.Path
 		if n.Path != "" && !filepath.IsAbs(n.Path) {
@@ -183,6 +191,9 @@ func (d *deck) mcpValidatePatch(kind blockKind, patch mcpArgs) error {
 			return fmt.Errorf("%s block 不能写字段 %q（可写：%s）",
 				kind, name, strings.Join(mcpMutableNames(kind), ", "))
 		}
+	}
+	if patch.has("ttlMinutes") && patch.has("expires") {
+		return fmt.Errorf("expires 与 ttlMinutes 只能给一个")
 	}
 	probe := &block{Kind: kind}
 	for _, f := range mcpFields {
@@ -276,6 +287,27 @@ func (d *deck) mcpApplyField(n *block, name string, raw json.RawMessage, dry boo
 			n.W = max(float32(f), minBlockW)
 		} else {
 			n.H = max(float32(f), minBlockH)
+		}
+	case "expires":
+		ms, err := rawInt(raw, name)
+		if err != nil {
+			return err
+		}
+		if ms < 0 {
+			return fmt.Errorf("expires 不能为负；0 为永久保留")
+		}
+		n.Expires = int64(ms)
+	case "ttlMinutes":
+		m, err := rawFloat(raw, name)
+		if err != nil {
+			return err
+		}
+		if m < 0 {
+			return fmt.Errorf("ttlMinutes 不能为负；0 为永久保留")
+		}
+		n.Expires = 0
+		if m > 0 {
+			n.Expires = d.now().Add(time.Duration(m * float64(time.Minute))).UnixMilli()
 		}
 	case "text":
 		s, err := rawString(raw, name)
@@ -442,6 +474,9 @@ func (d *deck) mcpCreateBlock(args mcpArgs) (map[string]any, error) {
 	applied, err := d.mcpPatchBlock(b, patch)
 	if err != nil {
 		return nil, err
+	}
+	if kind == kindNote && !patch.has("expires") && !patch.has("ttlMinutes") {
+		b.Expires = d.now().Add(noteLife).UnixMilli()
 	}
 	if kind == kindMemo {
 		// Its file, unless a path or a text already made it.

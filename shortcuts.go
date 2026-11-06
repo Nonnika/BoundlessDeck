@@ -44,6 +44,8 @@ var gestureGroups = []shortcutGroup{
 	}},
 	{"QuickLook 与笔记", []shortcutRow{
 		{"结束编辑", []string{"⌘↩ / Esc"}},
+		{"QuickLook 消失时间", []string{"点击标题栏右侧的剩余时间"}},
+		{"找回刚消失的 QuickLook", []string{"⌘Z"}},
 	}},
 }
 

@@ -70,6 +70,9 @@ type block struct {
 	// Term is what a terminal block kept of its terminal as the deck
 	// closed, to start a new one from.
 	Term *termState `json:"term,omitempty"`
+	// Expires is when a QuickLook block goes by itself, in Unix ms; 0
+	// keeps it (lifespan.go).
+	Expires int64 `json:"expires,omitempty"`
 	// Items are the blocks a 块堆 holds, by ID, the top card first. A
 	// block in a stack stays in the deck but is not drawn on the canvas.
 	Items []string `json:"items,omitempty"`
@@ -222,9 +225,14 @@ const (
 
 // deck is the app's state: the window, the workspace and the camera.
 type deck struct {
-	win  *mygo.Window
-	root string // the deck's folder: file blocks' paths are relative to it
-	file string
+	win *mygo.Window
+	// clock is the time QuickLook blocks go by (lifespan.go): the wall
+	// clock when nil. lifeAsked is the block whose time-left menu was
+	// last asked for.
+	clock     func() time.Time
+	lifeAsked *block
+	root      string // the deck's folder: file blocks' paths are relative to it
+	file      string
 	// onHome closes the deck for the home screen; nil in tests.
 	onHome func()
 
@@ -492,6 +500,7 @@ func (d *deck) undoLast() {
 	case changeRemove:
 		d.attach(c.index, c.block)
 		d.sel = map[string]bool{c.block.ID: true}
+		d.rescueNote(c.block) // a QuickLook that went gets more time
 	case changeMoves:
 		for i := len(c.moves) - 1; i >= 0; i-- {
 			m := c.moves[i]
@@ -789,6 +798,7 @@ func (d *deck) load() {
 			n.Kind = kindNote
 		}
 	}
+	d.dropExpired()
 	d.pruneStacks()
 }
 

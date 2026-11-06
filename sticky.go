@@ -197,6 +197,9 @@ func (d *deck) stickyView(c *ui.Context, n *block) {
 			p.FillPath(&flap, pp.flap)
 		}).
 		HandleInput(func(ev ui.InputEvent) bool { return d.onBlockInput(ev, n) })
+	if o := d.noteOpacity(n); o < 1 {
+		card = card.Opacity(o) // its time is nearly up
+	}
 
 	shown := d.contentShown(card) // its body comes and goes blurred
 	if shown <= 0 {
@@ -226,6 +229,7 @@ func (d *deck) stickyView(c *ui.Context, n *block) {
 			}
 			ui.Text(c, n.Title).FontSize(titleSize).FontWeight(600).SingleLine().Grow(1).
 				TextColor(pp.text)
+			d.lifeChip(c, n, pp, s)
 		})
 		body := fadeContent(ui.Box(c).Grow(1).FillWidth().Clip(), shown)
 		if editing && d.editPart == editBody {

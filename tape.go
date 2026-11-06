@@ -111,6 +111,9 @@ func (d *deck) tapeView(c *ui.Context, n *block) {
 			drawTape(p, tp, r.X-b.X, r.Y-b.Y, tapeLook{hovered, held, selected, t.Dark, t.Accent})
 		}).
 		HandleInput(func(ev ui.InputEvent) bool { return d.onTapeInput(ev, n) })
+	if o := d.noteOpacity(n); o < 1 {
+		el.Opacity(o) // it fades with its QuickLook block
+	}
 }
 
 // tapeLook is the state a tape is drawn in.
