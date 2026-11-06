@@ -196,6 +196,13 @@ func (d *deck) onTapeInput(ev ui.InputEvent, n *block) bool {
 	case ui.InputPointerUp:
 		if d.dragging == n {
 			d.dragging = nil
+			if d.dragMoved {
+				// Let go of a block over a stack: the stack takes it.
+				if st := d.stackAt(px, py, n); st != nil {
+					d.stackAdd(st, n)
+					return true
+				}
+			}
 		}
 		return true
 	}

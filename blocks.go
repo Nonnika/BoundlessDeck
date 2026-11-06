@@ -32,6 +32,11 @@ func (d *deck) blockView(c *ui.Context, n *block) {
 		card = card.Border(1, t.Border)
 	}
 	card = card.Clip().HandleInput(func(ev ui.InputEvent) bool { return d.onBlockInput(ev, n) })
+	if n.Kind == kindStack {
+		// A click on the pile takes the focus from the toolbar, so that
+		// space opens its preview rather than pressing the last button.
+		card = card.Focusable().Bind(&d.ensureRuntime(n).stackFocus)
+	}
 
 	// Below the LOD threshold a card is its frame and its title alone: no
 	// editor, no terminal, no bitmaps. Its content comes and goes blurred.
@@ -141,6 +146,8 @@ func (d *deck) body(c *ui.Context, n *block) {
 		d.terminalBody(c, n)
 	case kindBrowser:
 		d.browserBody(c, n)
+	case kindStack:
+		d.stackBody(c, n)
 	}
 }
 

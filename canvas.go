@@ -42,29 +42,54 @@ func (d *deck) view(c *ui.Context) {
 			d.deleteSelected()
 		}
 	}
+	// Space previews the selected 块堆 for as long as it is open; arrows
+	// turn its cards.
+	d.stackKeys(c)
 
+	d.settleLayer(c)
 	ui.Box(c).Fill().Background(t.Background).Children(func() {
 		ui.Box(c).Fill().Clip().
 			Draw(func(p *ui.Painter, r ui.Rect) { d.drawGrid(p, r, t) }).
 			HandleInput(d.onCanvasInput).
 			Children(func() {
-				d.editSeen = false
-				for _, n := range d.visible(cw, ch) {
-					d.tapeView(c, n) // behind the block
-					d.blockView(c, n)
-					d.resizeView(c, n)
+				// Under the blocks: empty canvas at the top drags the window.
+				dragBand(c, d.dragBand)
+				// The blocks, laid out with the layout camera, scaled to
+				// the canvas's zoom while it goes on (zoomlayer.go).
+				built = d.visible(cw, ch)
+				layer := ui.Box(c.Key("blocks")).Absolute().Left(0).Top(0).Fill()
+				if d.layerMoved() {
+					k := d.layerScale()
+					ox, oy := d.layerOffset()
+					layer = layer.TransformOrigin(0, 0).Scale(k, k).Translate(ox, oy)
+					if d.layerCached(built) {
+						layer = layer.Cache()
+					}
 				}
-				// The block edited went: off the canvas, out of view, or
-				// too small to show its body.
-				if d.editing != nil && !d.editSeen {
-					d.stopEditing()
-				}
-				d.marqueeView(c)
+				layer.Children(func() {
+					d.editSeen = false
+					for _, n := range built {
+						d.tapeView(c, n) // behind the block
+						d.blockView(c, n)
+						d.resizeView(c, n)
+					}
+					// The block edited went: off the canvas, out of view,
+					// or too small to show its body.
+					if d.editing != nil && !d.editSeen {
+						d.stopEditing()
+					}
+				})
+				d.marqueeView(c) // in the window's DIPs, over the layer
 			})
+		// What the cards asked to load starts now, the middlemost first.
+		if mx, my := d.cam.toWorld(cw/2, ch/2); d.runLoads(mx, my) && d.win == nil {
+			c.Invalidate() // tests: it loaded here and now, to show next frame
+		}
 
 		d.homePill(c)
 		d.toolbar(c)
 		d.statusBar(c)
+		d.stackPreviewView(c)
 	})
 }
 
@@ -197,7 +222,11 @@ func (d *deck) selectIn(r ui.Rect) {
 	if r.W*d.cam.S < 3 && r.H*d.cam.S < 3 {
 		return
 	}
+	hidden := d.stackedIDs()
 	for _, n := range d.blocks {
+		if hidden[n.ID] {
+			continue
+		}
 		if float32(n.X) < r.X+r.W && float32(n.X+n.W) > r.X && float32(n.Y) < r.Y+r.H && float32(n.Y+n.H) > r.Y {
 			d.sel[n.ID] = true
 		}
@@ -211,10 +240,18 @@ func (d *deck) selectIn(r ui.Rect) {
 func (d *deck) onBlockInput(ev ui.InputEvent, n *block) bool {
 	// Zoomed out, a block is its frame alone, its title bar too thin to
 	// aim at: it drags from anywhere, and edits nothing.
-	far := d.cam.S < lodScale
+	// The card is laid out with the layout camera: so is ev.
+	far := d.lay.S < lodScale
 	inTitle := ev.Y <= d.titleHeight(n) || far
-	px := (n.X-d.cam.X)*d.cam.S + ev.X
-	py := (n.Y-d.cam.Y)*d.cam.S + ev.Y
+	px, py := d.layerToWindow((n.X-d.lay.X)*d.lay.S+ev.X, (n.Y-d.lay.Y)*d.lay.S+ev.Y)
+	// The wheel over the body of an open 块堆 scrolls its cards, in the
+	// layer's axes as they are laid out.
+	if ev.Kind == ui.InputScroll && n.Kind == kindStack && d.stackOpen == n && !inTitle &&
+		ev.Mods&(ui.Cmd|ui.Ctrl) == 0 && d.stackScrollBy(n, ev.DY) {
+		return true
+	}
+	// The wheel moved as far in the window: the layer's axes are scaled.
+	ev.DX, ev.DY = d.layerDelta(ev.DX, ev.DY)
 	// A browser's bar and page take their presses themselves: its
 	// buttons and address bar, which the card would take them from.
 	if n.Kind == kindBrowser && !inTitle {
@@ -243,7 +280,11 @@ func (d *deck) onBlockInput(ev ui.InputEvent, n *block) bool {
 			// A drag moves the block; a click without one edits its
 			// title, once released.
 			d.beginDrag(n, px, py)
-		case n.Kind == kindNote:
+		case n.Kind == kindStack:
+			// A click on the pile opens it: hovering then pushes its
+			// cards out.
+			d.openStack(n, ev.X, ev.Y-d.titleHeight(n))
+		case n.Kind == kindNote, n.Kind == kindMemo:
 			d.startEditing(n, editBody)
 		}
 		return true
@@ -256,6 +297,13 @@ func (d *deck) onBlockInput(ev ui.InputEvent, n *block) bool {
 	case ui.InputPointerUp:
 		if d.dragging == n {
 			d.dragging = nil
+			if d.dragMoved {
+				// Let go of a block over a stack: the stack takes it.
+				if st := d.stackAt(px, py, n); st != nil {
+					d.stackAdd(st, n)
+					return true
+				}
+			}
 			// A click on a title, without a drag, edits it.
 			if !d.dragMoved && inTitle && !far {
 				d.startEditing(n, editTitle)
@@ -269,7 +317,7 @@ func (d *deck) onBlockInput(ev ui.InputEvent, n *block) bool {
 // beginDrag starts moving n with the pointer, at (px, py) in window DIPs.
 func (d *deck) beginDrag(n *block, px, py float32) {
 	d.dragging = n
-	d.dragFrom, d.dragMoved = point{px, py}, false
+	d.dragFrom, d.dragAt, d.dragMoved = point{px, py}, point{px, py}, false
 	wx, wy := d.cam.toWorld(px, py)
 	d.grab = point{wx, wy}
 	d.dragOff = point{n.X - wx, n.Y - wy}
@@ -278,6 +326,7 @@ func (d *deck) beginDrag(n *block, px, py float32) {
 // dragTo moves the block being dragged so that the point grabbed is under
 // the pointer, at (px, py) in window DIPs.
 func (d *deck) dragTo(n *block, px, py float32) {
+	d.dragAt = point{px, py}
 	// A few DIPs of jitter is still a click.
 	if abs(px-d.dragFrom.X) > 3 || abs(py-d.dragFrom.Y) > 3 {
 		d.dragMoved = true
@@ -424,6 +473,9 @@ func (d *deck) addAt(kind blockKind, sx, sy float32) *block {
 	case kindBrowser:
 		b.Title = "浏览器"
 		b.W, b.H = 760, 540
+	case kindStack:
+		b.Title = "块堆"
+		b.W, b.H = 380, 300
 	}
 	b.X, b.Y = d.freeSpot(wx-b.W/2, wy-b.H/2, b.W, b.H)
 	d.addBlock(b)
@@ -464,20 +516,28 @@ func (d *deck) pickFile() {
 
 // fitAll frames every block, or resets the camera when there is none.
 func (d *deck) fitAll(cw, ch float32) {
-	if len(d.blocks) == 0 {
+	hidden := d.stackedIDs()
+	vis := make([]*block, 0, len(d.blocks))
+	for _, n := range d.blocks {
+		if !hidden[n.ID] {
+			vis = append(vis, n)
+		}
+	}
+	if len(vis) == 0 {
 		d.cam = camera{X: 0, Y: 0, S: 1}
 		return
 	}
-	minX, minY := d.blocks[0].X, d.blocks[0].Y
-	maxX, maxY := d.blocks[0].X+d.blocks[0].W, d.blocks[0].Y+d.blocks[0].H
-	for _, n := range d.blocks[1:] {
+	minX, minY := vis[0].X, vis[0].Y
+	maxX, maxY := vis[0].X+vis[0].W, vis[0].Y+vis[0].H
+	for _, n := range vis[1:] {
 		minX, minY = min(minX, n.X), min(minY, n.Y)
 		maxX, maxY = max(maxX, n.X+n.W), max(maxY, n.Y+n.H)
 	}
 	const pad = 60
 	w, h := maxX-minX+2*pad, maxY-minY+2*pad
 	s := min(cw/w, ch/h)
-	d.cam.S = min(max(s, minScale), 1)
+	// On a zoom level at most as large, so that it still frames them all.
+	d.cam.S = zoomLevelAtMost(min(max(s, minScale), 1))
 	d.cam.X = minX - (cw/d.cam.S-w)/2
 	d.cam.Y = minY - (ch/d.cam.S-h)/2
 }

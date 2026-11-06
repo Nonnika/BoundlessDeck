@@ -259,6 +259,7 @@ type deck struct {
 	grab      point // the pointer in world coordinates when the press came
 	dragOff   point // the block's top-left from the pointer at the press
 	dragFrom  point // the pointer at the press, in window DIPs
+	dragAt    point // the pointer now, in window DIPs
 	dragMoved bool  // the pointer went further than a click's jitter
 
 	// resizing is the block being resized by its corner: from its size
@@ -291,12 +292,23 @@ type deck struct {
 	editInput ui.Handle
 	editHad   bool
 	editSeen  bool
+	// previewStack is the 块堆 whose long preview (space) is open, nil
+	// when none is.
+	previewStack *block
+	// stackOpen is the 块堆 a click opened: hovering it pushes its cards
+	// out and scrolls them (stack.go), until it loses the selection or
+	// the focus. Nil when none is.
+	stackOpen *block
 
 	// md shows the QuickLook bodies' Markdown, in a theme made for the
 	// size and the light or dark mdSize and mdDark say.
 	md     markdown.Options
 	mdSize float32
 	mdDark bool
+	// previewMD is the same for a 块堆's long preview, at its own size.
+	previewMD     markdown.Options
+	previewMDSize float32
+	previewMDDark bool
 
 	undo []change
 	redo []change
@@ -345,14 +357,73 @@ type changeKind uint8
 const (
 	changeAdd changeKind = iota
 	changeRemove
+	changeMoves
+	changeStack
 )
 
-// change is one undoable edit of the deck: a block added, or removed.
+// change is one undoable edit of the deck: a block added, removed, a set
+// of blocks moved or laid out at once, or what stacks hold.
 type change struct {
-	kind  changeKind
+	kind   changeKind
+	block  *block
+	index  int
+	sel    map[string]bool
+	moves  []moveChange
+	stacks []stackEdit
+}
+
+// stackEdit is one 块堆's items before and after a change.
+type stackEdit struct {
+	stack  *block
+	before []string
+	after  []string
+}
+
+// geometry is where a block is, and how large: what an undo of a move puts
+// back.
+type geometry struct {
+	X, Y, W, H float32
+}
+
+// moveChange is one block of a move, before and after.
+type moveChange struct {
+	block  *block
+	before geometry
+	after  geometry
+}
+
+// placement is where a layout puts a block, in world coordinates. Only the
+// top-left moves; a layout never resizes.
+type placement struct {
 	block *block
-	index int
-	sel   map[string]bool
+	x, y  float32
+}
+
+// applyPlacements moves blocks as one undoable change, and saves when
+// anything moved. It returns how many blocks moved.
+func (d *deck) applyPlacements(ps []placement) int {
+	moves := make([]moveChange, 0, len(ps))
+	for _, p := range ps {
+		b := p.block
+		if b.X == p.x && b.Y == p.y {
+			continue
+		}
+		moves = append(moves, moveChange{
+			block:  b,
+			before: geometry{X: b.X, Y: b.Y, W: b.W, H: b.H},
+			after:  geometry{X: p.x, Y: p.y, W: b.W, H: b.H},
+		})
+	}
+	if len(moves) == 0 {
+		return 0
+	}
+	d.forgetRedo()
+	d.undo = append(d.undo, change{kind: changeMoves, moves: moves})
+	for _, m := range moves {
+		m.block.X, m.block.Y = m.after.X, m.after.Y
+	}
+	d.requestSave()
+	return len(moves)
 }
 
 // addBlock puts a block on the canvas and selects it. It is the only way a
@@ -414,6 +485,14 @@ func (d *deck) undoLast() {
 	case changeRemove:
 		d.attach(c.index, c.block)
 		d.sel = map[string]bool{c.block.ID: true}
+	case changeMoves:
+		for i := len(c.moves) - 1; i >= 0; i-- {
+			m := c.moves[i]
+			m.block.X, m.block.Y = m.before.X, m.before.Y
+			m.block.W, m.block.H = m.before.W, m.before.H
+		}
+	case changeStack:
+		d.restoreStackEdits(c.stacks, false)
 	}
 	d.redo = append(d.redo, c)
 }
@@ -435,6 +514,13 @@ func (d *deck) redoLast() {
 			d.detach(i)
 		}
 		delete(d.sel, c.block.ID)
+	case changeMoves:
+		for _, m := range c.moves {
+			m.block.X, m.block.Y = m.after.X, m.after.Y
+			m.block.W, m.block.H = m.after.W, m.after.H
+		}
+	case changeStack:
+		d.restoreStackEdits(c.stacks, true)
 	}
 	d.undo = append(d.undo, c)
 }
@@ -453,6 +539,9 @@ func (d *deck) attach(index int, b *block) {
 func (d *deck) detach(index int) *block {
 	b := d.blocks[index]
 	d.blocks = append(d.blocks[:index], d.blocks[index+1:]...)
+	if d.previewStack == b {
+		d.previewStack = nil
+	}
 	d.hangUp(b)
 	return b
 }
@@ -464,6 +553,16 @@ func (d *deck) indexOf(b *block) int {
 		}
 	}
 	return -1
+}
+
+// blockByID is the block with this ID, nil when the deck has none.
+func (d *deck) blockByID(id string) *block {
+	for _, n := range d.blocks {
+		if n.ID == id {
+			return n
+		}
+	}
+	return nil
 }
 
 func (d *deck) copySel() map[string]bool {
@@ -526,7 +625,11 @@ func (d *deck) freeSpot(x, y, w, h float32) (float32, float32) {
 }
 
 func (d *deck) overlaps(x, y, w, h float32) bool {
+	hidden := d.stackedIDs()
 	for _, b := range d.blocks {
+		if hidden[b.ID] {
+			continue
+		}
 		if x < b.X+b.W && x+w > b.X && y < b.Y+b.H && y+h > b.Y {
 			return true
 		}
@@ -591,14 +694,29 @@ func (d *deck) raise(n *block) {
 	}
 }
 
-// visible returns the blocks this frame builds, back to front: those in
-// view and a margin around it.
+// What of a block shows outside its box, at 100%: its washi tape above
+// it (tapeOf: up to 0.8 of its 30 high, tilted up to 4°), its shadow
+// around it.
+const (
+	blockReachTop  = 28
+	blockReachSide = 10
+)
+
+// visible returns the blocks this frame builds, back to front: those the
+// window shows some of, their tape and shadow included, and no other. A
+// block out of view builds nothing and asks for no load (loadqueue.go);
+// a 块堆's blocks are its own (stackBody).
 func (d *deck) visible(vw, vh float32) []*block {
+	hidden := d.stackedIDs()
 	out := make([]*block, 0, len(d.blocks))
 	for _, n := range d.blocks {
+		if hidden[n.ID] {
+			continue
+		}
 		sx, sy := d.cam.toScreen(n.X, n.Y)
 		w, h := n.W*d.cam.S, n.H*d.cam.S
-		if sx+w < -64 || sy+h < -64 || sx > vw+64 || sy > vh+64 {
+		top, side := blockReachTop*d.cam.S, blockReachSide*d.cam.S
+		if sx+w+side <= 0 || sy+h+side <= 0 || sx-side >= vw || sy-top >= vh {
 			continue
 		}
 		out = append(out, n)
@@ -664,6 +782,7 @@ func (d *deck) load() {
 			n.Kind = kindNote
 		}
 	}
+	d.pruneStacks()
 }
 
 // workspaceSnapshot is the deck as deck.json holds it.

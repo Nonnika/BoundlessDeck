@@ -33,15 +33,24 @@ const maxHistory = 256 << 10
 // so that opening and closing a deck piles up nothing.
 func (d *deck) keepTerminals() {
 	for _, b := range d.blocks {
-		if b.Kind != kindTerminal || b.rt == nil || b.rt.term == nil || !b.rt.termUsed {
-			continue
-		}
-		st := &termState{History: lastRows(b.rt.term.History(), maxHistory), SavedAt: time.Now()}
-		if dir := b.rt.term.Dir(); dir != "" {
-			st.Dir = d.linkPath(dir)
-		}
-		b.Term = st
+		d.keepTerminal(b)
 	}
+}
+
+// keepTerminal keeps what b's terminal shows and where its shell is, to
+// start a new one from: of a terminal the user typed or pasted into. One
+// left alone, showing just its shell's prompt or what it was restored to,
+// keeps what its block had, so that opening and closing a deck piles up
+// nothing.
+func (d *deck) keepTerminal(b *block) {
+	if b.Kind != kindTerminal || b.rt == nil || b.rt.term == nil || !b.rt.termUsed {
+		return
+	}
+	st := &termState{History: lastRows(b.rt.term.History(), maxHistory), SavedAt: time.Now()}
+	if dir := b.rt.term.Dir(); dir != "" {
+		st.Dir = d.linkPath(dir)
+	}
+	b.Term = st
 }
 
 // lastRows returns the end of history, at most max bytes, cut at the start
