@@ -128,6 +128,9 @@ func (d *deck) titleBar(c *ui.Context, n *block) {
 			return
 		}
 		ui.Text(c, n.Title).FontSize(titleFontSize * s).SingleLine().Grow(1).TextColor(t.Text)
+		if n.Kind == kindChart {
+			d.chartControls(c, n)
+		}
 	})
 }
 
@@ -152,6 +155,8 @@ func (d *deck) body(c *ui.Context, n *block) {
 		d.browserBody(c, n)
 	case kindStack:
 		d.stackBody(c, n)
+	case kindChart:
+		d.chartBody(c, n)
 	}
 }
 

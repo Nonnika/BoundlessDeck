@@ -24,6 +24,7 @@ var newKeys = []struct {
 	{kindFile, "链接文件…", "CmdOrCtrl+Shift+O", "⇧⌘O"},
 	{kindTerminal, "新建终端", "CmdOrCtrl+T", "⌘T"},
 	{kindBrowser, "新建浏览器", "CmdOrCtrl+Shift+B", "⇧⌘B"},
+	{kindChart, "新建图表", "CmdOrCtrl+Shift+G", "⇧⌘G"},
 	{kindStack, "新建块堆", "CmdOrCtrl+Shift+K", "⇧⌘K"},
 }
 

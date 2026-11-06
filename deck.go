@@ -26,10 +26,11 @@ const (
 	kindTerminal blockKind = "terminal"
 	kindBrowser  blockKind = "browser"
 	kindStack    blockKind = "stack" // 块堆: a wallet of blocks held off the canvas (stack.go)
+	kindChart    blockKind = "chart" // 图表: a chart of a table it keeps (chart.go)
 )
 
 // blockKinds is every kind, in the order the toolbar and the MCP list them.
-var blockKinds = []blockKind{kindNote, kindMemo, kindFile, kindTerminal, kindBrowser, kindStack}
+var blockKinds = []blockKind{kindNote, kindMemo, kindFile, kindTerminal, kindBrowser, kindChart, kindStack}
 
 // kindNames is blockKinds as strings.
 func kindNames() []string {
@@ -61,8 +62,11 @@ type block struct {
 	// Path is the file a file block links to: relative to the workspace
 	// root when it is inside it.
 	Path string `json:"path,omitempty"`
-	// Text is the body of a note.
+	// Text is the body of a note, or the table a chart draws.
 	Text string `json:"text,omitempty"`
+	// Chart is how a 图表 block draws its table (chartTypes); empty draws
+	// bars.
+	Chart string `json:"chart,omitempty"`
 	// URL is the page a browser block shows.
 	URL string `json:"url,omitempty"`
 	// Page is the page of a PDF a file block shows, from 0.
@@ -85,9 +89,12 @@ type block struct {
 // editor, a terminal.
 type runtime struct {
 	loading bool
-	text    string
-	textErr error
-	editor  *editor.State
+	// chart is a 图表 block's table as read from chartSrc, its text then.
+	chart    *chartData
+	chartSrc string
+	text     string
+	textErr  error
+	editor   *editor.State
 
 	source  ui.ImageSource
 	imgErr  error
@@ -315,6 +322,8 @@ type deck struct {
 	// previewStack is the 块堆 whose long preview (space) is open, nil
 	// when none is.
 	previewStack *block
+	// chartAsked is the 图表 block whose kind menu was last asked for.
+	chartAsked *block
 	// stackOpen is the 块堆 a click opened: hovering it pushes its cards
 	// out and scrolls them (stack.go), until it loses the selection or
 	// the focus. Nil when none is.

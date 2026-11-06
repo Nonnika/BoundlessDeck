@@ -299,6 +299,13 @@ func (d *deck) onBlockInput(ev ui.InputEvent, n *block) bool {
 			d.openStack(n, ev.X, ev.Y-d.titleHeight(n))
 		case n.Kind == kindNote, n.Kind == kindMemo:
 			d.startEditing(n, editBody)
+		case n.Kind == kindChart:
+			// A click selects the chart, its pointer shows the values; a
+			// double click edits its table.
+			d.sel[n.ID] = true
+			if ev.Clicks >= 2 {
+				d.startEditing(n, editBody)
+			}
 		}
 		return true
 	case ui.InputPointerMove:
@@ -392,6 +399,9 @@ func (d *deck) toolbar(c *ui.Context) {
 		}
 		if toolButton(c.Key("new-browser"), iconGlobe, "浏览器", "新建浏览器（"+newKeyOf(kindBrowser)+"）").Clicked() {
 			d.addAtCenter(c, kindBrowser)
+		}
+		if toolButton(c.Key("new-chart"), iconChart, "图表", "新建图表：柱状图、条形图、折线图、面积图、饼图，双击编辑数据（"+newKeyOf(kindChart)+"）").Clicked() {
+			d.addAtCenter(c, kindChart)
 		}
 		if toolButton(c.Key("new-stack"), iconStack, "块堆", "新建块堆：拖 block 的胶带或标题栏进来，点击后悬停推出卡片、上下边缘滚动，空格长预览（"+newKeyOf(kindStack)+"）").Clicked() {
 			d.addAtCenter(c, kindStack)
@@ -569,6 +579,10 @@ func (d *deck) addAt(kind blockKind, sx, sy float32) *block {
 	case kindStack:
 		b.Title = "块堆"
 		b.W, b.H = 380, 300
+	case kindChart:
+		b.Title = "图表"
+		b.W, b.H = 480, 320
+		b.Chart, b.Text = string(chartBar), chartSample
 	}
 	b.X, b.Y = d.freeSpot(wx-b.W/2, wy-b.H/2, b.W, b.H)
 	d.addBlock(b)

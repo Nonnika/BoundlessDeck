@@ -108,6 +108,8 @@ func defaultTitle(n *block) string {
 		return memoTitle
 	case kindStack:
 		return "块堆"
+	case kindChart:
+		return "图表"
 	}
 	return "QuickLook"
 }

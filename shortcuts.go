@@ -47,6 +47,12 @@ var gestureGroups = []shortcutGroup{
 		{"QuickLook 消失时间", []string{"点击标题栏右侧的剩余时间"}},
 		{"找回刚消失的 QuickLook", []string{"⌘Z"}},
 	}},
+	{"图表", []shortcutRow{
+		{"编辑数据", []string{"双击图表 / 标题栏的表格按钮"}},
+		{"切换图表类型", []string{"点击标题栏的类型"}},
+		{"查看数值", []string{"悬停柱子、折线或扇区"}},
+		{"结束编辑", []string{"⌘↩ / Esc"}},
+	}},
 }
 
 // roleKeys are the keys of the menu items whose role gives them theirs.

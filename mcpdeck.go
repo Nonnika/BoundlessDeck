@@ -161,6 +161,9 @@ func (d *deck) mcpFieldsJSON(n *block) map[string]any {
 		out["term"] = mcpTermJSON(n.Term)
 	case kindStack:
 		out["items"] = d.stackIDs(n)
+	case kindChart:
+		out["text"] = n.Text
+		out["chart"] = string(chartTypeOf(n))
 	}
 	return out
 }
@@ -371,6 +374,19 @@ func (d *deck) mcpApplyField(n *block, name string, raw json.RawMessage, dry boo
 		}
 		n.URL = url
 		d.mcpResetBrowser(n)
+	case "chart":
+		s, err := rawString(raw, name)
+		if err != nil {
+			return err
+		}
+		known := false
+		for _, ct := range chartTypes {
+			known = known || string(ct.typ) == s
+		}
+		if !known {
+			return fmt.Errorf("没有图表类型 %q：可用 %s", s, strings.Join(chartTypeNames(), "、"))
+		}
+		n.Chart = s
 	case "items":
 		ids, err := mcpArgs{name: raw}.strings(name)
 		if err != nil {

@@ -29,6 +29,7 @@ DECK_SNAPSHOT=1 go test -run TestSnapshot .   # 重画 docs/canvas-snapshot.png
 | `deck.go` | 数据与状态：`block`、`camera`、增删/撤销重做、`freeSpot`、拖放、`deck.json` 读写 |
 | `canvas.go` | 一帧的画布：网格、输入仲裁（平移/缩放/框选/拖动）、工具栏、状态栏、文件对话框 |
 | `blocks.go` | 单个 block 的渲染：标题栏、note、file（editor / bitmap）、terminal（懒启动）、stack（钱包卡片） |
+| `chart.go` | 图表 block：`Text` 里的表格（逗号/Tab/Markdown 表格）画成柱状/条形/折线/面积/饼图（`block.Chart`），标题栏切换类型、双击或表格按钮编辑数据 |
 | `stack.go` | 块堆 block：`Items` 收起的 block ID、点击翻卡、空格长久预览、取出；被收进的 block 仍在 `d.blocks` 里，只是不画在画布上 |
 | `memo.go` | 笔记 block：deck 根目录里的 Markdown 文件，渲染、编辑、自动写盘、外部改动回读 |
 | `canvas_test.go` | 15 个 `ui.NewTester` 测试：相机数学、输入、加删、撤销、LOD、持久化 |

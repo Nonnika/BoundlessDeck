@@ -11,7 +11,7 @@ package main
 // mcpSchemaVersion is the version of this schema: bumped when a field's
 // name, type or meaning changes, so that a client that cached the schema
 // knows to read it again.
-const mcpSchemaVersion = 3
+const mcpSchemaVersion = 4
 
 // mcpField is one field of a block as the MCP sees it. Mutable fields are
 // writable through update_block (and create_block when OnCreate); the rest
@@ -42,7 +42,7 @@ var mcpFields = []mcpField{
 	{
 		Name: "kind", Type: "string", OnCreate: true,
 		Enum:        kindNames(),
-		Description: "block 类型：note（QuickLook 便签，正文存在 deck 里）、memo（笔记：工作目录里的一个 Markdown 文件）、file（链接的本地文件）、terminal（终端）、browser（浏览器）、stack（块堆：收纳其他 block 的钱包卡片，收进去的 block 不在画布上显示）。只在创建时给出，之后不可改。",
+		Description: "block 类型：note（QuickLook 便签，正文存在 deck 里）、memo（笔记：工作目录里的一个 Markdown 文件）、file（链接的本地文件）、terminal（终端）、browser（浏览器）、chart（图表：画它 text 里的表格）、stack（块堆：收纳其他 block 的钱包卡片，收进去的 block 不在画布上显示）。只在创建时给出，之后不可改。",
 	},
 	{
 		Name: "title", Type: "string", Mutable: true, OnCreate: true,
@@ -75,8 +75,14 @@ var mcpFields = []mcpField{
 	},
 	{
 		Name: "text", Type: "string", Mutable: true, OnCreate: true,
-		Kinds:       []blockKind{kindNote, kindMemo},
-		Description: "正文（Markdown）。note 存在 deck 里；memo 直接写进它的文件（覆盖整个文件），读 memo 的内容请读 absPath 指向的文件。",
+		Kinds:       []blockKind{kindNote, kindMemo, kindChart},
+		Description: "正文（Markdown）。note 存在 deck 里；memo 直接写进它的文件（覆盖整个文件），读 memo 的内容请读 absPath 指向的文件。chart 的 text 是它画的表格：每行一项，第一列是名称，其后每列一组数值，用逗号或 Tab 分隔（也可用 Markdown 表格）；第一行含非数字时作为列名（图例）。最多 8 组、200 行；饼图只画第一组。",
+	},
+	{
+		Name: "chart", Type: "string", Mutable: true, OnCreate: true,
+		Kinds:       []blockKind{kindChart},
+		Enum:        chartTypeNames(),
+		Description: "图表类型：bar 柱状图、hbar 条形图、line 折线图、area 面积图、pie 饼图。省略为 bar。",
 	},
 	{
 		Name: "expires", Type: "integer", Mutable: true, OnCreate: true, Min: mcpNum(0),
@@ -182,6 +188,7 @@ var mcpKindDefaults = map[blockKind]struct {
 	kindTerminal: {"终端", 560, 340},
 	kindBrowser:  {"浏览器", 760, 540},
 	kindStack:    {"块堆", 380, 300},
+	kindChart:    {"图表", 480, 320},
 }
 
 // mcpBlockSchema is the per-kind view of the table: what a client may
