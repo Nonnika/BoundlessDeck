@@ -112,33 +112,26 @@ func (a *app) buildMenu() *mygo.Menu {
 		{Role: mygo.RoleToggleFullScreen, Label: "进入全屏"},
 	}
 
-	// What has no menu item of its own: keys and gestures on the canvas.
-	// These items only say so; they hold no accelerator, which would take
-	// the keys (space, arrows) from the canvas and the inputs.
-	help := []*mygo.MenuItem{}
-	for _, line := range []string{
-		"双击空白处：新建 QuickLook（在鼠标处）",
-		"拖动空白处：框选",
-		"滚轮 / 双指滑动：移动画布",
-		"⌘ + 滚轮 / 双指捏合：缩放画布",
-		"拖 block 的胶带或标题栏到块堆上：收进块堆",
-		"点击块堆后悬停中间：推出卡片；悬停上下边缘：滚动",
-		"空格：块堆长预览（再按空格或 Esc 关闭）",
-		"← / →：长预览里切换卡片",
-		"⌘↩ / Esc：结束编辑 QuickLook",
-	} {
-		help = append(help, &mygo.MenuItem{Label: line, Disabled: true})
+	// The canvas's keys and gestures have no item of their own: they are
+	// in the 键盘快捷键 window, with every item here that has keys.
+	help := []*mygo.MenuItem{
+		{ID: "shortcuts", Label: "键盘快捷键", Accelerator: "CmdOrCtrl+/", Click: func(*mygo.MenuItem, *mygo.Window) {
+			if a.win != nil {
+				a.win.Update(a.showShortcuts)
+			}
+		}},
 	}
 
-	a.menu = mygo.NewMenu([]*mygo.MenuItem{
+	a.menuItems = []*mygo.MenuItem{
 		{Role: mygo.RoleAppMenu},
 		{Label: "文件", Submenu: file},
 		{Label: "新建", Submenu: add},
 		{Label: "编辑", Submenu: edit},
 		{Label: "视图", Submenu: view},
 		{Role: mygo.RoleWindowMenu, Label: "窗口"},
-		{Label: "快捷键", Submenu: help},
-	})
+		{Role: mygo.RoleHelp, Label: "帮助", Submenu: help},
+	}
+	a.menu = mygo.NewMenu(a.menuItems)
 	return a.menu
 }
 

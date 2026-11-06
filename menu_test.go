@@ -52,3 +52,35 @@ func TestBlocksAddedByShortcutLandUnderThePointer(t *testing.T) {
 		}
 	}
 }
+
+func TestShortcutsWindowListsEveryMenuKey(t *testing.T) {
+	for acc, want := range map[string]string{
+		"CmdOrCtrl+Shift+N": "⇧⌘N", "CmdOrCtrl+=": "⌘=", "CmdOrCtrl+-": "⌘-",
+		"CmdOrCtrl+/": "⌘/", "Ctrl+Alt+Shift+Cmd+K": "⌃⌥⇧⌘K",
+	} {
+		if got := keyGlyphs(acc); got != want {
+			t.Fatalf("keyGlyphs(%q) = %q, want %q", acc, got, want)
+		}
+	}
+	a := &app{}
+	m := a.buildMenu()
+	if it := m.ItemByID("shortcuts"); it == nil || it.Accelerator != "CmdOrCtrl+/" {
+		t.Fatal("帮助 has no 键盘快捷键 item on ⌘/")
+	}
+	listed := map[string]bool{}
+	for _, g := range menuShortcuts(a.menuItems) {
+		for _, r := range g.rows {
+			listed[r.label+" "+r.keys[0]] = true
+		}
+	}
+	for _, k := range newKeys {
+		if !listed[k.label+" "+k.glyph] {
+			t.Fatalf("the window does not list %s %s", k.label, k.glyph)
+		}
+	}
+	for _, want := range []string{"撤销 ⌘Z", "删除选中的 block ⌘D", "键盘快捷键 ⌘/"} {
+		if !listed[want] {
+			t.Fatalf("the window does not list %s", want)
+		}
+	}
+}

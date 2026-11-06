@@ -24,6 +24,10 @@ type app struct {
 	win *mygo.Window
 	// menu is the menu bar (menu.go), nil in tests.
 	menu *mygo.Menu
+	// menuItems are the menu bar's menus, which the 键盘快捷键 window lists;
+	// keysWin is that window while it is open (shortcuts.go).
+	menuItems []*mygo.MenuItem
+	keysWin   *mygo.Window
 	// deck is the deck open, nil while the home screen shows.
 	deck *deck
 
