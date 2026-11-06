@@ -66,7 +66,9 @@ func (d *deck) view(c *ui.Context) {
 				// The blocks, laid out with the layout camera, scaled to
 				// the canvas's zoom while it goes on (zoomlayer.go).
 				built = d.visible(cw, ch)
-				layer := ui.Box(c.Key("blocks")).Absolute().Left(0).Top(0).Fill()
+				// PassThrough: the layer itself is no target, so a press between
+				// its blocks reaches what lies under it: the drag band, the canvas.
+				layer := ui.Box(c.Key("blocks")).Absolute().Left(0).Top(0).Fill().PassThrough()
 				if d.layerMoved() {
 					k := d.layerScale()
 					ox, oy := d.layerOffset()

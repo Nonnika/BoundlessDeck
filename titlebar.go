@@ -23,7 +23,12 @@ const (
 var trafficLights = struct{ X, Y int }{20, chromeTop + (chromeHeight-14)/2}
 
 // dragBand builds the band that drags the window, painted under what
-// follows it.
+// follows it. A press drags the window only when the band is the topmost
+// element under it: every element is a hit target, its children aside,
+// unless PassThrough or IgnoreInput, so on the deck the block layer over
+// it must stay PassThrough (canvas.go). Tests cannot see a window drag
+// start (the headless host ignores it): check by hand after changing what
+// lies over the band.
 func dragBand(c *ui.Context, height float32) {
 	if height <= 0 {
 		return
