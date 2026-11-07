@@ -459,7 +459,7 @@ impl DeckView {
         if self.preview.is_some() || self.preview_leaving.is_some() || self.popup.is_some() || self.pluck.as_ref().is_some_and(|p| p.active) {
             return Some("被浮层遮住");
         }
-        if self.gesture_covers(r) {
+        if self.gesture_covers(r) || self.rts.get(id).is_some_and(|rt| rt.pop.active()) {
             return Some("");
         }
         if self.zooming() {

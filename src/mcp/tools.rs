@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 
 use crate::lifespan::NOTE_LIFE_MS;
 use crate::memo;
-use crate::model::{BlockKind, Block, MIN_BLOCK_H, MIN_BLOCK_W, Model};
+use crate::model::{self, BlockKind, Block, Camera, MIN_BLOCK_H, MIN_BLOCK_W, Model};
 use crate::preview;
 
 pub const SCHEMA_VERSION: i32 = 5;
@@ -241,6 +241,15 @@ pub fn tool_list() -> Vec<(&'static str, &'static str, &'static str, Value)> {
             }), &[])),
         ("select_blocks", "设置选择集", "改选择集，让窗口里选中 agent 正在处理的 block；mode 为 replace（默认）、add 或 toggle。",
             object_schema(json!({"ids": ids_prop("要选中的 block ID"), "mode": {"type": "string", "enum": ["replace", "add", "toggle"], "description": "replace 换成这些，add 加上，toggle 取反"}}), &["ids"])),
+        ("set_view", "移动视野", "把窗口的视野移到画布上的某处，默认平滑滑过去（远距离时会先拉远再推近）。给 id 就以那个 block 为中心，再加 fit=true 会缩放到它刚好占满视野的八成；否则用 x/y 指定视野中心的世界坐标（省略的那一维保持不动）。scale 改缩放（0.08–4，会取最近的缩放档位）。不进撤销栈。给人看你新建或改动的 block 时用。",
+            object_schema(json!({
+                "id": {"type": "string", "description": "以这个 block 为视野中心"},
+                "fit": {"type": "boolean", "description": "与 id 一起用：缩放到这个 block 刚好占满视野的八成"},
+                "x": {"type": "number", "description": "视野中心的世界坐标 X"},
+                "y": {"type": "number", "description": "视野中心的世界坐标 Y"},
+                "scale": {"type": "number", "minimum": model::MIN_SCALE, "maximum": model::MAX_SCALE, "description": "缩放，1 为 100%；省略保持当前"},
+                "animate": {"type": "boolean", "description": "平滑滑过去（默认 true）；false 立即跳过去"},
+            }), &[])),
         ("undo", "撤销", "撤销上一步画布操作（加、删 block），与窗口里的 ⌘Z 同一条撤销栈。", object_schema(json!({}), &[])),
         ("redo", "重做", "重做上一步撤销。", object_schema(json!({}), &[])),
         ("save_deck", "保存画布", "立刻把画布写进工作区的 .boundlessdeck/deck.json；写操作本来就会自动保存，这个用于确认。", object_schema(json!({}), &[])),
@@ -328,6 +337,8 @@ pub struct Ctx<'a> {
     pub memos: Vec<(String, String)>,
     /// Blocks whose preview must load again (a path changed).
     pub reload: Vec<String>,
+    /// The view moved (`set_view`): from where, and whether to glide there.
+    pub view_from: Option<(Camera, bool)>,
 }
 
 impl Ctx<'_> {
@@ -409,6 +420,51 @@ impl Ctx<'_> {
         self.m.blocks.iter().filter(|b| kind.is_none_or(|k| b.kind == k)).map(|b| self.fields_json(b)).collect()
     }
 
+    /// The world point at the middle of the window.
+    fn view_center(&self) -> Value {
+        let (x, y) = self.m.cam.to_world(self.view.0 / 2., self.view.1 / 2.);
+        json!({"x": round(x), "y": round(y)})
+    }
+
+    /// Moves the view: its center to a block or a point, its scale as asked.
+    fn set_view(&mut self, a: &Args) -> Result<Value, String> {
+        let (vw, vh) = self.view;
+        let from = self.m.cam;
+        let (mut cx, mut cy) = from.to_world(vw / 2., vh / 2.);
+        let mut s = match arg_num(a, "scale")? {
+            Some(v) if v.is_finite() && v > 0. => v as f32,
+            Some(_) => return Err("scale 要是正数".into()),
+            None => from.s,
+        };
+        let (x, y) = (arg_num(a, "x")?, arg_num(a, "y")?);
+        match arg_str(a, "id")? {
+            Some(_) if x.is_some() || y.is_some() => return Err("id 与 x/y 只能给一种".into()),
+            Some(id) => {
+                let b = self.block(&id)?;
+                (cx, cy) = (b.x + b.w / 2., b.y + b.h / 2.);
+                if arg_bool(a, "fit")?.unwrap_or(false) && vw > 0. {
+                    s = (vw * 0.8 / b.w).min(vh * 0.8 / b.h);
+                }
+            }
+            None => {
+                if x.is_none() && y.is_none() && arg_num(a, "scale")?.is_none() {
+                    return Err("set_view 需要 id、x/y 或 scale 之一".into());
+                }
+                cx = x.map_or(cx, |v| v as f32);
+                cy = y.map_or(cy, |v| v as f32);
+            }
+        }
+        if !cx.is_finite() || !cy.is_finite() {
+            return Err("x/y 要是有限的数".into());
+        }
+        // On a zoom level, so the view rests where it was sent.
+        let s = model::zoom_level(s.clamp(model::MIN_SCALE, model::MAX_SCALE)).clamp(model::MIN_SCALE, model::MAX_SCALE);
+        self.m.cam = Camera { x: cx - vw / 2. / s, y: cy - vh / 2. / s, s };
+        self.view_from = Some((from, arg_bool(a, "animate")?.unwrap_or(true)));
+        self.dirty = true;
+        Ok(json!({"center": {"x": round(cx), "y": round(cy)}, "scale": round(s), "camera": {"x": round(self.m.cam.x), "y": round(self.m.cam.y), "s": round(s)}}))
+    }
+
     pub fn deck_info(&self) -> Value {
         json!({
             "workspace": self.m.root.to_string_lossy(),
@@ -416,6 +472,7 @@ impl Ctx<'_> {
             "blocks": self.m.blocks.len(),
             "selected": self.selected_ids(),
             "camera": {"x": round(self.m.cam.x), "y": round(self.m.cam.y), "s": round(self.m.cam.s)},
+            "center": self.view_center(),
             "view": {"w": round(self.view.0), "h": round(self.view.1)},
             "kinds": KIND_NAMES,
             "schemaVersion": SCHEMA_VERSION,
@@ -918,6 +975,7 @@ impl Ctx<'_> {
             "distribute_blocks" => self.distribute_blocks(args),
             "arrange_blocks" => self.arrange_blocks(args),
             "select_blocks" => self.select_blocks(args),
+            "set_view" => self.set_view(args),
             "undo" => {
                 self.m.undo_last();
                 self.dirty = true;
@@ -1274,7 +1332,7 @@ mod tests {
     }
 
     fn call_from(m: &mut Model, here: Here, name: &str, args: Value) -> Result<Value, String> {
-        let mut c = Ctx { m, view: (1000., 800.), mcp: Value::Null, here, dirty: false, memos: vec![], reload: vec![] };
+        let mut c = Ctx { m, view: (1000., 800.), mcp: Value::Null, here, dirty: false, memos: vec![], reload: vec![], view_from: None };
         c.call(name, args.as_object().unwrap())
     }
 
@@ -1371,6 +1429,27 @@ mod tests {
     }
 
     #[test]
+    fn set_view_centers_the_window_where_asked() {
+        let (_d, mut m) = ctx_model();
+        let out = call(&mut m, "set_view", json!({"x": 500, "y": -200, "scale": 2})).unwrap();
+        assert_eq!(out["center"], json!({"x": 500.0, "y": -200.0}));
+        assert_eq!(out["scale"], 2.0);
+        // The window is 1000 × 800: at 2×, its middle is 250 × 200 world units from the corner.
+        assert_eq!((m.cam.x, m.cam.y, m.cam.s), (250., -400., 2.));
+        let b = call(&mut m, "create_block", json!({"kind": "chart", "x": 1000, "y": 1000, "w": 400, "h": 200})).unwrap();
+        let id = b["id"].as_str().unwrap();
+        let out = call(&mut m, "set_view", json!({"id": id, "fit": true})).unwrap();
+        assert_eq!(out["center"], json!({"x": 1200.0, "y": 1100.0}));
+        let s = out["scale"].as_f64().unwrap();
+        assert!(s > 1.8 && s < 2.2, "about 0.8 × 1000 / 400: {s}");
+        assert!(call(&mut m, "set_view", json!({"id": id, "x": 1})).is_err());
+        assert!(call(&mut m, "set_view", json!({})).is_err());
+        assert!(call(&mut m, "set_view", json!({"id": "nope"})).is_err());
+        // Out of range scales are held to the range.
+        assert_eq!(call(&mut m, "set_view", json!({"scale": 100})).unwrap()["scale"], 4.0);
+    }
+
+    #[test]
     fn a_video_file_starts_16_by_9_and_says_so() {
         let (d, mut m) = ctx_model();
         std::fs::write(d.path().join("clip.mp4"), b"x").unwrap();
@@ -1427,7 +1506,7 @@ mod tests {
         assert_eq!(normalize_url("example.com").unwrap(), "https://example.com");
         assert!(normalize_url("javascript:alert(1)").is_err());
         let (_d, mut m) = ctx_model();
-        let c = Ctx { m: &mut m, view: (0., 0.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![] };
+        let c = Ctx { m: &mut m, view: (0., 0.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None };
         assert!(c.read_resource("boundlessdeck://schema").unwrap()["kinds"].as_array().unwrap().len() == 7);
         assert!(c.read_resource("other://x").is_err());
     }

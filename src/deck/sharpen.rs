@@ -74,12 +74,12 @@ pub(super) fn crossfade(under: Option<AnyElement>, over: AnyElement, alpha: f32)
 }
 
 #[cfg(target_os = "macos")]
-fn reduce_motion() -> bool {
+pub(super) fn reduce_motion() -> bool {
     objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
 
 #[cfg(not(target_os = "macos"))]
-fn reduce_motion() -> bool {
+pub(super) fn reduce_motion() -> bool {
     false
 }
 

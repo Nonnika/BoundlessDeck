@@ -26,6 +26,7 @@ use gpui::{
 
 mod browser;
 mod lifecycle;
+mod popin;
 mod sharpen;
 mod stack;
 mod zoomlayer;
@@ -35,7 +36,7 @@ use crate::lifespan::{self, LIFE_CHOICES};
 use crate::markdown;
 use crate::memo;
 use crate::model::{
-    self, Block, BlockKind, Geometry, LOD_SCALE, Model, file_block_size, new_block_of, scale_keeping_ratio,
+    self, Block, BlockKind, Camera, Geometry, LOD_SCALE, Model, file_block_size, new_block_of, scale_keeping_ratio,
     wheel_zoom,
 };
 use crate::recents::short_path;
@@ -168,6 +169,8 @@ struct Runtime {
     appear: sharpen::Sharpen,
     /// A sharper version of the content (a bitmap, a native view) fading in over the old.
     sharpen: sharpen::Sharpen,
+    /// The entrance of a block just made.
+    pop: popin::PopIn,
 }
 
 struct WordDoc {
@@ -215,6 +218,8 @@ pub struct DeckView {
     zoom_timer_active: bool,
     /// Something drawn this frame is fading: the next frame is asked for.
     animating: bool,
+    /// The camera gliding to where an agent asked the view to be: from, to, since.
+    glide: Option<(Camera, Camera, Instant)>,
     focus: FocusHandle,
     rts: HashMap<String, Runtime>,
     view: (f32, f32),
@@ -312,6 +317,7 @@ impl DeckView {
             snap: zoomlayer::ZoomSnap::default(),
             zoom_timer_active: false,
             animating: false,
+            glide: None,
             focus: cx.focus_handle(),
             rts: HashMap::new(),
             view: (1280.0, 800.0),
@@ -438,12 +444,14 @@ impl DeckView {
             }),
             None => serde_json::json!({"running": false, "error": self.mcp_err}),
         };
-        let mut ctx = Ctx { m: &mut self.m, view: self.view, mcp: info, here, dirty: false, memos: vec![], reload: vec![] };
+        // Mid-glide, tools see the camera where it is going.
+        let shown = self.glide.map(|(_, to, _)| std::mem::replace(&mut self.m.cam, to));
+        let mut ctx = Ctx { m: &mut self.m, view: self.view, mcp: info, here, dirty: false, memos: vec![], reload: vec![], view_from: None };
         let out = match job {
             Job::Tool(name, args) => ctx.call(&name, &args),
             Job::Resource(uri) => ctx.read_resource(&uri),
         };
-        let (dirty, memos, reload) = (ctx.dirty, ctx.memos, ctx.reload);
+        let (dirty, memos, reload, view_from) = (ctx.dirty, ctx.memos, ctx.reload, ctx.view_from);
         for (id, text) in memos {
             let rt = self.rts.entry(id).or_default();
             if rt.memo.loaded {
@@ -475,6 +483,15 @@ impl DeckView {
         }
         if dirty {
             self.after_edit(cx);
+        }
+        // Saved where it goes (above), then shown going there from where it shows now.
+        match (view_from, shown) {
+            (Some((from, animate)), shown) => {
+                let to = self.m.cam;
+                self.glide_to(shown.unwrap_or(from), to, animate, cx);
+            }
+            (None, Some(cam)) => self.m.cam = cam,
+            (None, None) => {}
         }
         out
     }
@@ -519,7 +536,44 @@ impl DeckView {
 
     // ---- the camera ----
 
+    /// Moves the camera to `to`, gliding unless asked not to (or the system
+    /// asks for less motion). The person's own pan or zoom stops a glide.
+    fn glide_to(&mut self, from: Camera, to: Camera, animate: bool, cx: &mut Context<Self>) {
+        if animate && !sharpen::reduce_motion() && self.view.0 > 0. {
+            self.m.cam = from;
+            self.glide = Some((from, to, Instant::now()));
+        } else {
+            self.m.cam = to;
+            self.lay = to;
+            self.glide = None;
+        }
+        cx.notify();
+    }
+
+    /// One frame of a glide: the view's center goes straight there, the
+    /// scale eases between the two, dipping out on a long way so the trip
+    /// shows where it goes.
+    fn tick_glide(&mut self, cx: &mut Context<Self>) {
+        let Some((from, to, at)) = self.glide else { return };
+        let f = (at.elapsed().as_secs_f32() / GLIDE_TIME.as_secs_f32()).min(1.);
+        if f >= 1. {
+            self.m.cam = to;
+            self.glide = None;
+            if from.s != to.s {
+                self.note_zoom(cx);
+            }
+            self.request_save(cx);
+            return;
+        }
+        self.m.cam = glide_at(from, to, self.view, f);
+        if self.m.cam.s != from.s {
+            self.note_zoom(cx);
+        }
+        self.animating = true;
+    }
+
     fn zoom_at(&mut self, x: f32, y: f32, factor: f32, cx: &mut Context<Self>) {
+        self.glide = None;
         self.last_pointer = (x, y);
         self.zoom_anchor = (x, y);
         self.zoom_gen += 1;
@@ -1217,6 +1271,7 @@ impl DeckView {
     }
 
     fn on_pan_down(&mut self, ev: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.glide = None;
         let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
         self.drag = Some(Drag::Pan { from: (x, y), cam: self.m.cam });
         cx.notify();
@@ -1306,6 +1361,7 @@ impl DeckView {
     }
 
     fn on_wheel(&mut self, ev: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        self.glide = None;
         let d = ev.delta.pixel_delta(px(20.));
         let (mut dx, mut dy) = (f32::from(d.x), f32::from(d.y));
         let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
@@ -1574,14 +1630,22 @@ impl DeckView {
         let opacity = if b.kind == BlockKind::Note { lifespan::note_opacity(b.expires, self.m.now_ms()) } else { 1.0 };
         let mut out = Vec::new();
 
+        // Just made: it opens out of a line (`popin`); the card sits in a clip that grows.
+        let pop = if s >= LOD_SCALE { self.rts.get_mut(id).and_then(|r| r.pop.frame(Instant::now())) } else { None };
+        let clip = pop.map(|f| {
+            let (cw, ch) = ((w * f.width).max(2.), (h * f.height).max(2.));
+            ((w - cw) / 2., (h - ch) / 2., cw, ch)
+        });
+        self.animating |= pop.is_some();
+
         let note = b.kind == BlockKind::Note;
         let paper = Paper::of(t);
         let eid = id.to_string();
         let mut card = div()
             .id(SharedString::from(format!("block:{id}")))
             .absolute()
-            .left(px(sx))
-            .top(px(sy))
+            .left(px(clip.map_or(sx, |c| -c.0)))
+            .top(px(clip.map_or(sy, |c| -c.1)))
             .w(px(w))
             .h(px(h))
             .flex()
@@ -1681,6 +1745,10 @@ impl DeckView {
                 .top_0()
                 .size_full(),
             );
+        }
+        if let (Some(f), Some((ox, oy, cw, ch))) = (pop, clip) {
+            out.extend(popin_layers(f, (sx + ox, sy + oy, cw, ch), card.into_any_element(), if note { paper.top } else { t.surface }, t, s));
+            return out;
         }
         out.push(card.into_any_element());
 
@@ -2355,6 +2423,65 @@ fn live_preview(id: &str, content: AnyElement, pad: [f32; 4], outer_w: f32) -> A
         .into_any_element()
 }
 
+/// A block entering (`popin`): its glow, then its card in a clip at r (window
+/// points) that grows, the part not yet printed covered in blank, the scan
+/// line on that cover's edge, and the box's bright edge.
+fn popin_layers(f: popin::Frame, r: (f32, f32, f32, f32), card: AnyElement, blank: Hsla, t: &Theme, s: f32) -> [AnyElement; 2] {
+    let (x, y, w, h) = r;
+    let at = || div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h));
+    let layer = || div().absolute().left_0().top_0().size_full();
+    let glow = at()
+        .shadow(vec![gpui::BoxShadow {
+            color: t.accent.opacity(0.6 * f.glow),
+            offset: point(px(0.), px(0.)),
+            blur_radius: px(22. * s.min(1.5)),
+            spread_radius: px(1.),
+        }])
+        .into_any_element();
+    let line = (2. * s.min(1.5)).max(1.);
+    let scan_y = h * f.scan;
+    let clip = at()
+        .overflow_hidden()
+        .occlude()
+        .child(card)
+        .when(f.scan < 1., |d| {
+            d.child(div().absolute().left_0().right_0().top(px(scan_y)).bottom_0().bg(blank)).child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px((scan_y - line / 2.).max(0.)))
+                    .h(px(line))
+                    .bg(t.accent.opacity(f.glow.max(0.3)))
+                    .when(f.height < 1., |d| d.opacity(0.)),
+            )
+        })
+        .child(layer().bg(t.accent.opacity(f.tint)))
+        .child(layer().border_1().border_color(t.accent.opacity(f.glow)))
+        .into_any_element();
+    [glow, clip]
+}
+
+/// How long the camera takes to glide where an agent asked.
+const GLIDE_TIME: Duration = Duration::from_millis(520);
+
+/// The camera f (0 to 1) of the way from `from` to `to` in a view of size
+/// view: eased in and out; the center straight, the scale geometric, and
+/// dipping out mid-way when the trip is long next to the view.
+fn glide_at(from: Camera, to: Camera, view: (f32, f32), f: f32) -> Camera {
+    let e = if f < 0.5 { 4. * f * f * f } else { 1. - (-2. * f + 2.).powi(3) / 2. };
+    let (vw, vh) = view;
+    let (ax, ay) = from.to_world(vw / 2., vh / 2.);
+    let (bx, by) = to.to_world(vw / 2., vh / 2.);
+    let (cx, cy) = (ax + (bx - ax) * e, ay + (by - ay) * e);
+    let mut s = (from.s.ln() + (to.s.ln() - from.s.ln()) * e).exp();
+    // How many views long the trip is, at the smaller scale: far trips dip out.
+    let far = ((bx - ax).hypot(by - ay) * from.s.min(to.s) / vw.max(1.)).min(4.);
+    let dip = 1. - (far / 4. * 0.6) * (std::f32::consts::PI * e).sin();
+    s = (s * dip).clamp(model::MIN_SCALE, model::MAX_SCALE);
+    Camera { x: cx - vw / 2. / s, y: cy - vh / 2. / s, s }
+}
+
 fn message(text: String, color: Hsla, s: f32) -> AnyElement {
     div().size_full().p(px(10. * s)).text_size(px(12. * s)).text_color(color).child(text).into_any_element()
 }
@@ -2398,6 +2525,7 @@ impl Render for DeckView {
         let t = Theme::of(window);
         let vs = window.viewport_size();
         self.view = (f32::from(vs.width), f32::from(vs.height));
+        self.tick_glide(cx);
         self.settle_layer(Some(window));
         self.track_active(window, cx);
         self.expire_notes(window, cx);
@@ -2576,6 +2704,27 @@ impl Render for DeckView {
             .children(self.stack_preview(&t, window, cx))
             .children(self.pluck_view(&t))
             .children(self.popup_view(&t, cx))
+    }
+}
+
+#[cfg(test)]
+mod glide_tests {
+    use super::glide_at;
+    use crate::model::Camera;
+
+    #[test]
+    fn a_glide_starts_and_ends_where_asked_and_dips_on_a_long_way() {
+        let view = (1000., 800.);
+        let from = Camera { x: 0., y: 0., s: 1. };
+        let to = Camera { x: 5000., y: 0., s: 1. };
+        let start = glide_at(from, to, view, 0.);
+        assert!((start.x - from.x).abs() < 1e-3 && (start.s - 1.).abs() < 1e-6);
+        let end = glide_at(from, to, view, 1.);
+        assert!((end.x - to.x).abs() < 1e-2 && (end.s - 1.).abs() < 1e-4);
+        let mid = glide_at(from, to, view, 0.5);
+        assert!(mid.s < 0.6, "a long way zooms out mid-way: {}", mid.s);
+        let near = glide_at(from, Camera { x: 100., y: 0., s: 1. }, view, 0.5);
+        assert!(near.s > 0.95, "a short way hardly does: {}", near.s);
     }
 }
 

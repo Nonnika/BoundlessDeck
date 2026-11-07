@@ -175,8 +175,10 @@ impl DeckView {
     /// Each frame: brings every block to where the deck says it should be,
     /// sending the events on the way. `visible` are the blocks drawn.
     pub(super) fn life_tick(&mut self, visible: &[String], window: &mut Window, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
         for id in std::mem::take(&mut self.m.created) {
             if let Some(b) = self.m.block(&id).cloned() {
+                self.rts.entry(id).or_default().pop.arm(now);
                 hooks(b.kind).on_create(self, &b, cx);
             }
         }
