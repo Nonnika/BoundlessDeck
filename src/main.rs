@@ -15,6 +15,7 @@ mod markdown;
 mod mcp;
 mod memo;
 mod model;
+mod pinch;
 mod pdf;
 mod preview;
 mod recents;
@@ -40,6 +41,7 @@ fn main() {
     let open = args.first().map(std::path::PathBuf::from);
     Application::new().with_assets(icons::Assets).run(|cx| {
         editor::bind_keys(cx);
+        pinch::install();
         commands::bind_keys(cx);
         cx.set_menus(commands::menus());
         cx.on_action(|_: &app::Quit, cx| cx.quit());

@@ -238,6 +238,21 @@ impl Focusable for DeckView {
 
 impl DeckView {
     pub fn new(m: Model, workspaces: Vec<String>, cx: &mut Context<Self>) -> DeckView {
+        // Pinches on the trackpad zoom about the pointer (pinch.rs); a deck
+        // taking over from another drains what that one left.
+        let pinches = crate::pinch::channel();
+        while pinches.try_recv().is_ok() {}
+        cx.spawn(async move |this, cx| {
+            while let Ok((x, y, k)) = pinches.recv().await {
+                if this.update(cx, |d, cx| {
+                    d.zoom_at(x, y, k, cx);
+                    cx.notify();
+                }).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         let (web_tx, web_rx) = smol::channel::unbounded();
         cx.spawn(async move |this, cx| {
             while let Ok(ev) = web_rx.recv().await {
