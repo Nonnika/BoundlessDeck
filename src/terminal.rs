@@ -180,6 +180,13 @@ impl Terminal {
         let _ = self.sender.send(Msg::Resize(window_size(cols, rows)));
     }
 
+    /// Drops a composition the input method left unfinished: the focus left mid-way.
+    pub fn cancel_composition(&mut self, cx: &mut Context<Self>) {
+        if self.marked.take().is_some() {
+            cx.notify();
+        }
+    }
+
     /// Hangs the shell up.
     pub fn close(&mut self) {
         let _ = self.sender.send(Msg::Shutdown);

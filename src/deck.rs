@@ -25,6 +25,7 @@ use gpui::{
 };
 
 mod browser;
+mod lifecycle;
 mod sharpen;
 mod stack;
 mod zoomlayer;
@@ -157,6 +158,8 @@ struct Runtime {
     /// A browser's pages, one for each tab opened so far, by the tab's key.
     webs: HashMap<u64, browser::WebRt>,
     web_err: Option<String>,
+    /// Where the block is in its lifecycle (`lifecycle`).
+    life: lifecycle::Life,
     /// The block was last drawn zoomed out, as its frame and title alone.
     lod: bool,
     /// The body fading in on coming back from LOD.
@@ -486,36 +489,20 @@ impl DeckView {
         .detach();
     }
 
-    /// Saves the deck and hangs the shells up.
+    /// Ends every block's stay (`on_close`: notes written, shells hung up), then saves.
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.stop_mcp();
+        self.life_delete(cx);
+        self.life_close(cx);
         self.stop_editing(cx);
-        let ids: Vec<String> = self.m.blocks.iter().map(|b| b.id.clone()).collect();
-        for id in ids {
-            self.flush_memo(&id);
-        }
         *self.save_seq.lock().unwrap() += 1; // no write under way overtakes this one
         let _ = self.m.save();
-        for (_, rt) in self.rts.drain() {
-            if let Some(t) = rt.term {
-                t.update(cx, |t, _| t.close());
-            }
-        }
     }
 
-    /// Lets go of what blocks that left the deck hold.
-    fn hang_up_gone(&mut self, cx: &mut Context<Self>) {
-        let gone: Vec<String> = std::mem::take(&mut self.m.hung_up);
-        for id in gone {
-            self.flush_memo(&id);
-            if let Some(rt) = self.rts.remove(&id)
-                && let Some(t) = rt.term
-            {
-                t.update(cx, |t, _| t.close());
-            }
-            if self.active.as_deref() == Some(&id) {
-                self.active = None;
-            }
+    /// Hangs up the block's shell, if it has one.
+    fn hang_up(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(t) = self.rts.get(id).and_then(|r| r.term.clone()) {
+            t.update(cx, |t, _| t.close());
         }
     }
 
@@ -573,7 +560,7 @@ impl DeckView {
     }
 
     fn after_edit(&mut self, cx: &mut Context<Self>) {
-        self.hang_up_gone(cx);
+        self.life_delete(cx);
         self.request_save(cx);
         cx.notify();
     }
@@ -887,13 +874,14 @@ impl DeckView {
         }).detach();
     }
 
-    /// Writes what was typed in the note, here and now: the block leaves or the deck closes.
-    fn flush_memo(&mut self, id: &str) {
-        let Some(b) = self.m.block(id).filter(|b| b.kind == BlockKind::Memo && !b.path.is_empty()) else {
+    /// Writes what was typed in the note, here and now: it pauses, leaves, or the deck closes.
+    /// Takes the block as it is or was, as one that left the deck is no longer in the model.
+    fn flush_memo(&mut self, b: &Block) {
+        if b.kind != BlockKind::Memo || b.path.is_empty() {
             return;
-        };
+        }
         let path = self.m.path_of(&b.path);
-        if let Some(rt) = self.rts.get_mut(id)
+        if let Some(rt) = self.rts.get_mut(&b.id)
             && rt.memo.loaded
             && rt.memo.text != rt.memo.saved
             && memo::write(&path, &rt.memo.text).is_ok()
@@ -1434,10 +1422,12 @@ impl DeckView {
         }
         self.active = id.map(str::to_string);
         crate::webfocus::release();
-        match id.and_then(|i| self.rts.get(i)).and_then(|r| r.term.clone()) {
-            Some(t) => window.focus(&t.focus_handle(cx)),
-            None => window.focus(&self.focus),
+        // The canvas takes the keyboard unless the block's `on_focus` does; one
+        // focused already keeps it.
+        if !id.is_some_and(|i| self.rts.get(i).is_some_and(|r| r.life.focused)) {
+            window.focus(&self.focus);
         }
+        self.sync_focus(window, cx);
     }
 
     /// Whether a canvas gesture under way changes what lies at r (window
@@ -1935,7 +1925,7 @@ impl DeckView {
             BlockKind::Memo => self.memo_body(b, t, cx),
             BlockKind::File => self.file_body(b, t, window, cx),
             BlockKind::Terminal => {
-                self.start_terminal(&b.id, cx);
+                // The shell starts on the block's first resume (`lifecycle`).
                 let rt = self.rts.get(&b.id);
                 match rt.and_then(|r| r.term.clone()) {
                     Some(term) => {
@@ -2448,7 +2438,7 @@ impl Render for DeckView {
         self.settle_layer(Some(window));
         self.track_active(window, cx);
         self.expire_notes(window, cx);
-        self.hang_up_gone(cx);
+        self.life_delete(cx);
         self.watch_stack();
         if let Some(e) = &self.editing
             && self.m.block(&e.id).is_none()
@@ -2528,6 +2518,7 @@ impl Render for DeckView {
                 (b.id.clone(), (x, y, b.w * cam.s, b.h * cam.s))
             })
             .collect();
+        self.life_tick(&visible, window, cx);
         let mut blocks = Vec::new();
         self.resize_corners.clear();
         for id in &visible {

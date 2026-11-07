@@ -440,8 +440,10 @@ pub struct Model {
     pub sel: HashSet<String>,
     pub undo: Vec<Change>,
     pub redo: Vec<Change>,
-    /// Blocks that left the deck since the view last looked: their terminals hang up.
-    pub hung_up: Vec<String>,
+    /// Blocks made since the view last looked (not those undo brings back): their `on_create`.
+    pub created: Vec<String>,
+    /// Blocks that left the deck since the view last looked, as they were: their `on_delete`.
+    pub hung_up: Vec<Block>,
     /// The clock QuickLook blocks go by, in Unix ms; the wall clock when None.
     pub clock: Option<i64>,
 }
@@ -539,6 +541,7 @@ impl Model {
         self.forget_redo();
         self.undo.push(Change::Add { block: b.clone(), index: self.blocks.len(), sel: self.sel.clone() });
         let id = b.id.clone();
+        self.created.push(id.clone());
         self.blocks.push(b);
         self.sel = HashSet::from([id.clone()]);
         id
@@ -570,7 +573,7 @@ impl Model {
 
     fn detach(&mut self, index: usize) -> Block {
         let b = self.blocks.remove(index);
-        self.hung_up.push(b.id.clone());
+        self.hung_up.push(b.clone());
         b
     }
 
@@ -578,7 +581,7 @@ impl Model {
     fn forget_redo(&mut self) {
         for c in self.redo.drain(..) {
             if let Change::Add { block, .. } = c {
-                self.hung_up.push(block.id);
+                self.hung_up.push(block);
             }
         }
     }
@@ -699,9 +702,6 @@ impl Model {
         self.forget_redo();
         self.restore_stack_edits(&edits, true);
         self.undo.push(Change::Stack(edits));
-        for id in ids {
-            self.hung_up.push(id.clone());
-        }
     }
 
     /// Records a move or resize done by hand, from the boxes before it, as one undoable change.
@@ -827,7 +827,6 @@ impl Model {
         self.restore_stack_edits(&edits, true);
         self.undo.push(Change::Stack(edits));
         self.sel = HashSet::from([stack.to_string()]);
-        self.hung_up.push(id.to_string());
         true
     }
 
@@ -1152,7 +1151,7 @@ mod tests {
         assert!(m.sel.contains(&id));
         m.undo_last();
         assert_eq!(m.blocks.len(), 2);
-        assert!(m.hung_up.contains(&id));
+        assert!(m.hung_up.iter().any(|b| b.id == id));
         m.redo_last();
         assert_eq!(m.blocks.len(), 3);
         m.sel = HashSet::from([m.blocks[0].id.clone()]);
