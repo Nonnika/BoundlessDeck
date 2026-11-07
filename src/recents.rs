@@ -91,6 +91,38 @@ impl Recents {
     }
 }
 
+/// Why a folder may not go to the Trash from here, if it may not: the home
+/// folder, or one holding it, is never a deck to throw away.
+pub fn trash_refusal(path: &Path, home: Option<&Path>) -> Option<String> {
+    if path.parent().is_none() {
+        return Some("不能把根目录移到废纸篓".into());
+    }
+    if let Some(h) = home
+        && h.starts_with(path)
+    {
+        return Some("不能把主目录（或包含它的文件夹）移到废纸篓".into());
+    }
+    None
+}
+
+/// Moves a folder to the Trash, as Finder does: it can be put back.
+#[cfg(target_os = "macos")]
+pub fn move_to_trash(path: &Path) -> Result<(), String> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    if let Some(why) = trash_refusal(path, dirs::home_dir().as_deref()) {
+        return Err(why);
+    }
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, None)
+        .map_err(|e| e.localizedDescription().to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn move_to_trash(_: &Path) -> Result<(), String> {
+    Err("这个系统上还不能移到废纸篓".into())
+}
+
 /// A path under the home folder written from ~.
 pub fn short_path(p: &str) -> String {
     if let Some(home) = dirs::home_dir() {
@@ -125,6 +157,16 @@ pub fn ago(now: DateTime<FixedOffset>, t: DateTime<FixedOffset>) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_home_folder_never_goes_to_the_trash() {
+        let home = Path::new("/Users/me");
+        assert!(trash_refusal(Path::new("/"), Some(home)).is_some());
+        assert!(trash_refusal(Path::new("/Users/me"), Some(home)).is_some());
+        assert!(trash_refusal(Path::new("/Users"), Some(home)).is_some(), "a folder holding home");
+        assert!(trash_refusal(Path::new("/Users/me/Documents/WorkSpace"), Some(home)).is_none());
+    }
+
     use super::*;
     use chrono::Duration;
 

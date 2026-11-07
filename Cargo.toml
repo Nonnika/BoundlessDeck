@@ -34,7 +34,7 @@ wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSThread", "NSString", "NSArray", "NSValue", "NSKeyValueCoding"] }
+objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSThread", "NSString", "NSArray", "NSValue", "NSKeyValueCoding", "NSFileManager", "NSURL"] }
 objc2-app-kit = { version = "0.3.2", features = ["objc2-core-image", "NSApplication", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSEvent", "NSResponder", "NSWindow", "NSView", "NSGraphics", "NSAccessibility", "NSWorkspace", "block2"] }
 objc2-core-image = { version = "0.3.2", features = ["CIFilter"] }
 raw-window-handle = "0.6"

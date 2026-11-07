@@ -8,7 +8,7 @@ use gpui::{
     App, AnyView, AppContext, Context, Entity, ExternalPaths, FocusHandle, FontWeight, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Subscription,
     Window,
-    actions, canvas, div, point, prelude::FluentBuilder, px, svg,
+    actions, canvas, div, linear_color_stop, linear_gradient, point, prelude::FluentBuilder, px, svg,
 };
 
 use crate::deck::{DeckEvent, DeckView};
@@ -256,6 +256,123 @@ impl Root {
         .detach();
     }
 
+    /// A deck dragged onto "删除文件夹": asks, then moves its folder to the
+    /// Trash and forgets it. One no longer there is only forgotten.
+    fn trash_deck(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = PathBuf::from(path);
+        if !dir.exists() {
+            self.recents.forget(path);
+            cx.notify();
+            return;
+        }
+        if let Some(why) = crate::recents::trash_refusal(&dir, dirs::home_dir().as_deref()) {
+            self.err = Some(why);
+            cx.notify();
+            return;
+        }
+        let name = crate::model::file_name(path);
+        let answer = window.prompt(
+            gpui::PromptLevel::Critical,
+            &format!("把「{name}」移到废纸篓？"),
+            Some(&format!("整个文件夹 {} 连同里面的所有文件都会移到废纸篓，之后可以从废纸篓放回。", short_path(path))),
+            &["移到废纸篓", "取消"],
+            cx,
+        );
+        let path = path.to_string();
+        cx.spawn(async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            let _ = this.update(cx, |r, cx| {
+                match crate::recents::move_to_trash(&dir) {
+                    Ok(()) => {
+                        r.recents.forget(&path);
+                        r.err = None;
+                    }
+                    Err(e) => r.err = Some(format!("没能移到废纸篓：{e}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// While a deck is dragged: two places at the bottom to drop it, over a
+    /// fade that rises from the bottom edge (GPUI draws no backdrop blur, so
+    /// the page goes under layers of the background, thicker further down).
+    /// Left takes its folder to the Trash; right takes it off the list.
+    fn drop_zones(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let bg = t.background;
+        let zone = |id: &'static str, icon: &'static str, title: &'static str, note: &'static str, tint: gpui::Hsla| {
+            div()
+                .id(id)
+                .flex_1()
+                .h_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_end()
+                .gap(px(4.))
+                .pb(px(30.))
+                .text_color(tint)
+                .drag_over::<DraggedDeck>(move |s, _, _, _| {
+                    s.bg(linear_gradient(180., linear_color_stop(tint.opacity(0.), 0.), linear_color_stop(tint.opacity(0.22), 1.)))
+                })
+                .child(
+                    div()
+                        .size(px(40.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(tint.opacity(0.5))
+                        .child(svg().path(icons::path(icon)).size(px(18.)).text_color(tint)),
+                )
+                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(title))
+                .child(div().text_size(px(11.)).opacity(0.75).child(note))
+        };
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .h(px(220.))
+            // The fade: three layers, each starting lower and growing denser.
+            .child(div().absolute().inset_0().bg(linear_gradient(
+                180.,
+                linear_color_stop(bg.opacity(0.), 0.),
+                linear_color_stop(bg.opacity(0.55), 1.),
+            )))
+            .child(div().absolute().left_0().right_0().bottom_0().h(px(150.)).bg(linear_gradient(
+                180.,
+                linear_color_stop(bg.opacity(0.), 0.),
+                linear_color_stop(bg.opacity(0.75), 1.),
+            )))
+            .child(div().absolute().left_0().right_0().bottom_0().h(px(80.)).bg(linear_gradient(
+                180.,
+                linear_color_stop(bg.opacity(0.), 0.),
+                linear_color_stop(bg.opacity(0.9), 1.),
+            )))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_row()
+                    .child(zone("drop-trash", "trash", "删除文件夹", "移到废纸篓", t.danger).on_drop(cx.listener(
+                        |r, d: &DraggedDeck, window, cx| r.trash_deck(&d.path, window, cx),
+                    )))
+                    .child(div().w(px(1.)).h(px(90.)).mt(px(110.)).bg(t.border))
+                    .child(zone("drop-forget", "x", "从列表移除", "文件夹保留", t.muted).on_drop(cx.listener(
+                        |r, d: &DraggedDeck, _, cx| {
+                            r.recents.forget(&d.path);
+                            cx.notify();
+                        },
+                    ))),
+            )
+    }
+
     fn dropped(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         if let Some(p) = paths.iter().find(|p| p.is_dir()) {
             self.begin_open(p.clone(), cx);
@@ -301,6 +418,7 @@ impl Root {
                     ),
                 ),
             )
+            .when(cx.has_active_drag(), |d| d.child(self.drop_zones(&t, cx)))
     }
 
     fn recents_block(
@@ -372,27 +490,29 @@ impl Root {
                                     .text_size(px(14.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(if missing { t.muted } else { t.text })
-                                    .child(name),
+                                    .child(name.clone()),
                             )
+                            // The path, and on its line (so on its baseline) the count and when.
                             .child(
                                 div()
+                                    .flex()
+                                    .flex_row()
+                                    .gap(px(12.))
                                     .text_size(px(12.))
                                     .text_color(t.muted)
-                                    .overflow_hidden()
                                     .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .child(short_path(&path)),
+                                    .child(
+                                        div().flex_1().min_w_0().overflow_hidden().text_ellipsis().child(short_path(&path)),
+                                    )
+                                    .child(if missing {
+                                        div().flex_none().text_color(t.danger).child("找不到这个文件夹")
+                                    } else {
+                                        div()
+                                            .flex_none()
+                                            .child(format!("{} 个 block · {}", r.blocks, ago(now, r.opened_at)))
+                                    }),
                             ),
                     )
-                    .child(if missing {
-                        div().text_size(px(12.)).text_color(t.danger).child("找不到这个文件夹")
-                    } else {
-                        div()
-                            .text_size(px(12.))
-                            .text_color(t.muted)
-                            .whitespace_nowrap()
-                            .child(format!("{} 个 block · {}", r.blocks, ago(now, r.opened_at)))
-                    })
                     .child(
                         div()
                             .id(SharedString::from(format!("forget:{i}")))
@@ -409,6 +529,7 @@ impl Root {
                                 cx.notify();
                             })),
                     )
+                    .on_drag(DraggedDeck { path: path.clone(), name: name.clone(), missing }, |d, _, _, cx| cx.new(|_| d.clone()))
                     .on_click(cx.listener(move |r, _, _, cx| r.begin_open(PathBuf::from(&path), cx))),
             );
         }
@@ -477,6 +598,52 @@ impl Root {
                             ),
                     )
                     .child(list),
+            )
+    }
+}
+
+/// A recent deck being dragged toward the drop places, and how it looks under the pointer.
+#[derive(Clone)]
+struct DraggedDeck {
+    path: String,
+    name: String,
+    missing: bool,
+}
+
+impl Render for DraggedDeck {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(window);
+        let paper = Paper::of(&t);
+        let missing = self.missing;
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .px(px(12.))
+            .py(px(8.))
+            .bg(t.surface)
+            .border_1()
+            .border_color(t.border)
+            .opacity(0.92)
+            .shadow(vec![gpui::BoxShadow {
+                color: t.shade,
+                offset: point(px(0.), px(6.)),
+                blur_radius: px(16.),
+                spread_radius: px(0.),
+            }])
+            .child(
+                div().size(px(24.)).child(
+                    canvas(|_, _, _| (), move |b, _, window, _| crate::homescene::paint_deck_mark(window, b, &t, &paper, missing))
+                        .size_full(),
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(self.name.clone()))
+                    .child(div().text_size(px(11.)).text_color(t.muted).child(short_path(&self.path))),
             )
     }
 }
