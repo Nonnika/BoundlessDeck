@@ -1657,16 +1657,19 @@ impl DeckView {
                 st
             }
         };
+        // GPUI's list keeps only its top and bottom padding (items start at its
+        // left edge, as wide as it), so each item carries the sides itself.
+        let (pr, pl) = (px(pad[1]), px(pad[3]));
         div()
             .size_full()
             .child(
-                gpui::list(state, move |ix, _, _| parsed.render_item(ix, size, &colors, &*images))
-                    .w(px(outer_w.max(40.)))
-                    .h_full()
-                    .pt(px(pad[0]))
-                    .pr(px(pad[1]))
-                    .pb(px(pad[2]))
-                    .pl(px(pad[3])),
+                gpui::list(state, move |ix, _, _| {
+                    div().pl(pl).pr(pr).child(parsed.render_item(ix, size, &colors, &*images)).into_any_element()
+                })
+                .w(px(outer_w.max(40.)))
+                .h_full()
+                .pt(px(pad[0]))
+                .pb(px(pad[2])),
             )
             .into_any_element()
     }
