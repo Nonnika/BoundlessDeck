@@ -118,12 +118,40 @@ struct Runtime {
     /// A Markdown file's text, read once.
     doc: Option<Result<Arc<String>, String>>,
     loading: bool,
+    /// A Word document read as Markdown, its pictures by name.
+    word: Option<Result<Arc<WordDoc>, String>>,
+    /// A PDF open for its preview, and its page as last rendered: page, width, image.
+    pdf: Option<Result<Arc<crate::pdf::Doc>, String>>,
+    pdf_img: Option<(usize, usize, Arc<gpui::RenderImage>)>,
+    pdf_rendering: bool,
     list: UniformListScrollHandle,
     term: Option<Entity<Terminal>>,
     term_err: Option<String>,
     term_used: bool,
     _term_sub: Option<Subscription>,
     memo: MemoRt,
+}
+
+struct WordDoc {
+    markdown: String,
+    media: HashMap<String, Arc<gpui::Image>>,
+}
+
+fn image_format(name: &str) -> gpui::ImageFormat {
+    match name.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
+        Some("jpg" | "jpeg") => gpui::ImageFormat::Jpeg,
+        Some("gif") => gpui::ImageFormat::Gif,
+        Some("webp") => gpui::ImageFormat::Webp,
+        Some("bmp") => gpui::ImageFormat::Bmp,
+        Some("svg") => gpui::ImageFormat::Svg,
+        Some("tif" | "tiff") => gpui::ImageFormat::Tiff,
+        _ => gpui::ImageFormat::Png,
+    }
+}
+
+/// What shows around a PDF page, as a reader's gray desk.
+fn pdf_backdrop(t: &Theme) -> Hsla {
+    if t.dark { gpui::rgb(0x2a2b2f).into() } else { gpui::rgb(0xececef).into() }
 }
 
 #[derive(Default)]
@@ -718,6 +746,164 @@ impl DeckView {
                 cx.notify();
             });
         }).detach();
+    }
+
+    fn load_word(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(b) = self.m.block(id) else { return };
+        let path = self.m.path_of(&b.path);
+        let rt = self.rts.entry(id.to_string()).or_default();
+        if rt.loading || rt.word.is_some() {
+            return;
+        }
+        rt.loading = true;
+        let id = id.to_string();
+        cx.spawn(async move |this, cx| {
+            let r = cx
+                .background_spawn(async move {
+                    crate::word::read(&path).map(|d| WordDoc {
+                        markdown: d.markdown,
+                        media: d
+                            .media
+                            .into_iter()
+                            .map(|(name, bytes)| {
+                                let img = Arc::new(gpui::Image::from_bytes(image_format(&name), bytes));
+                                (name, img)
+                            })
+                            .collect(),
+                    })
+                })
+                .await;
+            let _ = this.update(cx, |d, cx| {
+                let rt = d.rts.entry(id).or_default();
+                rt.loading = false;
+                rt.word = Some(r.map(Arc::new));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn open_pdf(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(b) = self.m.block(id) else { return };
+        let path = self.m.path_of(&b.path);
+        let rt = self.rts.entry(id.to_string()).or_default();
+        if rt.loading || rt.pdf.is_some() {
+            return;
+        }
+        rt.loading = true;
+        let id = id.to_string();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_spawn(async move { crate::pdf::Doc::open(&path) }).await;
+            let _ = this.update(cx, |d, cx| {
+                let rt = d.rts.entry(id).or_default();
+                rt.loading = false;
+                rt.pdf = Some(r.map(Arc::new));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Renders the page the block shows, unless it shows already or one renders.
+    fn render_pdf(&mut self, id: &str, page: usize, width: usize, cx: &mut Context<Self>) {
+        let Some(rt) = self.rts.get_mut(id) else { return };
+        let Some(Ok(doc)) = rt.pdf.clone() else { return };
+        if rt.pdf_rendering || rt.pdf_img.as_ref().is_some_and(|(p, w, _)| *p == page && *w == width) {
+            return;
+        }
+        rt.pdf_rendering = true;
+        let id = id.to_string();
+        cx.spawn(async move |this, cx| {
+            let r = cx
+                .background_spawn(async move {
+                    doc.render(page, width).and_then(|(w, h, px)| {
+                        let buf = image::RgbaImage::from_raw(w as u32, h as u32, px).ok_or("无法绘制这一页")?;
+                        Ok(Arc::new(gpui::RenderImage::new(vec![image::Frame::new(buf)])))
+                    })
+                })
+                .await;
+            let _ = this.update(cx, |d, cx| {
+                let rt = d.rts.entry(id).or_default();
+                rt.pdf_rendering = false;
+                match r {
+                    Ok(img) => rt.pdf_img = Some((page, width, img)),
+                    Err(e) => rt.pdf = Some(Err(e)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn pdf_body(&mut self, b: &Block, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let s = self.m.cam.s;
+        self.open_pdf(&b.id, cx);
+        let doc = match self.rts.get(&b.id).and_then(|r| r.pdf.clone()) {
+            None => return message("加载中…".into(), t.muted, s),
+            Some(Err(e)) => return message(e, t.danger, s),
+            Some(Ok(doc)) => doc,
+        };
+        let pages = doc.pages();
+        let page = (b.page.max(0) as usize).min(pages - 1);
+        self.render_pdf(&b.id, page, crate::pdf::width_for(b.w * s), cx);
+        let img_el = self.rts.get(&b.id).and_then(|r| r.pdf_img.clone()).map(|(_, _, im)| {
+            img(gpui::ImageSource::Render(im)).size_full().object_fit(ObjectFit::Contain)
+        });
+        let ps = s.min(1.5);
+        let turn = |key: &str, glyph: &'static str, to: Option<usize>, cx: &mut Context<Self>| {
+            let id = b.id.clone();
+            let can = to.is_some_and(|p| p < pages);
+            div()
+                .id(SharedString::from(format!("{key}:{}", b.id)))
+                .px(px(9. * ps))
+                .py(px(1. * ps))
+                .text_size(px(15. * ps))
+                .text_color(if can { t.text } else { t.muted.opacity(0.35) })
+                .when(can, |d| d.cursor_pointer().hover(|d| d.bg(t.surface_hover)))
+                .child(glyph)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |d, _, _, cx| {
+                    if let (true, Some(to)) = (can, to)
+                        && let Some(b) = d.m.block_mut(&id)
+                    {
+                        b.page = to as i32;
+                        d.request_save(cx);
+                        cx.notify();
+                    }
+                }))
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(pdf_backdrop(t))
+            .child(div().flex_1().min_h_0().w_full().p(px(8. * s)).children(img_el))
+            .when(pages > 1, |d| {
+                d.child(
+                    div().w_full().flex().justify_center().pb(px(8. * ps)).child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(2. * ps))
+                            .p(px(2. * ps))
+                            .bg(t.surface.opacity(0.92))
+                            .border_1()
+                            .border_color(t.border)
+                            .occlude()
+                            .child(turn("pdf-prev", "‹", page.checked_sub(1), cx))
+                            .child(
+                                div()
+                                    .px(px(4. * ps))
+                                    .text_size(px(12. * ps))
+                                    .text_color(t.muted)
+                                    .child(format!("{} / {pages}", page + 1)),
+                            )
+                            .child(turn("pdf-next", "›", Some(page + 1), cx)),
+                    ),
+                )
+            })
+            .into_any_element()
     }
 
     /// Starts the block's shell: where its last one was, under what it showed.
@@ -1483,47 +1669,43 @@ impl DeckView {
                 .into_any_element(),
             preview::Kind::Markdown => {
                 self.load_doc(&b.id, cx);
+                let base = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
                 match self.rts.get(&b.id).and_then(|r| r.doc.clone()) {
                     None => message("加载中…".into(), t.muted, s),
                     Some(Err(e)) => message(e, t.danger, s),
                     Some(Ok(text)) => live_preview(
                         &b.id,
-                        markdown::render(&text, DOC_FONT * s, &MdColors::of_theme(t)),
+                        markdown::render_with(&text, DOC_FONT * s, &MdColors::of_theme(t), &|url| {
+                            if url.starts_with("http://") || url.starts_with("https://") {
+                                return None;
+                            }
+                            let p = std::path::Path::new(url);
+                            Some(gpui::ImageSource::from(if p.is_absolute() { p.to_path_buf() } else { base.join(p) }))
+                        }),
                         [12. * s, 16. * s, 12. * s, 16. * s],
                     ),
                 }
             }
-            preview::Kind::Pdf | preview::Kind::Word => {
-                let p2 = path.clone();
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(10. * s))
-                    .text_size(px(12. * s))
-                    .text_color(t.muted)
-                    .child(svg().path(icons::path("file")).size(px(36. * s)).text_color(t.muted))
-                    .child("PDF 与 Word 预览尚未在 Rust 版实现")
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("open:{}", b.id)))
-                            .px(px(10. * s))
-                            .py(px(5. * s))
-                            .rounded(px(6. * s))
-                            .border_1()
-                            .border_color(t.border)
-                            .text_color(t.text)
-                            .hover(|d| d.bg(t.surface_hover))
-                            .cursor_pointer()
-                            .occlude()
-                            .child("用默认应用打开")
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(move |_, _, cx| cx.open_with_system(&p2)),
-                    )
-                    .into_any_element()
+            preview::Kind::Word => {
+                self.load_word(&b.id, cx);
+                match self.rts.get(&b.id).and_then(|r| r.word.clone()) {
+                    None => message("加载中…".into(), t.muted, s),
+                    Some(Err(e)) => message(e, t.danger, s),
+                    Some(Ok(doc)) if doc.markdown.trim().is_empty() => message("（空文档）".into(), t.muted, s),
+                    Some(Ok(doc)) => {
+                        let d2 = doc.clone();
+                        live_preview(
+                            &b.id,
+                            markdown::render_with(&doc.markdown, DOC_FONT * s, &MdColors::of_theme(t), &move |url| {
+                                let name = url.strip_prefix(crate::word::MEDIA_SCHEME)?;
+                                d2.media.get(name).map(|im| gpui::ImageSource::Image(im.clone()))
+                            }),
+                            [12. * s, 16. * s, 16. * s, 16. * s],
+                        )
+                    }
+                }
             }
+            preview::Kind::Pdf => self.pdf_body(b, t, cx),
             preview::Kind::Text => {
                 self.load_lines(&b.id, cx);
                 let rt = self.rts.entry(b.id.clone()).or_default();
@@ -1574,7 +1756,7 @@ impl DeckView {
     fn body_cover(&self, b: &Block, cx: &mut Context<Self>) -> Option<AnyElement> {
         let scrolls = match b.kind {
             BlockKind::Terminal | BlockKind::Note | BlockKind::Memo => true,
-            BlockKind::File => matches!(preview::of(&b.path), preview::Kind::Text | preview::Kind::Markdown),
+            BlockKind::File => matches!(preview::of(&b.path), preview::Kind::Text | preview::Kind::Markdown | preview::Kind::Word),
             _ => false,
         };
         if !scrolls || self.editing(&b.id, EditPart::Body).is_some() {

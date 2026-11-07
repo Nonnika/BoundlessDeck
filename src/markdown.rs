@@ -39,6 +39,7 @@ enum Node {
     Rule,
     Table(Vec<Vec<Inline>>),
     QuotePara(usize, Inline),
+    Image(String),
 }
 
 fn parse(src: &str, c: &MdColors) -> Vec<Node> {
@@ -50,6 +51,7 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node> {
     let mut code: Option<String> = None;
     let mut table: Option<Vec<Vec<Inline>>> = None;
     let mut item_marker: Option<String> = None;
+    let mut image: Option<String> = None;
 
     let push_text = |cur: &mut Option<Inline>, t: &str, style: HighlightStyle| {
         let inl = cur.get_or_insert_with(Inline::default);
@@ -87,6 +89,13 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node> {
                 Tag::Strikethrough => strike += 1,
                 Tag::Link { .. } => link += 1,
                 Tag::CodeBlock(_) => code = Some(String::new()),
+                Tag::Image { dest_url, .. } => {
+                    // A picture stands on a line of its own.
+                    if let Some(inl) = cur.take().filter(|i| !i.is_empty()) {
+                        nodes.push(Node::Para(inl));
+                    }
+                    image = Some(dest_url.to_string());
+                }
                 Tag::List(start) => {
                     // The text of the item the list is nested in comes first.
                     if let Some(inl) = cur.take() {
@@ -145,6 +154,11 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node> {
                 TagEnd::Strikethrough => strike -= 1,
                 TagEnd::Link => link -= 1,
                 TagEnd::CodeBlock => nodes.push(Node::Code(code.take().unwrap_or_default())),
+                TagEnd::Image => {
+                    if let Some(url) = image.take() {
+                        nodes.push(Node::Image(url));
+                    }
+                }
                 TagEnd::List(_) | TagEnd::BlockQuote(_) => {
                     stack.pop();
                 }
@@ -157,6 +171,7 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node> {
                 TagEnd::Table => nodes.push(Node::Table(table.take().unwrap_or_default())),
                 _ => {}
             },
+            Event::Text(_) if image.is_some() => {} // a picture's alt text
             Event::Text(t) => {
                 if let Some(code) = code.as_mut() {
                     code.push_str(&t);
@@ -195,8 +210,21 @@ fn styled(inl: Inline) -> StyledText {
     StyledText::new(SharedString::from(inl.text)).with_highlights(h)
 }
 
-/// Renders src at font size `size`, in colors `c`.
+/// Renders src at font size `size`, in colors `c`; pictures by absolute path.
 pub fn render(src: &str, size: f32, c: &MdColors) -> AnyElement {
+    render_with(src, size, c, &|url| {
+        let p = std::path::Path::new(url);
+        p.is_absolute().then(|| gpui::ImageSource::from(p.to_path_buf()))
+    })
+}
+
+/// Renders src, its pictures as `images` finds them.
+pub fn render_with(
+    src: &str,
+    size: f32,
+    c: &MdColors,
+    images: &dyn Fn(&str) -> Option<gpui::ImageSource>,
+) -> AnyElement {
     let gap = size * 0.6;
     let children: Vec<AnyElement> = parse(src, c)
         .into_iter()
@@ -242,6 +270,10 @@ pub fn render(src: &str, size: f32, c: &MdColors) -> AnyElement {
                 .child(code.trim_end_matches('\n').to_string())
                 .into_any_element(),
             Node::Rule => div().h(px(1.)).bg(c.rule).my(px(size * 0.3)).into_any_element(),
+            Node::Image(url) => match images(&url) {
+                Some(src) => gpui::img(src).max_w_full().into_any_element(),
+                None => div().text_color(c.muted).child(format!("［图片：{url}］")).into_any_element(),
+            },
             Node::Table(rows) => div()
                 .flex()
                 .flex_col()
@@ -290,6 +322,7 @@ mod tests {
                 Node::Code(s) => format!("code:{}", s.trim()),
                 Node::Rule => "hr".into(),
                 Node::Table(r) => format!("table:{}x{}", r.len(), r[0].len()),
+                Node::Image(u) => format!("img:{u}"),
             })
             .collect()
     }
@@ -311,6 +344,11 @@ mod tests {
                 "table:2x2"
             ]
         );
+    }
+
+    #[test]
+    fn pictures_stand_alone() {
+        assert_eq!(kinds("前 ![alt](a.png) 后"), vec!["p:前 ", "img:a.png", "p: 后"]);
     }
 
     #[test]

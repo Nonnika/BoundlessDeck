@@ -11,12 +11,14 @@ mod lifespan;
 mod markdown;
 mod memo;
 mod model;
+mod pdf;
 mod preview;
 mod recents;
 mod tape;
 mod terminal;
 mod termstate;
 mod theme;
+mod word;
 
 use gpui::{
     AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
