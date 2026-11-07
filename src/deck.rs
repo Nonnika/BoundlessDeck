@@ -112,6 +112,7 @@ enum Drag {
 enum Popup {
     Workspaces,
     Life { id: String, at: (f32, f32) },
+    ChartType { id: String, at: (f32, f32) },
 }
 
 /// A block's state between frames: never saved.
@@ -1490,12 +1491,77 @@ impl DeckView {
         }
         if note {
             bar = bar.child(self.life_chip(b, paper, cx));
-        } else if b.kind != BlockKind::Note {
+        } else if b.kind == BlockKind::Chart {
+            bar = bar.child(self.chart_controls(b, t, cx));
+        } else {
             bar = bar.child(
                 div().text_size(px(10. * s)).text_color(t.muted).whitespace_nowrap().child(b.kind.label()),
             );
         }
         bar.into_any_element()
+    }
+
+    /// A chart's type chip (a menu of types) and its table button.
+    fn chart_controls(&mut self, b: &Block, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let s = self.m.cam.s;
+        let kind = crate::chart::of(&b.chart);
+        let editing = self.editing(&b.id, EditPart::Body).is_some();
+        let (id1, id2) = (b.id.clone(), b.id.clone());
+        let chip = |id: SharedString| {
+            div()
+                .id(id)
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4. * s))
+                .px(px(6. * s))
+                .py(px(2. * s))
+                .rounded(px(5. * s))
+                .text_size(px(11. * s))
+                .text_color(t.muted)
+                .hover(|d| d.bg(t.surface_hover))
+                .cursor_pointer()
+                .occlude()
+        };
+        div()
+            .flex()
+            .flex_row()
+            .gap(px(2. * s))
+            .child(
+                chip(SharedString::from(format!("chart-kind:{}", b.id)))
+                    .child(svg().path(icons::path(crate::chart::icon(kind))).size(px(12. * s)).text_color(t.muted))
+                    .child(crate::chart::label(kind))
+                    .child(svg().path(icons::path("chevron_down")).size(px(10. * s)).text_color(t.muted))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |d, ev: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            d.popup = Some(Popup::ChartType {
+                                id: id1.clone(),
+                                at: (f32::from(ev.position.x), f32::from(ev.position.y) + 10.),
+                            });
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .child(
+                chip(SharedString::from(format!("chart-table:{}", b.id)))
+                    .when(editing, |d| d.bg(t.accent.opacity(0.15)).text_color(t.accent))
+                    .child(svg().path(icons::path("table")).size(px(12. * s)).text_color(if editing { t.accent } else { t.muted }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |d, _: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            if d.editing(&id2, EditPart::Body).is_some() {
+                                d.stop_editing(cx);
+                            } else {
+                                d.m.sel = HashSet::from([id2.clone()]);
+                                d.start_editing(&id2, EditPart::Body, window, cx);
+                            }
+                        }),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// How long a QuickLook has left; a click picks another span.
@@ -1583,17 +1649,33 @@ impl DeckView {
                 }
             }
             BlockKind::Chart => {
-                if let Some(ed) = self.editing(&b.id, EditPart::Body).cloned() {
-                    ed.update(cx, |e, _| {
-                        e.font_size = 12. * s;
-                        e.color = t.text;
-                        e.muted = t.muted;
-                        e.accent = t.accent;
-                        e.mono = true;
-                    });
-                    return div().size_full().p(px(8. * s)).child(ed).into_any_element();
-                }
-                crate::chartview::render(&b.text, &b.chart, s, t)
+                let chart = crate::chartview::render(&b.text, &b.chart, s, t);
+                let Some(ed) = self.editing(&b.id, EditPart::Body).cloned() else { return chart };
+                ed.update(cx, |e, _| {
+                    e.font_size = 12. * s;
+                    e.color = t.text;
+                    e.muted = t.muted;
+                    e.accent = t.accent;
+                    e.mono = true;
+                });
+                // The table beside the chart, which follows it live; under it when narrow.
+                let side = b.w >= 520.;
+                let table = div()
+                    .flex_none()
+                    .p(px(8. * s))
+                    .bg(t.surface_hover)
+                    .when(side, |d| d.w(px(b.w * s * 0.42)).h_full().border_r_1())
+                    .when(!side, |d| d.h(px((b.h - TITLE_H) * s * 0.45)).w_full().border_b_1())
+                    .border_color(t.border)
+                    .child(ed);
+                div()
+                    .size_full()
+                    .flex()
+                    .when(side, |d| d.flex_row())
+                    .when(!side, |d| d.flex_col())
+                    .child(table)
+                    .child(div().flex_1().min_w_0().min_h_0().child(chart))
+                    .into_any_element()
             }
             BlockKind::Stack => self.stack_body(b, t, window, cx),
             BlockKind::Browser => unsupported(
@@ -1941,6 +2023,26 @@ impl DeckView {
                                 d.request_save(cx);
                                 cx.notify();
                             })),
+                    );
+                }
+                m.into_any_element()
+            }
+            Popup::ChartType { id, at } => {
+                let now = self.m.block(&id).map(|b| crate::chart::of(&b.chart));
+                let mut m = menu(at.0 - 60., at.1);
+                for (kind, name, label, _) in crate::chart::TYPES {
+                    let id = id.clone();
+                    m = m.child(
+                        row(SharedString::from(format!("chart:{name}")), label.into(), now == Some(kind)).on_click(
+                            cx.listener(move |d, _, _, cx| {
+                                if let Some(b) = d.m.block_mut(&id) {
+                                    b.chart = name.to_string();
+                                }
+                                d.popup = None;
+                                d.request_save(cx);
+                                cx.notify();
+                            }),
+                        ),
                     );
                 }
                 m.into_any_element()

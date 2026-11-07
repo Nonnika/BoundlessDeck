@@ -334,10 +334,7 @@ impl DeckView {
             BlockKind::Memo | BlockKind::File => n.path.clone(),
             BlockKind::Terminal => n.term.as_ref().map(|t| t.dir.clone()).filter(|d| !d.is_empty()).unwrap_or("终端".into()),
             BlockKind::Browser => if n.url.is_empty() { "空白页面".into() } else { n.url.clone() },
-            BlockKind::Chart => {
-                let d = crate::chartview::parse(&n.text);
-                format!("{} 项 · {}", d.labels.len(), if n.chart.is_empty() { "bar" } else { &n.chart })
-            }
+            BlockKind::Chart => crate::chart::parse(&n.text).summary(crate::chart::of(&n.chart)),
             BlockKind::Stack => String::new(),
         }
     }
@@ -498,7 +495,7 @@ impl DeckView {
             let face: AnyElement = if !face_shows {
                 div().into_any_element()
             } else if m.kind == BlockKind::Chart {
-                crate::chartview::render(&m.text, &m.chart, s * 0.8, t)
+                crate::chartview::render_compact(&m.text, &m.chart, s, t)
             } else {
                 let md = self.face_markdown(&m, cx);
                 if md.is_empty() {

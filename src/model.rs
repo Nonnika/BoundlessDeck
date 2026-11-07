@@ -908,7 +908,7 @@ pub fn new_block_of(kind: BlockKind, now_ms: i64) -> Block {
         BlockKind::Stack => (380.0, 300.0),
         BlockKind::Chart => {
             b.chart = "bar".into();
-            b.text = "名称\t数值\n一月\t12\n二月\t19\n三月\t8\n四月\t15".into();
+            b.text = crate::chart::SAMPLE.into();
             (480.0, 320.0)
         }
     };
