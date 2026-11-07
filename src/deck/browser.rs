@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px, svg,
+    SharedString, StatefulInteractiveElement, Styled, StyledImage, Window, div, prelude::FluentBuilder, px, svg,
 };
 use wry::dpi::{LogicalPosition, LogicalSize};
 
@@ -25,6 +25,9 @@ pub(super) const BAR_H: f32 = 34.0;
 
 pub(super) struct WebRt {
     view: wry::WebView,
+    /// A picture of the page, shown in its place while it is hidden.
+    pub snap: Option<std::sync::Arc<gpui::Image>>,
+    snapping: bool,
     /// The page zoom it was last given.
     zoom: f32,
     bounds: (f32, f32, f32, f32),
@@ -38,7 +41,33 @@ pub(super) enum WebEvent {
     NewWindow(String, String),
     /// A link to what a browser does not show: the system opens it.
     External(String),
+    /// A picture of the page, as PNG.
+    Snapshot(String, Vec<u8>),
 }
+
+/// Asks WebKit for a picture of the page as it shows now; it comes as an event.
+#[cfg(target_os = "macos")]
+fn take_snapshot(view: &wry::WebView, id: &str, tx: &smol::channel::Sender<WebEvent>) {
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
+    use objc2_foundation::{NSDictionary, NSError};
+    use wry::WebViewExtMacOS;
+    let (tx, id) = (tx.clone(), id.to_string());
+    let handler = block2::RcBlock::new(move |img: *mut NSImage, _err: *mut NSError| {
+        let Some(img) = (unsafe { img.as_ref() }) else { return };
+        let png = img
+            .TIFFRepresentation()
+            .and_then(|tiff| NSBitmapImageRep::imageRepWithData(&tiff))
+            .and_then(|rep| unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) });
+        if let Some(png) = png {
+            let _ = tx.try_send(WebEvent::Snapshot(id.clone(), png.to_vec()));
+        }
+    });
+    let wk = view.webview();
+    unsafe { wk.takeSnapshotWithConfiguration_completionHandler(None, &handler) };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn take_snapshot(_: &wry::WebView, _: &str, _: &smol::channel::Sender<WebEvent>) {}
 
 /// The schemes a page may go to; others are the system's.
 fn web_scheme(url: &str) -> bool {
@@ -94,8 +123,14 @@ impl DeckView {
                 }
             }
             WebEvent::Loading(id, on, url) => {
+                let tx = self.web_tx.clone();
                 if let Some(rt) = self.rts.get_mut(&id).and_then(|r| r.web.as_mut()) {
                     rt.loading = on;
+                    // Loaded out of sight: a picture to show for it meanwhile.
+                    if !on && !rt.visible && !rt.snapping {
+                        rt.snapping = true;
+                        take_snapshot(&rt.view, &id, &tx);
+                    }
                 }
                 if !on
                     && !url.is_empty()
@@ -116,6 +151,12 @@ impl DeckView {
                 self.after_edit(cx);
             }
             WebEvent::External(url) => cx.open_url(&url),
+            WebEvent::Snapshot(id, png) => {
+                if let Some(web) = self.rts.get_mut(&id).and_then(|r| r.web.as_mut()) {
+                    web.snapping = false;
+                    web.snap = Some(std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)));
+                }
+            }
         }
         cx.notify();
     }
@@ -212,6 +253,8 @@ impl DeckView {
         let loading = rt.web.as_ref().is_some_and(|w| w.loading);
         // The page: made once there is an address, shown where nothing is over it.
         let mut note: Option<String> = None;
+        let mut snap: Option<std::sync::Arc<gpui::Image>> = None;
+        let tx = self.web_tx.clone();
         if b.url.is_empty() {
             rt.web = None;
             note = Some("在地址栏输入网址或要搜索的词".into());
@@ -223,7 +266,15 @@ impl DeckView {
                 let rt = self.rts.entry(b.id.clone()).or_default();
                 match made {
                     Ok(view) => {
-                        rt.web = Some(WebRt { view, zoom: 1., bounds: (0., 0., 0., 0.), visible: false, loading: true })
+                        rt.web = Some(WebRt {
+                            view,
+                            snap: None,
+                            snapping: false,
+                            zoom: 1.,
+                            bounds: (0., 0., 0., 0.),
+                            visible: false,
+                            loading: true,
+                        })
                     }
                     Err(e) => rt.web_err = Some(format!("网页视图没能创建：{e}")),
                 }
@@ -253,7 +304,15 @@ impl DeckView {
                         }
                         self.web_shown.insert(b.id.clone());
                     }
-                    Some(why) => note = Some(why.to_string()),
+                    Some(why) => {
+                        // Going out of sight: a picture of it takes its place.
+                        if web.visible && !web.snapping {
+                            web.snapping = true;
+                            take_snapshot(&web.view, &b.id, &tx);
+                        }
+                        snap = web.snap.clone();
+                        note = Some(why.to_string());
+                    }
                 }
             }
         }
@@ -341,6 +400,38 @@ impl DeckView {
                     .child(address),
             );
         let backdrop: Hsla = if t.dark { gpui::rgb(0x1a1b1f).into() } else { gpui::rgb(0xf3f4f6).into() };
+        if let Some(img) = snap {
+            // The page's picture, scaled with the block; why it is a picture, faintly.
+            let why = note.filter(|n| !n.is_empty());
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(bar)
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .w_full()
+                        .bg(backdrop)
+                        .child(gpui::img(gpui::ImageSource::Image(img)).size_full().object_fit(gpui::ObjectFit::Fill))
+                        .when_some(why, |d, why| {
+                            d.child(
+                                div().absolute().bottom(px(8. * s)).left_0().right_0().flex().justify_center().child(
+                                    div()
+                                        .px(px(9. * s))
+                                        .py(px(3. * s))
+                                        .rounded_full()
+                                        .bg(t.surface.opacity(0.9))
+                                        .text_size(px(10. * s))
+                                        .text_color(t.muted)
+                                        .child(why),
+                                ),
+                            )
+                        }),
+                )
+                .into_any_element();
+        }
         div()
             .size_full()
             .flex()
