@@ -199,6 +199,9 @@ pub struct DeckView {
     zoom_gen: u64,
     wake_at: Option<Instant>,
     save_seq: Arc<Mutex<u64>>,
+    /// The workspace's MCP endpoint while it runs, or why it could not start.
+    mcp: Option<crate::mcp::server::Server>,
+    mcp_err: Option<String>,
 }
 
 impl EventEmitter<DeckEvent> for DeckView {}
@@ -231,7 +234,102 @@ impl DeckView {
             zoom_gen: 0,
             wake_at: None,
             save_seq: Arc::new(Mutex::new(0)),
+            mcp: None,
+            mcp_err: None,
         }
+    }
+
+    // ---- the MCP endpoint ----
+
+    /// Serves this deck to agents: its socket, its descriptor, the active-deck registry.
+    pub fn start_mcp(&mut self, cx: &mut Context<Self>) {
+        use crate::mcp::{self, rpc::Job};
+        let (tx, rx) = smol::channel::unbounded::<(Job, std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>)>();
+        // Each job runs on the UI thread, in the deck's own add/remove/undo path.
+        cx.spawn(async move |this, cx| {
+            while let Ok((job, reply)) = rx.recv().await {
+                let out = this.update(cx, |d, cx| d.run_job(job, cx)).unwrap_or_else(|_| Err("这个工作区已经关了".into()));
+                let _ = reply.send(out);
+            }
+        })
+        .detach();
+        let run: Arc<mcp::rpc::Runner> = Arc::new(move |job| {
+            let (reply, answer) = std::sync::mpsc::sync_channel(1);
+            tx.send_blocking((job, reply)).map_err(|_| "这个工作区已经关了".to_string())?;
+            answer.recv_timeout(Duration::from_secs(15)).map_err(|_| "窗口 15s 没有响应".to_string())?
+        });
+        let root = self.m.root.clone();
+        let sock = mcp::socket_path(&root);
+        match mcp::server::Server::start(&sock, root.to_string_lossy().into_owned(), run) {
+            Ok(server) => {
+                let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or("boundlessdeck".into());
+                let names = mcp::tools::tool_names();
+                let ep = mcp::Endpoint {
+                    name: mcp::tools::SERVER_NAME.into(),
+                    transport: "unix".into(),
+                    socket: server.socket.to_string_lossy().into_owned(),
+                    token: server.token.clone(),
+                    bridge: mcp::BridgeCmd {
+                        command: exe,
+                        args: vec!["mcp-stdio".into(), "--workspace".into(), root.to_string_lossy().into_owned()],
+                    },
+                    tools: names.len(),
+                    tool_names: names.into_iter().map(String::from).collect(),
+                    protocol_version: mcp::PROTOCOL_VERSION.into(),
+                };
+                if let Err(e) = mcp::publish(&root, &ep) {
+                    self.mcp_err = Some(format!("写 MCP 配置：{e}"));
+                }
+                self.mcp = Some(server);
+            }
+            Err(e) => self.mcp_err = Some(e.to_string()),
+        }
+    }
+
+    fn stop_mcp(&mut self) {
+        if let Some(s) = self.mcp.take() {
+            s.stop();
+            crate::mcp::unpublish(&self.m.root);
+        }
+    }
+
+    fn run_job(&mut self, job: crate::mcp::rpc::Job, cx: &mut Context<Self>) -> Result<serde_json::Value, String> {
+        use crate::mcp::{rpc::Job, tools::Ctx};
+        let info = match &self.mcp {
+            Some(s) => serde_json::json!({
+                "running": true, "socket": s.socket.to_string_lossy(), "startedAt": s.started.to_rfc3339(),
+                "tools": crate::mcp::tools::tool_names().len(), "configFile": ".boundlessdeck/mcp.json",
+            }),
+            None => serde_json::json!({"running": false, "error": self.mcp_err}),
+        };
+        let mut ctx = Ctx { m: &mut self.m, view: self.view, mcp: info, dirty: false, memos: vec![], reload: vec![] };
+        let out = match job {
+            Job::Tool(name, args) => ctx.call(&name, &args),
+            Job::Resource(uri) => ctx.read_resource(&uri),
+        };
+        let (dirty, memos, reload) = (ctx.dirty, ctx.memos, ctx.reload);
+        for (id, text) in memos {
+            let rt = self.rts.entry(id).or_default();
+            if rt.memo.loaded {
+                rt.memo.text = text.clone();
+                rt.memo.saved = text;
+                rt.memo.modified = None;
+            }
+        }
+        for id in reload {
+            if let Some(rt) = self.rts.get_mut(&id) {
+                rt.lines = None;
+                rt.doc = None;
+                rt.word = None;
+                rt.pdf = None;
+                rt.pdf_img = None;
+                rt.memo = MemoRt::default();
+            }
+        }
+        if dirty {
+            self.after_edit(cx);
+        }
+        out
     }
 
     // ---- saving and closing ----
@@ -257,6 +355,7 @@ impl DeckView {
 
     /// Keeps what each used terminal shows, saves the deck, and hangs the shells up.
     pub fn close(&mut self, cx: &mut Context<Self>) {
+        self.stop_mcp();
         self.stop_editing(cx);
         self.keep_terminals(cx);
         let ids: Vec<String> = self.m.blocks.iter().map(|b| b.id.clone()).collect();
@@ -2068,6 +2167,12 @@ impl DeckView {
             .text_color(t.muted)
             .child(format!("{:.0}%", self.m.cam.s * 100.))
             .child(format!("{} 个 block · 选中 {}", self.m.blocks.len(), self.m.sel.len()))
+            .child(match (&self.mcp, &self.mcp_err) {
+                (Some(_), None) => div().child(format!("MCP · {} 个工具", crate::mcp::tools::tool_names().len())),
+                (Some(_), Some(e)) => div().text_color(t.danger).child(format!("MCP · {e}")),
+                (None, Some(e)) => div().text_color(t.danger).child(format!("MCP 未启动：{e}")),
+                (None, None) => div(),
+            })
             .into_any_element()
     }
 }

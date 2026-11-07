@@ -10,6 +10,7 @@ mod editor;
 mod icons;
 mod lifespan;
 mod markdown;
+mod mcp;
 mod memo;
 mod model;
 mod pdf;
@@ -26,8 +27,14 @@ use gpui::{
 };
 
 fn main() {
+    // The same binary is the MCP's stdio bridge: agents start it as
+    // `boundlessdeck mcp-stdio [--workspace DIR]`, and it relays to the app.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = mcp::bridge::main(&args) {
+        std::process::exit(code);
+    }
     // `boundlessdeck <folder>` opens the folder's deck at once.
-    let open = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+    let open = args.first().map(std::path::PathBuf::from);
     Application::new().with_assets(icons::Assets).run(|cx| {
         editor::bind_keys(cx);
         app::bind_keys(cx);

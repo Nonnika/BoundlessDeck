@@ -82,7 +82,11 @@ impl Root {
         m.load();
         let blocks = m.blocks.len();
         let workspaces = self.recents.paths();
-        let deck = cx.new(|cx| DeckView::new(m, workspaces, cx));
+        let deck = cx.new(|cx| {
+            let mut d = DeckView::new(m, workspaces, cx);
+            d.start_mcp(cx);
+            d
+        });
         self._deck_sub = Some(cx.subscribe(&deck, |r: &mut Root, _, ev: &DeckEvent, cx| match ev {
             DeckEvent::Home => r.go_home(cx),
             DeckEvent::Open(p) => r.open_folder(&PathBuf::from(p), cx),

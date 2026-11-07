@@ -532,6 +532,58 @@ impl Model {
         }
     }
 
+    /// Moves blocks to where a layout puts them (top-left only) as one
+    /// undoable change; returns how many moved.
+    pub fn apply_placements(&mut self, ps: &[(String, f32, f32)]) -> usize {
+        let mut moves = Vec::new();
+        for (id, x, y) in ps {
+            let Some(b) = self.block(id) else { continue };
+            if b.x == *x && b.y == *y {
+                continue;
+            }
+            let before = Geometry::of(b);
+            moves.push(MoveChange { id: id.clone(), before, after: Geometry { x: *x, y: *y, ..before } });
+        }
+        if moves.is_empty() {
+            return 0;
+        }
+        self.forget_redo();
+        for m in &moves {
+            if let Some(b) = self.block_mut(&m.id) {
+                b.x = m.after.x;
+                b.y = m.after.y;
+            }
+        }
+        let n = moves.len();
+        self.undo.push(Change::Moves(moves));
+        n
+    }
+
+    /// Replaces a stack's items as one undoable edit, taking them from any
+    /// other stack they were in.
+    pub fn set_stack_items(&mut self, stack: &str, ids: &[String]) {
+        let mut edits = Vec::new();
+        for o in self.blocks.iter().filter(|o| o.kind == BlockKind::Stack && o.id != stack) {
+            let after: Vec<String> = o.items.iter().filter(|i| !ids.contains(i)).cloned().collect();
+            if after.len() != o.items.len() {
+                edits.push(StackEdit { stack: o.id.clone(), before: o.items.clone(), after });
+            }
+        }
+        let Some(st) = self.block(stack) else { return };
+        if st.items != ids {
+            edits.push(StackEdit { stack: stack.to_string(), before: st.items.clone(), after: ids.to_vec() });
+        }
+        if edits.is_empty() {
+            return;
+        }
+        self.forget_redo();
+        self.restore_stack_edits(&edits, true);
+        self.undo.push(Change::Stack(edits));
+        for id in ids {
+            self.hung_up.push(id.clone());
+        }
+    }
+
     /// Records a move or resize done by hand, from the boxes before it, as one undoable change.
     pub fn record_moves(&mut self, before: &HashMap<String, Geometry>) -> usize {
         let moves: Vec<MoveChange> = self
