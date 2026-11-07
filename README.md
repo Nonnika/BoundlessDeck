@@ -11,6 +11,10 @@ cargo bundle --release       # 打包 .app（需 cargo-bundle）
 
 试运行时把 `BOUNDLESSDECK_DATA_DIR` 与 `BOUNDLESSDECK_ACTIVE_FILE` 指到临时目录，不碰真实数据。
 
+## Windows
+
+Windows 版不提供安装包，请自行编译：安装 [Rust](https://rustup.rs/)（1.85 及以上）后在仓库目录运行 `cargo build --release`，产物在 `target\release\boundlessdeck.exe`。PDF 预览、捏合缩放、网页快照等依赖 macOS 系统接口的功能在 Windows 上不可用或有所降级。
+
 ## 画布上有什么
 
 - **QuickLook** 便签（会到期消失）、**笔记**（Markdown 文件）、**文件**预览（文本、Markdown、图片、PDF、Word、视频）
