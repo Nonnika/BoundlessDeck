@@ -22,7 +22,7 @@ toml_edit = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 pulldown-cmark = { version = "0.12", default-features = false }
 alacritty_terminal = "0.25"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 smol = "2"
 unicode-segmentation = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }

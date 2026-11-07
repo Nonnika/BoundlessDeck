@@ -57,29 +57,35 @@ pub(super) enum WebEvent {
     NewWindow(String, String),
     /// A link to what a browser does not show: the system opens it.
     External(String),
-    /// A picture of the page, as PNG.
+    /// A picture of the page, as TIFF straight from WebKit.
     Snapshot(String, u64, Vec<u8>),
 }
 
 /// Asks WebKit for a picture of the page as it shows now; it comes as an event.
 #[cfg(target_os = "macos")]
 fn take_snapshot(view: &wry::WebView, id: &str, key: u64, tx: &smol::channel::Sender<WebEvent>) {
-    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
-    use objc2_foundation::{NSDictionary, NSError};
+    use objc2_app_kit::NSImage;
+    use objc2_foundation::NSError;
     use wry::WebViewExtMacOS;
     let (tx, id) = (tx.clone(), id.to_string());
     let handler = block2::RcBlock::new(move |img: *mut NSImage, _err: *mut NSError| {
         let Some(img) = (unsafe { img.as_ref() }) else { return };
-        let png = img
-            .TIFFRepresentation()
-            .and_then(|tiff| NSBitmapImageRep::imageRepWithData(&tiff))
-            .and_then(|rep| unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) });
-        if let Some(png) = png {
-            let _ = tx.try_send(WebEvent::Snapshot(id.clone(), key, png.to_vec()));
+        // This runs on the main thread: hand over the bitmap as is; it is
+        // compressed in the background (`tiff_to_png`).
+        if let Some(tiff) = img.TIFFRepresentation() {
+            let _ = tx.try_send(WebEvent::Snapshot(id.clone(), key, tiff.to_vec()));
         }
     });
     let wk = view.webview();
     unsafe { wk.takeSnapshotWithConfiguration_completionHandler(None, &handler) };
+}
+
+/// Re-encodes a snapshot's TIFF as PNG; `None` if it cannot be read.
+fn tiff_to_png(tiff: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory_with_format(tiff, image::ImageFormat::Tiff).ok()?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(out.into_inner())
 }
 
 /// Sets how opaque the page's native view is, from 0 to 1.
@@ -226,11 +232,23 @@ impl DeckView {
                 self.request_save(cx);
             }
             WebEvent::External(url) => cx.open_url(&url),
-            WebEvent::Snapshot(id, key, png) => {
-                if let Some(web) = self.rts.get_mut(&id).and_then(|r| r.webs.get_mut(&key)) {
-                    web.snapping = false;
-                    web.snap = Some(std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)));
-                }
+            WebEvent::Snapshot(id, key, tiff) => {
+                // Compressed off the UI thread: a Retina page takes tens of ms, and
+                // the raw bitmap is far too big to keep per tab.
+                let png = cx.background_executor().spawn(async move { tiff_to_png(&tiff) });
+                cx.spawn(async move |this, cx| {
+                    let png = png.await;
+                    let _ = this.update(cx, |d, cx| {
+                        if let Some(web) = d.rts.get_mut(&id).and_then(|r| r.webs.get_mut(&key)) {
+                            web.snapping = false;
+                            if let Some(png) = png {
+                                web.snap = Some(std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)));
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
             }
         }
         cx.notify();
@@ -768,5 +786,16 @@ mod tests {
         assert!(address_to_url("你好").unwrap().contains("q=%E4%BD%A0"));
         assert!(address_to_url("javascript:alert(1)").is_err());
         assert!(web_scheme("https://a") && !web_scheme("mailto:a@b"));
+    }
+
+    #[test]
+    fn a_snapshot_tiff_becomes_png() {
+        let src = image::RgbaImage::from_pixel(40, 25, image::Rgba([20, 120, 220, 255]));
+        let mut tiff = std::io::Cursor::new(Vec::new());
+        src.write_to(&mut tiff, image::ImageFormat::Tiff).unwrap();
+        let png = tiff_to_png(tiff.get_ref()).expect("TIFF readable");
+        let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap().into_rgba8();
+        assert_eq!(img, src);
+        assert!(tiff_to_png(b"not a tiff").is_none());
     }
 }
