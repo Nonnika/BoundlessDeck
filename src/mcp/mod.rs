@@ -6,6 +6,7 @@
 //! bridge of either build reaches a deck of either.
 
 pub mod bridge;
+pub mod config;
 pub mod rpc;
 pub mod server;
 pub mod tools;

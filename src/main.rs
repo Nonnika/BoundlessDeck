@@ -5,6 +5,7 @@
 mod app;
 mod chart;
 mod chartview;
+mod commands;
 mod deck;
 mod editor;
 mod icons;
@@ -20,6 +21,7 @@ mod tape;
 mod terminal;
 mod termstate;
 mod theme;
+mod windows;
 mod word;
 
 use gpui::{
@@ -37,10 +39,12 @@ fn main() {
     let open = args.first().map(std::path::PathBuf::from);
     Application::new().with_assets(icons::Assets).run(|cx| {
         editor::bind_keys(cx);
-        app::bind_keys(cx);
-        cx.set_menus(app::menus());
+        commands::bind_keys(cx);
+        cx.set_menus(commands::menus());
         cx.on_action(|_: &app::Quit, cx| cx.quit());
         cx.on_action(|_: &app::About, _| {});
+        cx.on_action(|_: &app::OpenSettings, cx| windows::show_settings(cx));
+        cx.on_action(|_: &app::ShowShortcuts, cx| windows::show_shortcuts(cx));
 
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
         let window = cx
@@ -63,13 +67,20 @@ fn main() {
         window
             .update(cx, |_, window, cx| {
                 let root = cx.entity();
+                cx.set_global(windows::RootHandle(root.downgrade()));
                 window.on_window_should_close(cx, move |_, cx| {
                     root.update(cx, |r, cx| r.close_deck(cx));
                     true
                 });
             })
             .ok();
-        cx.on_window_closed(|cx| cx.quit()).detach();
+        // The main window closed: the app is done; a small window closing is not.
+        cx.on_window_closed(move |cx| {
+            if window.update(cx, |_, _, _| ()).is_err() {
+                cx.quit();
+            }
+        })
+        .detach();
         cx.on_app_quit({
             let window = window;
             move |cx| {

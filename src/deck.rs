@@ -207,6 +207,10 @@ pub struct DeckView {
     /// The workspace's MCP endpoint while it runs, or why it could not start.
     mcp: Option<crate::mcp::server::Server>,
     mcp_err: Option<String>,
+    /// How agents start the bridge to this deck.
+    bridge: Option<crate::mcp::BridgeCmd>,
+    /// Write the project-level MCP configs into the folder (设置 → 项目级配置).
+    pub project_mcp: bool,
     /// What the browser blocks' pages say, from WebKit's callbacks.
     web_tx: smol::channel::Sender<browser::WebEvent>,
     /// The pages this frame showed; the others are hidden at its end.
@@ -258,6 +262,8 @@ impl DeckView {
             save_seq: Arc::new(Mutex::new(0)),
             mcp: None,
             mcp_err: None,
+            bridge: None,
+            project_mcp: false,
             web_tx,
             web_shown: HashSet::new(),
             frame_rects: Vec::new(),
@@ -306,10 +312,28 @@ impl DeckView {
                 if let Err(e) = mcp::publish(&root, &ep) {
                     self.mcp_err = Some(format!("写 MCP 配置：{e}"));
                 }
+                self.bridge = Some(ep.bridge.clone());
                 self.mcp = Some(server);
+                if self.project_mcp
+                    && let Err(e) = self.set_project_mcp(true, cx)
+                {
+                    self.mcp_err = Some(e);
+                }
             }
             Err(e) => self.mcp_err = Some(e.to_string()),
         }
+    }
+
+    /// Writes the project-level configs now (on), or stops writing them (off).
+    pub fn set_project_mcp(&mut self, on: bool, cx: &mut Context<Self>) -> Result<(), String> {
+        self.project_mcp = on;
+        cx.notify();
+        if !on {
+            return Ok(());
+        }
+        let Some(b) = &self.bridge else { return Ok(()) };
+        let warnings = crate::mcp::config::write_project_configs(&self.m.root, &b.command, &b.args);
+        if warnings.is_empty() { Ok(()) } else { Err(warnings.join("；")) }
     }
 
     fn stop_mcp(&mut self) {

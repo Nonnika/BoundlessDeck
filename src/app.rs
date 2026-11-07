@@ -16,7 +16,7 @@ use crate::recents::{Recents, ago, short_path};
 use crate::theme::{Paper, Theme};
 use crate::{icons, tape};
 
-actions!(app, [OpenFolder, Quit, About]);
+actions!(app, [OpenFolder, Quit, About, OpenSettings, ShowShortcuts]);
 
 pub struct Root {
     focus: FocusHandle,
@@ -26,6 +26,7 @@ pub struct Root {
     /// Why the last folder did not open, on the home screen.
     err: Option<String>,
     focus_deck: bool,
+    pub settings: crate::mcp::config::Settings,
 }
 
 impl Root {
@@ -37,6 +38,7 @@ impl Root {
             _deck_sub: None,
             err: None,
             focus_deck: false,
+            settings: crate::mcp::config::Settings::load(),
         };
         if let Some(p) = open {
             r.open_folder(&p, cx);
@@ -82,8 +84,10 @@ impl Root {
         m.load();
         let blocks = m.blocks.len();
         let workspaces = self.recents.paths();
+        let project_mcp = self.settings.project_mcp;
         let deck = cx.new(|cx| {
             let mut d = DeckView::new(m, workspaces, cx);
+            d.project_mcp = project_mcp;
             d.start_mcp(cx);
             d
         });
@@ -96,12 +100,31 @@ impl Root {
         self.err = None;
         self.recents.touch(&root.to_string_lossy(), blocks);
         self.focus_deck = true;
+        crate::windows::refresh_settings(cx);
         cx.notify();
+    }
+
+    /// The folder of the deck open, if one is.
+    pub fn deck_root(&self, cx: &App) -> Option<PathBuf> {
+        self.deck.as_ref().map(|d| d.read(cx).m.root.clone())
+    }
+
+    /// Turns the project-level MCP configs on or off: on, the deck open
+    /// writes them now; off, the next decks opened write none.
+    pub fn set_project_mcp(&mut self, on: bool, cx: &mut Context<Self>) -> Result<(), String> {
+        self.settings.project_mcp = on;
+        let mut err = self.settings.save().err();
+        if let Some(d) = &self.deck {
+            let r = d.update(cx, |d, cx| d.set_project_mcp(on, cx));
+            err = err.or(r.err());
+        }
+        err.map_or(Ok(()), Err)
     }
 
     pub fn go_home(&mut self, cx: &mut Context<Self>) {
         self.close_deck(cx);
         self.recents.check();
+        crate::windows::refresh_settings(cx);
         cx.notify();
     }
 
@@ -419,75 +442,3 @@ impl Render for Root {
 }
 
 use gpui::Focusable as _;
-
-pub fn bind_keys(cx: &mut App) {
-    use crate::deck::*;
-    use gpui::KeyBinding;
-    cx.bind_keys([
-        KeyBinding::new("cmd-o", OpenFolder, None),
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-0", FitAll, Some("Deck")),
-        KeyBinding::new("cmd-=", ZoomIn, Some("Deck")),
-        KeyBinding::new("cmd-+", ZoomIn, Some("Deck")),
-        KeyBinding::new("cmd--", ZoomOut, Some("Deck")),
-        KeyBinding::new("cmd-z", Undo, Some("Deck")),
-        KeyBinding::new("cmd-shift-z", Redo, Some("Deck")),
-        KeyBinding::new("cmd-d", DeleteSelected, Some("Deck")),
-        KeyBinding::new("cmd-n", NewNote, Some("Deck")),
-        KeyBinding::new("cmd-shift-n", NewMemo, Some("Deck")),
-        KeyBinding::new("cmd-shift-o", NewFile, Some("Deck")),
-        KeyBinding::new("cmd-t", NewTerminal, Some("Deck")),
-        KeyBinding::new("cmd-shift-b", NewBrowser, Some("Deck")),
-        KeyBinding::new("cmd-shift-g", NewChart, Some("Deck")),
-        KeyBinding::new("cmd-shift-k", NewStack, Some("Deck")),
-        KeyBinding::new("cmd-shift-h", GoHome, Some("Deck")),
-    ]);
-}
-
-pub fn menus() -> Vec<gpui::Menu> {
-    use crate::deck::*;
-    use gpui::{Menu, MenuItem};
-    vec![
-        Menu {
-            name: "BoundlessDeck".into(),
-            items: vec![MenuItem::action("关于 BoundlessDeck", About), MenuItem::separator(), MenuItem::action("退出 BoundlessDeck", Quit)],
-        },
-        Menu {
-            name: "文件".into(),
-            items: vec![MenuItem::action("打开文件夹…", OpenFolder), MenuItem::action("回到主页", GoHome)],
-        },
-        Menu {
-            name: "新建".into(),
-            items: vec![
-                MenuItem::action("新建 QuickLook", NewNote),
-                MenuItem::action("新建笔记", NewMemo),
-                MenuItem::action("链接文件…", NewFile),
-                MenuItem::action("新建终端", NewTerminal),
-                MenuItem::action("新建图表", NewChart),
-                MenuItem::action("新建块堆", NewStack),
-            ],
-        },
-        Menu {
-            name: "编辑".into(),
-            items: vec![
-                MenuItem::action("撤销", Undo),
-                MenuItem::action("重做", Redo),
-                MenuItem::separator(),
-                MenuItem::action("剪切", crate::editor::Cut),
-                MenuItem::action("拷贝", crate::editor::Copy),
-                MenuItem::action("粘贴", crate::editor::Paste),
-                MenuItem::action("全选", crate::editor::SelectAll),
-                MenuItem::separator(),
-                MenuItem::action("删除选中的 block", DeleteSelected),
-            ],
-        },
-        Menu {
-            name: "视图".into(),
-            items: vec![
-                MenuItem::action("显示全部 block", FitAll),
-                MenuItem::action("放大", ZoomIn),
-                MenuItem::action("缩小", ZoomOut),
-            ],
-        },
-    ]
-}
