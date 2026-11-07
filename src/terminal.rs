@@ -596,6 +596,8 @@ impl Element for GridElement {
 
         struct Seg {
             col: usize,
+            /// The column just past its last cell.
+            end: usize,
             text: String,
             runs: Vec<TextRun>,
             wide: bool,
@@ -668,10 +670,11 @@ impl Element for GridElement {
                 };
                 // A run of narrow cells side by side shapes as one.
                 let extend = segs.last_mut().filter(|s| {
-                    !s.wide && !wide && s.col + s.text.chars().count() == col
+                    !s.wide && !wide && s.end == col
                 });
                 match extend {
                     Some(s) => {
+                        s.end += 1;
                         s.text.push(cell.c);
                         match s.runs.last_mut() {
                             Some(r) if r.font == run.font && r.color == run.color && r.underline == run.underline => {
@@ -680,7 +683,7 @@ impl Element for GridElement {
                             _ => s.runs.push(run),
                         }
                     }
-                    None => segs.push(Seg { col, text: cell.c.to_string(), runs: vec![run], wide }),
+                    None => segs.push(Seg { col, end: col + 1, text: cell.c.to_string(), runs: vec![run], wide }),
                 }
             }
             if line_no != i32::MIN {
@@ -720,7 +723,9 @@ impl Element for GridElement {
                 }
             }
         });
-        self.term.update(cx, |t, _| t.ime_cursor = ime_cursor);
+        if self.term.read(cx).ime_cursor != ime_cursor {
+            self.term.update(cx, |t, _| t.ime_cursor = ime_cursor);
+        }
     }
 }
 

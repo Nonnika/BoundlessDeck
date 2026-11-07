@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -79,6 +80,10 @@ const CHROME_LEFT: f32 = 84.0;
 const CHROME_TOP: f32 = 8.0;
 /// How long after its last move a scroll the canvas took is still the canvas's.
 const GESTURE_HOLD: Duration = Duration::from_millis(300);
+/// How many blocks may come back from LOD to full content in one frame: zooming
+/// in past `LOD_SCALE`, the rest wait a frame or two under their mask, so the
+/// layout, shaping and starting of them all is spread out instead of one stall.
+const LOD_WAKE_PER_FRAME: usize = 2;
 
 /// What the deck asks of the app.
 pub enum DeckEvent {
@@ -128,6 +133,9 @@ fn marquee_over(cam: model::Camera, from: (f32, f32), to: (f32, f32), r: (f32, f
     (x1 - x0 > 3. || y1 - y0 > 3.) && x0 < r.0 + r.2 && x1 > r.0 && y0 < r.1 + r.3 && y1 > r.1
 }
 
+/// Finds a Markdown picture's source by the address it is written with.
+type ImageFinder = dyn Fn(&str) -> Option<gpui::ImageSource>;
+
 /// A block's state between frames: never saved.
 #[derive(Default)]
 struct Runtime {
@@ -146,6 +154,9 @@ struct Runtime {
     pdf_rendering: bool,
     /// Parsed Markdown AST cached across frames while text and palette are unchanged.
     md_cache: Option<(String, markdown::Parsed)>,
+    /// The list a Markdown body is shown in, laying out only the blocks in
+    /// sight, and the parse it lists.
+    md_list: Option<(gpui::ListState, markdown::Parsed)>,
     /// Parsed Markdown AST for a stack card's snippet face.
     face_md_cache: Option<(String, markdown::Parsed)>,
     /// Parsed chart table cached across frames while `b.text` is unchanged.
@@ -216,6 +227,10 @@ pub struct DeckView {
     pub zoom_settle: Option<Instant>,
     snap: zoomlayer::ZoomSnap,
     zoom_timer_active: bool,
+    /// The text level held while a zoom gesture is under way (`content_scale`).
+    text_s: Option<f32>,
+    /// Blocks still allowed out of LOD this frame (`LOD_WAKE_PER_FRAME`).
+    lod_wake: usize,
     /// Something drawn this frame is fading: the next frame is asked for.
     animating: bool,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
@@ -316,6 +331,8 @@ impl DeckView {
             zoom_settle: None,
             snap: zoomlayer::ZoomSnap::default(),
             zoom_timer_active: false,
+            text_s: None,
+            lod_wake: LOD_WAKE_PER_FRAME,
             animating: false,
             glide: None,
             focus: cx.focus_handle(),
@@ -1610,6 +1627,50 @@ impl DeckView {
         Some(parsed)
     }
 
+    /// A Markdown body as it reads, in a list of its blocks that lays out only
+    /// those in sight: a long document costs what shows, also while zooming.
+    /// Its scroll stays where it was when the text changes.
+    #[allow(clippy::too_many_arguments)]
+    fn markdown_list(
+        &mut self,
+        id: &str,
+        parsed: markdown::Parsed,
+        size: f32,
+        colors: MdColors,
+        images: Rc<ImageFinder>,
+        pad: [f32; 4],
+        outer_w: f32,
+    ) -> AnyElement {
+        let rt = self.rts.entry(id.to_string()).or_default();
+        let state = match &mut rt.md_list {
+            Some((st, p)) if p.same(&parsed) => st.clone(),
+            Some((st, p)) => {
+                let top = st.logical_scroll_top();
+                st.reset(parsed.len());
+                st.scroll_to(gpui::ListOffset { item_ix: top.item_ix.min(parsed.len().saturating_sub(1)), offset_in_item: top.offset_in_item });
+                *p = parsed.clone();
+                st.clone()
+            }
+            None => {
+                let st = gpui::ListState::new(parsed.len(), gpui::ListAlignment::Top, px(100.));
+                rt.md_list = Some((st.clone(), parsed.clone()));
+                st
+            }
+        };
+        div()
+            .size_full()
+            .child(
+                gpui::list(state, move |ix, _, _| parsed.render_item(ix, size, &colors, &*images))
+                    .w(px(outer_w.max(40.)))
+                    .h_full()
+                    .pt(px(pad[0]))
+                    .pr(px(pad[1]))
+                    .pb(px(pad[2]))
+                    .pl(px(pad[3])),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn chart_data(&mut self, b: &Block) -> Arc<crate::chart::Data> {
         let rt = self.rts.entry(b.id.clone()).or_default();
         if let Some((cached_src, data)) = &rt.chart_cache
@@ -1689,7 +1750,14 @@ impl DeckView {
             }
         };
         let rt = self.rts.entry(id.to_string()).or_default();
-        if s < LOD_SCALE {
+        // A block coming back from LOD waits its turn (`LOD_WAKE_PER_FRAME`).
+        let held = s >= LOD_SCALE && rt.lod && self.lod_wake == 0;
+        if held {
+            self.animating = true;
+        } else if s >= LOD_SCALE && rt.lod {
+            self.lod_wake -= 1;
+        }
+        if s < LOD_SCALE || held {
             rt.lod = true;
             // Zoomed out, a card is its frame, its title and the mask.
             let cs = self.content_scale();
@@ -1821,6 +1889,7 @@ impl DeckView {
     fn title_bar(&mut self, b: &Block, t: &Theme, paper: &Paper, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let s = self.m.cam.s;
         let cs = self.content_scale();
+        let zooming = self.zooming();
         let note = b.kind == BlockKind::Note;
         let color = if note { paper.text } else { t.text };
         let mut bar = div()
@@ -1845,7 +1914,15 @@ impl DeckView {
             bar = bar.child(div().flex_1().min_w_0().child(ed));
         } else {
             bar = bar.child(
-                div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(b.title.clone()),
+                // While zooming the box changes width every frame: a clipped title
+                // keeps its shaped line, an ellipsis would cut it anew each frame.
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .when(!zooming, |d| d.text_ellipsis())
+                    .child(b.title.clone()),
             );
         }
         if note {
@@ -1968,22 +2045,25 @@ impl DeckView {
                         e.muted = paper.muted;
                         e.accent = t.accent;
                     });
+                    // Laid out at the content scale, so text wraps the same all through a zoom.
                     return div()
-                        .size_full()
+                        .w(px(b.w * s))
+                        .h_full()
+                        .flex_none()
                         .pt(px(6. * s))
                         .px(px(8. * s))
                         .pb(px(22. * s))
                         .child(ed)
                         .into_any_element();
                 }
-                let content = if b.text.is_empty() {
-                    div().text_size(px(14. * s)).text_color(paper.muted).child("点击编辑，支持 Markdown").into_any_element()
-                } else {
-                    let colors = MdColors::of_paper(paper);
-                    let parsed = self.parsed_markdown(&b.id, &b.text, &colors, t.dark);
-                    markdown::render_parsed(&parsed, 14. * s, &colors)
-                };
-                live_preview(&b.id, content, [12. * s, 14. * s, 26. * s, 14. * s], b.w * s)
+                let pad = [12. * s, 14. * s, 26. * s, 14. * s];
+                if b.text.is_empty() {
+                    let hint = div().text_size(px(14. * s)).text_color(paper.muted).child("点击编辑，支持 Markdown");
+                    return live_preview(&b.id, hint.into_any_element(), pad, b.w * s);
+                }
+                let colors = MdColors::of_paper(paper);
+                let parsed = self.parsed_markdown(&b.id, &b.text, &colors, t.dark);
+                self.markdown_list(&b.id, parsed, 14. * s, colors, Rc::new(markdown::local_image), pad, b.w * s)
             }
             BlockKind::Memo => self.memo_body(b, t, cx),
             BlockKind::File => self.file_body(b, t, window, cx),
@@ -2027,7 +2107,7 @@ impl DeckView {
                     .p(px(8. * s))
                     .bg(t.surface_hover)
                     .when(side, |d| d.w(px(b.w * s * 0.42)).h_full().border_r_1())
-                    .when(!side, |d| d.h(px((b.h - TITLE_H) * s * 0.45)).w_full().border_b_1())
+                    .when(!side, |d| d.h(px((b.h - TITLE_H) * s * 0.45)).w(px(b.w * s)).border_b_1())
                     .border_color(t.border)
                     .child(ed);
                 div()
@@ -2068,12 +2148,17 @@ impl DeckView {
                 e.muted = t.muted;
                 e.accent = t.accent;
             });
-            return div().size_full().py(px(8. * s)).px(px(12. * s)).child(ed).into_any_element();
+            return div().w(px(b.w * s)).h_full().flex_none().py(px(8. * s)).px(px(12. * s)).child(ed).into_any_element();
         }
         let save_err = rt.memo.save_err.clone();
         let text = rt.memo.text.clone();
         self.check_memo(&b.id, cx);
         let colors = MdColors::of_theme(t);
+        let pad = [12. * s, 16. * s, 12. * s, 16. * s];
+        if save_err.is_none() && !text.trim().is_empty() {
+            let parsed = self.parsed_markdown(&b.id, &text, &colors, t.dark);
+            return self.markdown_list(&b.id, parsed, size, colors, Rc::new(markdown::local_image), pad, b.w * s);
+        }
         let content = div()
             .flex()
             .flex_col()
@@ -2086,7 +2171,7 @@ impl DeckView {
                 markdown::render_parsed(&parsed, size, &colors)
             })
             .into_any_element();
-        live_preview(&b.id, content, [12. * s, 16. * s, 12. * s, 16. * s], b.w * s)
+        live_preview(&b.id, content, pad, b.w * s)
     }
 
     fn file_body(&mut self, b: &Block, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -2106,18 +2191,14 @@ impl DeckView {
                     Some(Ok(text)) => {
                         let colors = MdColors::of_theme(t);
                         let parsed = self.parsed_markdown(&b.id, &text, &colors, t.dark);
-                        live_preview(
-                            &b.id,
-                            markdown::render_parsed_with(&parsed, DOC_FONT * s, &colors, &|url| {
-                                if url.starts_with("http://") || url.starts_with("https://") {
-                                    return None;
-                                }
-                                let p = std::path::Path::new(url);
-                                Some(gpui::ImageSource::from(if p.is_absolute() { p.to_path_buf() } else { base.join(p) }))
-                            }),
-                            [12. * s, 16. * s, 12. * s, 16. * s],
-                            b.w * s,
-                        )
+                        let images = Rc::new(move |url: &str| {
+                            if url.starts_with("http://") || url.starts_with("https://") {
+                                return None;
+                            }
+                            let p = std::path::Path::new(url);
+                            Some(gpui::ImageSource::from(if p.is_absolute() { p.to_path_buf() } else { base.join(p) }))
+                        });
+                        self.markdown_list(&b.id, parsed, DOC_FONT * s, colors, images, [12. * s, 16. * s, 12. * s, 16. * s], b.w * s)
                     }
                 }
             }
@@ -2131,15 +2212,11 @@ impl DeckView {
                         let d2 = doc.clone();
                         let colors = MdColors::of_theme(t);
                         let parsed = self.parsed_markdown(&b.id, &doc.markdown, &colors, t.dark);
-                        live_preview(
-                            &b.id,
-                            markdown::render_parsed_with(&parsed, DOC_FONT * s, &colors, &move |url| {
-                                let name = url.strip_prefix(crate::word::MEDIA_SCHEME)?;
-                                d2.media.get(name).map(|im| gpui::ImageSource::Image(im.clone()))
-                            }),
-                            [12. * s, 16. * s, 16. * s, 16. * s],
-                            b.w * s,
-                        )
+                        let images = Rc::new(move |url: &str| {
+                            let name = url.strip_prefix(crate::word::MEDIA_SCHEME)?;
+                            d2.media.get(name).map(|im| gpui::ImageSource::Image(im.clone()))
+                        });
+                        self.markdown_list(&b.id, parsed, DOC_FONT * s, colors, images, [12. * s, 16. * s, 16. * s, 16. * s], b.w * s)
                     }
                 }
             }
@@ -2560,6 +2637,7 @@ impl Render for DeckView {
         self.view = (f32::from(vs.width), f32::from(vs.height));
         self.tick_glide(cx);
         self.settle_layer(Some(window));
+        zoomlayer::framestat::begin(self.zooming());
         self.track_active(window, cx);
         self.expire_notes(window, cx);
         self.life_delete(cx);
@@ -2643,6 +2721,7 @@ impl Render for DeckView {
             })
             .collect();
         self.life_tick(&visible, window, cx);
+        self.lod_wake = LOD_WAKE_PER_FRAME;
         let mut blocks = Vec::new();
         self.resize_corners.clear();
         for id in &visible {
@@ -2737,6 +2816,8 @@ impl Render for DeckView {
             .children(self.stack_preview(&t, window, cx))
             .children(self.pluck_view(&t))
             .children(self.popup_view(&t, cx))
+            // TEMP: painted last, so it marks the end of the frame's work (`framestat`).
+            .child(canvas(|_, _, _| (), |_, _, _, _| zoomlayer::framestat::end()).absolute().size_0())
     }
 }
 

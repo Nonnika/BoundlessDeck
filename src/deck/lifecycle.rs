@@ -185,14 +185,30 @@ impl DeckView {
         let window_active = window.is_window_active();
         let lod = self.m.cam.s < LOD_SCALE;
         let stacked = self.m.stacked_ids();
-        let blocks: Vec<Block> = self.m.blocks.clone();
-        for b in &blocks {
+        let visible: std::collections::HashSet<&str> = visible.iter().map(String::as_str).collect();
+        // Most frames send nothing: look first, and copy a block only to hand it to a hook.
+        let mut due = Vec::new();
+        for b in &self.m.blocks {
+            let rt = self.rts.get(&b.id).map(|r| r.life);
+            let open = rt.is_some_and(|l| l.open);
+            // A block held under its mask a frame longer (`LOD_WAKE_PER_FRAME`) resumes with it.
+            let lod = lod || self.rts.get(&b.id).is_some_and(|r| r.lod);
+            let want = pause_for(window_active, stacked.contains(&b.id), visible.contains(b.id.as_str()), lod);
+            let shown = open && rt.is_some_and(|l| l.shown);
+            if !open || shown != want.is_none() {
+                due.push(b.id.clone());
+            }
+        }
+        for id in due {
+            let Some(b) = self.m.block(&id).cloned() else { continue };
+            let b = &b;
             let rt = self.rts.entry(b.id.clone()).or_default();
             if !rt.life.open {
                 rt.life = Life { open: true, ..Life::default() };
                 hooks(b.kind).on_open(self, b, cx);
             }
-            let want = pause_for(window_active, stacked.contains(&b.id), visible.contains(&b.id), lod);
+            let lod = lod || self.rts.get(&b.id).is_some_and(|r| r.lod);
+            let want = pause_for(window_active, stacked.contains(&b.id), visible.contains(b.id.as_str()), lod);
             let shown = self.rts.get(&b.id).is_some_and(|r| r.life.shown);
             match (shown, want) {
                 (true, Some(why)) => self.pause(b, why, cx),

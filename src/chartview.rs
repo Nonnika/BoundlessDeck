@@ -118,14 +118,9 @@ impl P<'_> {
         }
     }
 
+    /// A dot: a fully rounded quad, which the GPU draws without tessellating.
     fn circle(&mut self, cx: f32, cy: f32, r: f32, color: Hsla) {
-        let pts: Vec<(f32, f32)> = (0..24)
-            .map(|k| {
-                let a = k as f32 / 24. * std::f32::consts::TAU;
-                (cx + r * a.cos(), cy + r * a.sin())
-            })
-            .collect();
-        self.path(&pts, color);
+        self.rect(R { x: cx - r, y: cy - r, w: 2. * r, h: 2. * r }, color, r);
     }
 }
 

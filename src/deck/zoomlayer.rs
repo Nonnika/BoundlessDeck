@@ -18,6 +18,19 @@ use crate::model::{self, Camera, ZOOM_REBASE};
 pub(super) const ZOOM_SETTLE_HOLD: Duration = Duration::from_millis(150);
 /// How long the camera takes to glide onto the nearest zoom level after a gesture.
 pub(super) const ZOOM_SNAP_TIME: Duration = Duration::from_millis(120);
+/// Text levels per doubling while a gesture is under way: coarser than
+/// `ZOOM_LEVELS`, so a pinch reshapes all text in sight a few times, not a dozen.
+const GESTURE_TEXT_LEVELS: f64 = 3.0;
+/// How far (in doublings) the camera may drift from the gesture's text level
+/// before the text moves to another: half a level, and a little more so a
+/// camera resting on the edge does not flip between two.
+const GESTURE_TEXT_SWITCH: f32 = (0.5 / GESTURE_TEXT_LEVELS + 1.0 / 48.0) as f32;
+
+/// The gesture text level nearest s.
+fn gesture_text_level(s: f32) -> f32 {
+    let n = (f64::from(s).log2() * GESTURE_TEXT_LEVELS).round();
+    ((n / GESTURE_TEXT_LEVELS).exp2() as f32).clamp(model::MIN_SCALE, model::MAX_SCALE)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ZoomSnap {
@@ -91,12 +104,19 @@ impl DeckView {
             if self.m.cam.s < self.lay.s * ZOOM_REBASE || self.m.cam.s > self.lay.s / ZOOM_REBASE {
                 self.lay = Camera { x: self.m.cam.x, y: self.m.cam.y, s: model::zoom_level(self.m.cam.s) };
             }
+            // Text keeps its level until the camera has left it by half a coarse level.
+            let s = self.m.cam.s;
+            if self.text_s.is_none_or(|t| (s / t).log2().abs() > GESTURE_TEXT_SWITCH) {
+                self.text_s = Some(gesture_text_level(s));
+            }
             return;
         }
         self.zoom_settle = None;
+        self.text_s = None;
         // Once the gesture rests, glide to the nearest zoom level: lay the
-        // blocks out once at `to`, and ease `m.cam` onto it.
-        if !self.snap.on && (self.lay.s - self.m.cam.s).abs() > 1e-6 && !model::on_level(self.m.cam.s) {
+        // blocks out once at `to`, and ease `m.cam` onto it. Text that follows
+        // the camera continuously has no level to land on, so it stays put.
+        if stepped_text() && !self.snap.on && (self.lay.s - self.m.cam.s).abs() > 1e-6 && !model::on_level(self.m.cam.s) {
             let to = model::zoom_level(self.m.cam.s);
             let Some(w) = window else {
                 self.zoom_to(to);
@@ -152,12 +172,16 @@ impl DeckView {
 
     /// The discrete scale used for text shaping, glyph/SVG rasterization and
     /// text wrapping while zooming so `LineLayoutCache` and `MetalAtlas` hit
-    /// cache instead of reshaping/rasterizing at every continuous float scale.
+    /// cache instead of reshaping/rasterizing at every continuous float scale:
+    /// during a gesture a coarse level (`GESTURE_TEXT_LEVELS`), during the snap
+    /// the level being glided to.
     pub fn content_scale(&self) -> f32 {
-        if self.snap.on && self.lay.s > 0.0 {
+        if !stepped_text() {
+            self.m.cam.s
+        } else if self.snap.on && self.lay.s > 0.0 {
             self.lay.s
-        } else if self.zooming() {
-            model::zoom_level(self.m.cam.s)
+        } else if let Some(s) = self.text_s {
+            s
         } else {
             self.m.cam.s
         }
@@ -166,5 +190,94 @@ impl DeckView {
     /// Whether a zoom gesture or post-zoom snap glide is currently active.
     pub(super) fn zooming(&self) -> bool {
         self.zoom_settle.is_some_and(|t| Instant::now() < t) || self.snap.on || self.layer_moved()
+    }
+}
+
+/// TEMP（缩放方案 A 试验）：默认手势期间文字按粗档位分档、松手吸附到档位；
+/// `BOUNDLESSDECK_ZOOM_TEXT=continuous` 让文字随相机连续缩放，用来对比帧耗时。
+pub(super) fn stepped_text() -> bool {
+    static STEPS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STEPS.get_or_init(|| !std::env::var("BOUNDLESSDECK_ZOOM_TEXT").is_ok_and(|v| v == "continuous"))
+}
+
+/// TEMP（缩放方案 A 试验）：设置 `BOUNDLESSDECK_FRAME_STATS=1` 后，每次缩放手势结束
+/// 在 stderr 打印 CPU 帧时间（render 开始到最后一个元素 paint 完）。
+pub(super) mod framestat {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    struct S {
+        start: Option<Instant>,
+        zooming: bool,
+        frames: Vec<Duration>,
+    }
+
+    static STATE: Mutex<S> = Mutex::new(S { start: None, zooming: false, frames: Vec::new() });
+
+    pub fn enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("BOUNDLESSDECK_FRAME_STATS").is_ok_and(|v| v == "1"))
+    }
+
+    /// At the top of `render`: starts timing this frame; reports a gesture that just ended.
+    pub fn begin(zooming: bool) {
+        if !enabled() {
+            return;
+        }
+        let mut s = STATE.lock().unwrap();
+        if s.zooming && !zooming {
+            report(&mut s.frames);
+        }
+        s.zooming = zooming;
+        s.start = zooming.then(Instant::now);
+    }
+
+    /// From the last thing painted: the frame's work is done.
+    pub fn end() {
+        if !enabled() {
+            return;
+        }
+        let mut s = STATE.lock().unwrap();
+        if let Some(t) = s.start.take() {
+            s.frames.push(t.elapsed());
+        }
+    }
+
+    fn report(frames: &mut Vec<Duration>) {
+        if frames.is_empty() {
+            return;
+        }
+        frames.sort();
+        let ms = |d: Duration| d.as_secs_f64() * 1000.;
+        let n = frames.len();
+        let avg = frames.iter().map(|d| ms(*d)).sum::<f64>() / n as f64;
+        let over = |lim: f64| frames.iter().filter(|d| ms(**d) > lim).count();
+        eprintln!(
+            "[zoom {}] {n} 帧  平均 {avg:.2}ms  p50 {:.2}ms  p95 {:.2}ms  最大 {:.2}ms  >8.3ms {}  >16.7ms {}",
+            if super::stepped_text() { "steps" } else { "continuous" },
+            ms(frames[n / 2]),
+            ms(frames[(n * 95 / 100).min(n - 1)]),
+            ms(frames[n - 1]),
+            over(8.33),
+            over(16.67),
+        );
+        frames.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gesture_text_levels_are_coarse_and_hold() {
+        // Three levels per doubling: 1, 2^(1/3), 2^(2/3), 2.
+        assert!((gesture_text_level(1.05) - 1.0).abs() < 1e-6);
+        assert!((gesture_text_level(1.2) - 2f32.powf(1. / 3.)).abs() < 1e-5);
+        assert!((gesture_text_level(1.95) - 2.0).abs() < 1e-6);
+        assert_eq!(gesture_text_level(100.), model::MAX_SCALE);
+        // A level is held a little past the halfway point to the next one.
+        let half = 0.5 / GESTURE_TEXT_LEVELS as f32;
+        assert!(GESTURE_TEXT_SWITCH > half && GESTURE_TEXT_SWITCH < 2. * half);
     }
 }

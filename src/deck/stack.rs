@@ -576,10 +576,13 @@ impl DeckView {
                 crate::chartview::render_compact_data(data, &m.chart, cs, t)
             } else {
                 let colors = MdColors::of_theme(t);
-                match self.face_parsed_markdown(&m, &colors, t.dark, cx) {
+                let text = match self.face_parsed_markdown(&m, &colors, t.dark, cx) {
                     None => div().text_size(px(11. * cs)).text_color(t.muted).child(self.snippet(&m)).into_any_element(),
                     Some(parsed) => markdown::render_parsed(&parsed, 11. * cs, &colors),
-                }
+                };
+                // Wrapped at the content scale (card minus its insets), not the
+                // card's live width, so text keeps its lines all through a zoom.
+                div().w(px((st.w - 2. * 12. - 2. * 14.).max(0.) * cs)).child(text).into_any_element()
             };
             let tn = tint(m.kind);
             let title = if m.title.trim().is_empty() { m.default_title() } else { m.title.clone() };
