@@ -8,7 +8,7 @@ use gpui::{
     App, AnyView, AppContext, Context, Entity, ExternalPaths, FocusHandle, FontWeight, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Subscription,
     Window,
-    actions, canvas, div, linear_color_stop, linear_gradient, point, prelude::FluentBuilder, px, svg,
+    actions, canvas, div, point, prelude::FluentBuilder, px, svg,
 };
 
 use crate::deck::{DeckEvent, DeckView};
@@ -297,80 +297,74 @@ impl Root {
         .detach();
     }
 
-    /// While a deck is dragged: two places at the bottom to drop it, over a
-    /// fade that rises from the bottom edge (GPUI draws no backdrop blur, so
-    /// the page goes under layers of the background, thicker further down).
-    /// Left takes its folder to the Trash; right takes it off the list.
-    fn drop_zones(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let bg = t.background;
-        let zone = |id: &'static str, icon: &'static str, title: &'static str, note: &'static str, tint: gpui::Hsla| {
+    /// While a deck is dragged: two places at the bottom to drop it, each a
+    /// glow spreading from its corner (see `paint_corner_glow`): left takes
+    /// the folder to the Trash, right takes the deck off the list. The page
+    /// fades into the background from both corners. The glow under the
+    /// pointer brightens.
+    fn drop_zones(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (bg, danger, muted) = (t.background, t.danger, t.muted);
+        let vs = window.viewport_size();
+        let (w, h) = (f32::from(vs.width), f32::from(vs.height));
+        let m = window.mouse_position();
+        let (mx, my) = (f32::from(m.x), f32::from(m.y));
+        // Which side the pointer is over: Some(true) left, Some(false) right.
+        let over = (my > h - DROP_ZONE_H).then_some(mx < w / 2.);
+        let zone = |id: &'static str, title: &'static str, note: &'static str, tint: gpui::Hsla, left: bool| {
+            let lit = over == Some(left);
             div()
                 .id(id)
-                .flex_1()
-                .h_full()
+                .absolute()
+                .bottom_0()
+                .w(gpui::relative(0.5))
+                .h(px(DROP_ZONE_H))
+                .when(left, |d| d.left_0().items_start())
+                .when(!left, |d| d.right_0().items_end())
                 .flex()
                 .flex_col()
-                .items_center()
                 .justify_end()
-                .gap(px(4.))
-                .pb(px(30.))
-                .text_color(tint)
-                .drag_over::<DraggedDeck>(move |s, _, _, _| {
-                    s.bg(linear_gradient(180., linear_color_stop(tint.opacity(0.), 0.), linear_color_stop(tint.opacity(0.22), 1.)))
-                })
+                .gap(px(2.))
+                .px(px(32.))
+                .pb(px(28.))
                 .child(
                     div()
-                        .size(px(40.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(tint.opacity(0.5))
-                        .child(svg().path(icons::path(icon)).size(px(18.)).text_color(tint)),
+                        .text_size(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(tint)
+                        .opacity(if lit { 1. } else { 0.7 })
+                        .child(title),
                 )
-                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(title))
-                .child(div().text_size(px(11.)).opacity(0.75).child(note))
+                .child(div().text_size(px(11.)).text_color(muted).opacity(if lit { 0.9 } else { 0.6 }).child(note))
         };
         div()
             .absolute()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .h(px(220.))
-            // The fade: three layers, each starting lower and growing denser.
-            .child(div().absolute().inset_0().bg(linear_gradient(
-                180.,
-                linear_color_stop(bg.opacity(0.), 0.),
-                linear_color_stop(bg.opacity(0.55), 1.),
-            )))
-            .child(div().absolute().left_0().right_0().bottom_0().h(px(150.)).bg(linear_gradient(
-                180.,
-                linear_color_stop(bg.opacity(0.), 0.),
-                linear_color_stop(bg.opacity(0.75), 1.),
-            )))
-            .child(div().absolute().left_0().right_0().bottom_0().h(px(80.)).bg(linear_gradient(
-                180.,
-                linear_color_stop(bg.opacity(0.), 0.),
-                linear_color_stop(bg.opacity(0.9), 1.),
-            )))
+            .inset_0()
             .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .flex_row()
-                    .child(zone("drop-trash", "trash", "删除文件夹", "移到废纸篓", t.danger).on_drop(cx.listener(
-                        |r, d: &DraggedDeck, window, cx| r.trash_deck(&d.path, window, cx),
-                    )))
-                    .child(div().w(px(1.)).h(px(90.)).mt(px(110.)).bg(t.border))
-                    .child(zone("drop-forget", "x", "从列表移除", "文件夹保留", t.muted).on_drop(cx.listener(
-                        |r, d: &DraggedDeck, _, cx| {
-                            r.recents.forget(&d.path);
-                            cx.notify();
-                        },
-                    ))),
+                canvas(|_, _, _| (), move |b, _, window, _| {
+                    let (x0, y0) = (f32::from(b.origin.x), f32::from(b.origin.y));
+                    let (bw, bh) = (f32::from(b.size.width), f32::from(b.size.height));
+                    let (left, right) = (point(px(x0), px(y0 + bh)), point(px(x0 + bw), px(y0 + bh)));
+                    // The page fading into the background, from both corners.
+                    let fade = bw * 0.62;
+                    paint_corner_glow(window, left, fade, bg, 0.96);
+                    paint_corner_glow(window, right, fade, bg, 0.96);
+                    // Each place's own colour, brighter under the pointer.
+                    let glow = bw * 0.42;
+                    paint_corner_glow(window, left, glow, danger, if over == Some(true) { 0.30 } else { 0.10 });
+                    paint_corner_glow(window, right, glow, muted, if over == Some(false) { 0.30 } else { 0.10 });
+                })
+                .absolute()
+                .size_full(),
             )
+            .child(zone("drop-trash", "删除文件夹", "移到废纸篓", danger, true).on_drop(cx.listener(
+                |r, d: &DraggedDeck, window, cx| r.trash_deck(&d.path, window, cx),
+            )))
+            .child(zone("drop-forget", "从列表移除", "文件夹保留", muted, false).on_drop(cx.listener(
+                |r, d: &DraggedDeck, _, cx| {
+                    r.recents.forget(&d.path);
+                    cx.notify();
+                },
+            )))
     }
 
     fn dropped(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
@@ -418,7 +412,7 @@ impl Root {
                     ),
                 ),
             )
-            .when(cx.has_active_drag(), |d| d.child(self.drop_zones(&t, cx)))
+            .when(cx.has_active_drag(), |d| d.child(self.drop_zones(&t, window, cx)))
     }
 
     fn recents_block(
@@ -448,13 +442,11 @@ impl Root {
         for (i, r) in self.recents.list.iter().enumerate() {
             let (t2, paper2) = (*t, Paper::of(t));
             let path = r.path.clone();
-            let p2 = path.clone();
             let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(path.clone());
             let missing = r.missing;
             list = list.child(
                 div()
                     .id(SharedString::from(format!("recent:{i}")))
-                    .group("recent")
                     .w_full()
                     .flex()
                     .flex_row()
@@ -512,22 +504,6 @@ impl Root {
                                             .child(format!("{} 个 block · {}", r.blocks, ago(now, r.opened_at)))
                                     }),
                             ),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("forget:{i}")))
-                            .invisible()
-                            .group_hover("recent", |d| d.visible())
-                            .p(px(4.))
-                            .rounded(px(5.))
-                            .hover(|d| d.bg(t.danger.opacity(0.12)))
-                            .child(svg().path(icons::path("x")).size(px(14.)).text_color(t.muted))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |r, _, _, cx| {
-                                cx.stop_propagation();
-                                r.recents.forget(&p2);
-                                cx.notify();
-                            })),
                     )
                     .on_drag(DraggedDeck { path: path.clone(), name: name.clone(), missing }, |d, _, _, cx| cx.new(|_| d.clone()))
                     .on_click(cx.listener(move |r, _, _, cx| r.begin_open(PathBuf::from(&path), cx))),
@@ -599,6 +575,24 @@ impl Root {
                     )
                     .child(list),
             )
+    }
+}
+
+/// How tall the drop places at the bottom are.
+const DROP_ZONE_H: f32 = 240.;
+
+/// A glow of color spreading from a corner: strongest there (`peak`), gone at
+/// `radius`. GPUI draws linear gradients only, so it is many circles about the
+/// corner, each faint, the nearer the corner the more of them lying over it.
+fn paint_corner_glow(window: &mut Window, at: gpui::Point<gpui::Pixels>, radius: f32, color: gpui::Hsla, peak: f32) {
+    const LAYERS: usize = 48;
+    // Each layer's alpha, so that all of them together reach `peak` at the corner.
+    let a = 1. - (1. - peak.clamp(0., 0.999)).powf(1. / LAYERS as f32);
+    for i in 1..=LAYERS {
+        // Eased radii: layers crowd near the corner, so the edge fades out softly.
+        let r = radius * (i as f32 / LAYERS as f32).powf(1.6);
+        let b = gpui::Bounds::new(point(at.x - px(r), at.y - px(r)), gpui::size(px(2. * r), px(2. * r)));
+        window.paint_quad(gpui::fill(b, color.opacity(a)).corner_radii(px(r)));
     }
 }
 
