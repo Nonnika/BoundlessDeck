@@ -1,0 +1,23 @@
+[package]
+name = "boundlessdeck"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+rand = "0.8"
+dirs = "5"
+chrono = { version = "0.4", features = ["serde"] }
+pulldown-cmark = { version = "0.12", default-features = false }
+alacritty_terminal = "0.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+smol = "2"
+base64 = "0.22"
+unicode-segmentation = "1"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
