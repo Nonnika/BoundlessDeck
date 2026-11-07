@@ -89,11 +89,14 @@ pub fn grid_for(w: f32, h: f32) -> (usize, usize) {
 }
 
 impl Terminal {
-    /// Starts a shell in dir; what it returns makes the terminal's entity.
+    /// Starts a shell in dir, the deck's folder, for the block `block`; what it
+    /// returns makes the terminal's entity. The shell is told both (see
+    /// `mcp::TERMINAL_ENV`), so an agent started in it can say where it runs.
     pub fn spawn(
         dir: &Path,
         cols: usize,
         rows: usize,
+        block: &str,
     ) -> anyhow::Result<impl FnOnce(&mut Context<Self>) -> Terminal + use<>> {
         let (tx, rx) = smol::channel::unbounded();
         let listener = Listener(tx);
@@ -101,6 +104,8 @@ impl Terminal {
         env.insert("TERM".to_string(), "xterm-256color".to_string());
         env.insert("COLORTERM".to_string(), "truecolor".to_string());
         env.insert("TERM_PROGRAM".to_string(), "BoundlessDeck".to_string());
+        env.insert(crate::mcp::TERMINAL_ENV.to_string(), block.to_string());
+        env.insert(crate::mcp::DECK_ENV.to_string(), dir.to_string_lossy().into_owned());
         let opts = tty::Options { shell: None, working_directory: Some(dir.to_path_buf()), drain_on_exit: false, env };
         let ws = window_size(cols, rows);
         let pty = tty::new(&opts, ws, 0)?;

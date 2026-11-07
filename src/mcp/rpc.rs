@@ -12,7 +12,7 @@ pub enum Job {
 }
 
 /// Runs a job on the deck, on its UI thread.
-pub type Runner = dyn Fn(Job) -> Result<Value, String> + Send + Sync;
+pub type Runner<'a> = dyn Fn(Job) -> Result<Value, String> + 'a;
 
 pub fn error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
@@ -78,7 +78,7 @@ pub fn answer_offline(method: &str, params: &Value) -> Option<Value> {
 }
 
 /// Answers one message; None for a notification.
-pub fn handle(msg: &Value, run: &Runner) -> Option<Value> {
+pub fn handle(msg: &Value, run: &Runner<'_>) -> Option<Value> {
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     if method.starts_with("notifications/") {
         return None;
@@ -124,7 +124,7 @@ pub fn handle(msg: &Value, run: &Runner) -> Option<Value> {
 }
 
 /// Answers a body: one message or a batch. None when nothing needs answering.
-pub fn handle_body(body: &[u8], run: &Runner) -> Option<Vec<u8>> {
+pub fn handle_body(body: &[u8], run: &Runner<'_>) -> Option<Vec<u8>> {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(e) => {

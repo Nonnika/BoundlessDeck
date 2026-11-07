@@ -11,8 +11,12 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use super::rpc::{self, Runner};
+use super::rpc::{self, Job};
 use super::tools::SERVER_NAME;
+use super::{Caller, DECK_HEADER, TERMINAL_HEADER};
+
+/// Runs a job on the deck, on its UI thread, for the caller the request names.
+pub type DeckRunner = dyn Fn(Job, &Caller) -> Result<serde_json::Value, String> + Send + Sync;
 
 const MAX_BODY: usize = 8 << 20;
 
@@ -29,7 +33,7 @@ fn new_token() -> String {
 
 impl Server {
     /// Listens on `socket` and answers with `run`.
-    pub fn start(socket: &Path, workspace: String, run: Arc<Runner>) -> std::io::Result<Server> {
+    pub fn start(socket: &Path, workspace: String, run: Arc<DeckRunner>) -> std::io::Result<Server> {
         if let Some(dir) = socket.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -143,7 +147,7 @@ fn authorized(req: &Request, token: &str) -> bool {
 fn serve(
     conn: UnixStream,
     token: &str,
-    run: &Runner,
+    run: &DeckRunner,
     stop: &AtomicBool,
     workspace: &str,
     sock: &Path,
@@ -169,10 +173,17 @@ fn serve(
                 });
                 respond(&mut w, 200, "OK", "application/json", body.to_string().as_bytes())?;
             }
-            ("POST", "/mcp") => match rpc::handle_body(&req.body, run) {
-                Some(out) => respond(&mut w, 200, "OK", "application/json", &out)?,
-                None => respond(&mut w, 202, "Accepted", "text/plain", b"")?,
-            },
+            ("POST", "/mcp") => {
+                let caller = Caller {
+                    terminal: req.header(TERMINAL_HEADER).map(str::to_string),
+                    deck: req.header(DECK_HEADER).map(str::to_string),
+                };
+                let run_as = |job: Job| run(job, &caller);
+                match rpc::handle_body(&req.body, &run_as) {
+                    Some(out) => respond(&mut w, 200, "OK", "application/json", &out)?,
+                    None => respond(&mut w, 202, "Accepted", "text/plain", b"")?,
+                }
+            }
             (_, "/mcp") => respond(&mut w, 405, "Method Not Allowed", "text/plain", b"POST only")?,
             _ => respond(&mut w, 404, "Not Found", "text/plain", b"not found")?,
         }
@@ -189,8 +200,8 @@ mod tests {
     fn serves_rpc_with_the_token_alone() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("t.sock");
-        let run: Arc<Runner> = Arc::new(|job| match job {
-            rpc::Job::Tool(name, _) => Ok(json!({"ran": name})),
+        let run: Arc<DeckRunner> = Arc::new(|job, caller| match job {
+            rpc::Job::Tool(name, _) => Ok(json!({"ran": name, "terminal": caller.terminal})),
             rpc::Job::Resource(uri) => Ok(json!({"uri": uri})),
         });
         let s = Server::start(&sock, "/ws".into(), run).unwrap();
@@ -199,6 +210,11 @@ mod tests {
         assert_eq!(status, 200);
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["result"]["structuredContent"]["ran"], "deck_info");
+        assert!(v["result"]["structuredContent"]["terminal"].is_null(), "no terminal said, none known");
+        let caller = Caller { terminal: Some("b00000a".into()), deck: Some("/ws".into()) };
+        let (_, body) = super::super::bridge::post_as(&ep, br#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"deck_info"}}"#, &caller).unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["result"]["structuredContent"]["terminal"], "b00000a", "the bridge's terminal reaches the deck");
         let wrong = crate::mcp::Endpoint { token: "x".into(), ..ep.clone() };
         assert_eq!(super::super::bridge::post(&wrong, b"{}").unwrap().0, 401);
         let health = super::super::bridge::health(&ep).unwrap();

@@ -744,6 +744,7 @@ dependencies = [
  "serde_json",
  "smol",
  "tempfile",
+ "toml_edit 0.22.27",
  "unicode-segmentation",
  "wry",
  "zip",

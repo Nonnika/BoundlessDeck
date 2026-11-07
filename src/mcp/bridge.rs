@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{Endpoint, rpc};
+use super::{Caller, Endpoint, rpc};
 
-fn request(ep: &Endpoint, method: &str, path: &str, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
+fn request(ep: &Endpoint, method: &str, path: &str, body: &[u8], extra: &str) -> Result<(u16, Vec<u8>), String> {
     if ep.socket.is_empty() {
         return Err("工作区还没有 MCP 端点（先在 BoundlessDeck 里打开它）".into());
     }
@@ -24,7 +24,7 @@ fn request(ep: &Endpoint, method: &str, path: &str, body: &[u8]) -> Result<(u16,
     let mut s = UnixStream::connect(&ep.socket).map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(Duration::from_secs(60))).ok();
     let head = format!(
-        "{method} {path} HTTP/1.1\r\nHost: boundlessdeck\r\nContent-Type: application/json\r\nAccept: application/json\r\nX-BoundlessDeck-Token: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: boundlessdeck\r\nContent-Type: application/json\r\nAccept: application/json\r\nX-BoundlessDeck-Token: {}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
         ep.token,
         body.len()
     );
@@ -62,12 +62,18 @@ fn request(ep: &Endpoint, method: &str, path: &str, body: &[u8]) -> Result<(u16,
     Ok((code, out))
 }
 
+#[cfg(test)]
 pub fn post(ep: &Endpoint, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
-    request(ep, "POST", "/mcp", body)
+    post_as(ep, body, &Caller::default())
+}
+
+/// Posts as the caller: the deck learns which terminal, if any, it runs in.
+pub fn post_as(ep: &Endpoint, body: &[u8], caller: &Caller) -> Result<(u16, Vec<u8>), String> {
+    request(ep, "POST", "/mcp", body, &caller.headers())
 }
 
 pub fn health(ep: &Endpoint) -> Result<Vec<u8>, String> {
-    match request(ep, "GET", "/health", b"")? {
+    match request(ep, "GET", "/health", b"", "")? {
         (200, body) => Ok(body),
         (code, body) => Err(format!("返回 {code}：{}", String::from_utf8_lossy(&body).trim())),
     }
@@ -152,6 +158,7 @@ pub fn main(args: &[String]) -> Option<i32> {
             }
         });
     }
+    let caller = Caller::from_env();
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -160,12 +167,12 @@ pub fn main(args: &[String]) -> Option<i32> {
         if line.is_empty() {
             continue;
         }
-        let mut res = post(&ep, line.as_bytes());
+        let mut res = post_as(&ep, line.as_bytes(), &caller);
         if (res.is_err() || res.as_ref().is_ok_and(|r| r.0 == 401)) && !pinned {
             match find() {
                 Ok(now) if now.socket != ep.socket || now.token != ep.token => {
                     ep = now;
-                    res = post(&ep, line.as_bytes());
+                    res = post_as(&ep, line.as_bytes(), &caller);
                 }
                 Ok(_) => {}
                 Err(e) => res = Err(e),

@@ -53,11 +53,25 @@ GPUI 每帧重建整棵元素树，所以：
 - 进入画布只走 `Model::add_block`，离开只走 `Model::remove_block`（或经由 `detach`）。移动与排版用 `record_moves` / `apply_placements`，不要直接改 `b.x` / `b.y`。
 - 块堆只改 `Block.items`，被收进的 block 仍在 `model.blocks` 中，由 `visible()` 与 `select_in` 跳过。
 
+### 生命周期
+
+`src/deck/lifecycle.rs`。四对事件，内层只在外层之内，离开外层前先离开内层：
+
+| 层 | 事件 | 何时 |
+|---|---|---|
+| 数据 | `on_create` / `on_delete` | 第一次被做出来（只有 `Model::add_block`，撤销恢复不算）/ 离开画布（可撤销，只放运行时，不碰 memo 文件等外部数据） |
+| 画布 | `on_open` / `on_close` | deck 打开、新建或撤销恢复后进入 / deck 关闭（保存之前） |
+| 显示 | `on_resume` / `on_pause(Pause)` | 完整显示 / 屏幕外、收进块堆、LOD、窗口非活动；shell 暂停时照常运行 |
+| 焦点 | `on_focus` / `on_blur(Blur)` | 成为正在操作的 block / 不再是；`focus_target`（编辑中的或 `active`）记着焦点该在谁，暂停失焦后恢复时自动回来，`Blur::Paused` 保留编辑器 |
+
+- 派发只在 lifecycle.rs：`life_tick` 每帧比对状态（在 `Render` 里画 block 之前），`life_delete` 消费 `Model::hung_up`（离开的 `Block` 快照），`life_close` 由 `DeckView::close` 调用。状态存在 `Runtime.life`。
+- 每种 kind 实现 `BlockHooks`（全部默认空）：终端在首次 `on_resume` 起 shell、`on_focus` 拿键盘、`on_blur` 清残留组字、`on_close`/`on_delete` 挂断；memo 在 `on_pause`/`on_close`/`on_delete` 写回文件。新增 kind 时在 `hooks()` 里登记，不要在渲染里懒启动运行时。
+- 网页的显示/隐藏仍在 `browser_body` 每帧按遮挡判断，不是生命周期事件。
+
 ### 保存
 
 - `Model::save` → `write_file_atomic`（`model.rs:933`）：临时文件、`sync_all`、rename。
 - `DeckView::request_save`（`deck.rs:440`）：在 UI 线程生成快照，后台线程写盘；`save_seq: Arc<Mutex<u64>>`（`deck.rs:224`）保证只有最新快照落地。
-- 关闭 block 时 `hang_up_gone`（`deck.rs:495`）挂断已删除 block 的终端。
 
 ### MCP 数据流
 
@@ -71,10 +85,12 @@ GPUI 每帧重建整棵元素树，所以：
 ```
 
 - socket 路径：`<root>/.boundlessdeck/mcp.sock`；路径太长时回退到 `$TMPDIR/boundlessdeck-mcp-<hash>.sock`（`mcp/mod.rs`）。
+- 全局配置（设置窗口里一键安装，`mcp/config.rs` 的 `agents_in`）：Claude Code、Claude 桌面版、Cursor、VS Code（JSON），Codex（`~/.codex/config.toml` 或 `$CODEX_HOME`，用 `toml_edit` 保留注释与排版，`env_vars` 放行终端变量），OpenCode v2（`~/.config/opencode/opencode.json(c)` 或 `$XDG_CONFIG_HOME`，`mcp.servers`、`type: local`、`environment` 用 `{env:NAME}`；含注释的 JSONC 只报告不改），oh-my-pi（`~/.omp/agent/mcp.json` 或 `$PI_CODING_AGENT_DIR`，`env` 按变量名传递）。桥会忽略未设置时留下的占位值（变量名本身、`{env:…}`）。
 - 项目配置（`.boundlessdeck/mcp.json`、`.mcp.json`、`.cursor/mcp.json`、`.vscode/mcp.json`）以合并方式写入，保留用户已有的 server；坏 JSON 备份为 `.bak`。
 - 写入类工具先干跑校验整批，再统一落笔；所有写操作都经过撤销栈与保存。
 - **字段唯一来源**：`src/mcp/tools.rs:40` 的 `pub const FIELDS: &[Field]`。`block_schema`、校验、工具描述都从这里生成。新增 `Block` 字段必须登记到这张表。
-- 工具（`tools.rs` 的分派，约 804–856 行）共 17 个：`deck_info`、`block_schema`、`list_blocks`、`get_block`、`read_selection`、`create_block`、`update_block`、`update_blocks`、`delete_blocks`、`move_blocks`、`align_blocks`、`distribute_blocks`、`arrange_blocks`、`select_blocks`、`undo`、`redo`、`save_deck`。
+- 工具（`tools.rs` 的分派，约 804–856 行）共 18 个：`deck_info`、`block_schema`、`list_blocks`、`get_block`、`read_selection`、`current_terminal`、`create_block`、`update_block`、`update_blocks`、`delete_blocks`、`move_blocks`、`align_blocks`、`distribute_blocks`、`arrange_blocks`、`select_blocks`、`undo`、`redo`、`save_deck`。
+- 调用方的终端：终端 shell 的环境里有 `BOUNDLESSDECK_TERMINAL`（block ID）与 `BOUNDLESSDECK_DECK`（deck 文件夹），见 `mcp::TERMINAL_ENV`。从终端里启动的 agent 再启动 `mcp-stdio` 时继承它们，桥用 `X-BoundlessDeck-Terminal` / `X-BoundlessDeck-Deck` 请求头带给 `server.rs`，经 `DeckRunner` 的 `Caller` 进 `tools::Here`。`current_terminal` 返回 `self`（调用方所在终端）与 `focused`（人正在操作的终端，`focus_target`），`deck_info` 带 `callerTerminal`。
 - 资源：`boundlessdeck://deck`、`//blocks`、`//schema`，以及模板 `//blocks/{id}`（`rpc.rs:38–72`，读取见 `tools.rs:802`）。
 
 ### 运行时状态位置
@@ -102,7 +118,7 @@ GPUI 每帧重建整棵元素树，所以：
 cargo run                                   # 主页
 cargo run -- /path/to/folder                # 直接打开该文件夹的 deck
 cargo run -- mcp-stdio --workspace DIR      # MCP stdio 桥（无 deck 时也能握手）
-cargo test                                  # 全部单元测试（71 个）
+cargo test                                  # 全部单元测试（75 个）
 cargo test model::tests                     # 按模块路径过滤
 cargo test -- --test-threads=1              # socket / 计时相关测试排查时串行运行
 cargo build --release
@@ -125,6 +141,7 @@ cargo run -- /tmp/test-deck
 | `BOUNDLESSDECK_DATA_DIR` | 覆盖数据目录（recents、settings） | `model.rs:926` |
 | `BOUNDLESSDECK_ACTIVE_FILE` | 覆盖活动 deck 注册表路径 | `mcp/mod.rs:103` |
 | `BOUNDLESSDECK_WORKSPACE` | `mcp-stdio` 的默认工作区 | `mcp/bridge.rs:98` |
+| `BOUNDLESSDECK_TERMINAL` / `BOUNDLESSDECK_DECK` | 终端 shell 中由应用设置；`mcp-stdio` 读取后告诉 deck 调用方在哪个终端里 | `mcp/mod.rs`、`terminal.rs` 的 `spawn` |
 
 ### 工具链现状
 
@@ -190,7 +207,7 @@ cx.spawn(async move |this, cx| {
 | `src/deck.rs` | 画布视图（约 2600 行）：渲染、输入、保存调度、MCP 任务执行。 |
 | `src/deck/zoomlayer.rs` | 缩放冻结与吸附状态机。 |
 | `src/deck/browser.rs` | WKWebView 的生命周期、遮挡与快照回退。 |
-| `src/mcp/tools.rs` | `FIELDS` 字段表、17 个工具、校验与排版算法。 |
+| `src/mcp/tools.rs` | `FIELDS` 字段表、18 个工具、校验与排版算法。 |
 | `src/mcp/mod.rs` | 端点注册、socket 路径、活动 deck 注册表。 |
 | `src/commands.rs` | 命令表：菜单、快捷键与快捷键窗口的单一来源。 |
 | `Cargo.toml` | 依赖；`gpui` 0.2.2 与 `runtime_shaders`；macOS 专属 objc2 系列。 |
@@ -207,7 +224,7 @@ cx.spawn(async move |this, cx| {
 
 ## Testing & QA
 
-- **框架**：标准 `#[test]`，71 个，分布在 23 个带 `#[cfg(test)]` 的源文件中。无 `tests/` 目录，无 GPUI 测试框架（`TestAppContext`）。
+- **框架**：标准 `#[test]`，75 个，分布在 24 个带 `#[cfg(test)]` 的源文件中。无 `tests/` 目录，无 GPUI 测试框架（`TestAppContext`）。
 - **覆盖**：`model.rs`（相机、撤销、块堆、到期、持久化）、`mcp/`（工具、JSON-RPC、socket、配置合并、桥）、解析器（图表、Markdown、docx、PDF、终端按键）。
 - **未覆盖**：GPUI 渲染与命中测试、真实 PTY、WKWebView 生命周期、`app.rs` 与 `editor.rs` 的交互。
 - **模式**：

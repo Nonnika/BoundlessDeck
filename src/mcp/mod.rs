@@ -18,6 +18,49 @@ use serde::{Deserialize, Serialize};
 use crate::model::{DECK_DIR, write_file_atomic};
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// Set in each terminal block's shell: the block's ID, and the deck it is in.
+/// An agent started there passes them on to the bridge it starts, which
+/// sends them with every request, so the deck knows which terminal calls.
+pub const TERMINAL_ENV: &str = "BOUNDLESSDECK_TERMINAL";
+pub const DECK_ENV: &str = "BOUNDLESSDECK_DECK";
+pub const TERMINAL_HEADER: &str = "X-BoundlessDeck-Terminal";
+pub const DECK_HEADER: &str = "X-BoundlessDeck-Deck";
+
+/// A variable's value, unless it is empty or an agent's placeholder left
+/// standing because the variable was not set: omp keeps the variable's own
+/// name, OpenCode its `{env:NAME}`.
+fn env_value(name: &str, v: Option<String>) -> Option<String> {
+    v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v != name && !v.starts_with("{env:"))
+}
+
+/// Who calls, as its bridge says: the terminal block it runs in and that
+/// terminal's deck, when it runs in one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Caller {
+    pub terminal: Option<String>,
+    pub deck: Option<String>,
+}
+
+impl Caller {
+    /// The caller's own, from its environment.
+    pub fn from_env() -> Caller {
+        Caller { terminal: env_value(TERMINAL_ENV, std::env::var(TERMINAL_ENV).ok()), deck: env_value(DECK_ENV, std::env::var(DECK_ENV).ok()) }
+    }
+
+    /// As request header lines, each ending in CRLF.
+    pub fn headers(&self) -> String {
+        let clean = |v: &str| v.replace(['\r', '\n'], "");
+        let mut out = String::new();
+        if let Some(t) = &self.terminal {
+            out += &format!("{TERMINAL_HEADER}: {}\r\n", clean(t));
+        }
+        if let Some(d) = &self.deck {
+            out += &format!("{DECK_HEADER}: {}\r\n", clean(d));
+        }
+        out
+    }
+}
 pub const SERVER_VERSION: &str = "0.1.0";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -192,4 +235,18 @@ pub fn read_endpoint(workspace: &Path) -> Result<Endpoint, String> {
         ep.transport = "unix".into();
     }
     Ok(ep)
+}
+
+#[cfg(test)]
+mod caller_tests {
+    use super::*;
+
+    #[test]
+    fn placeholders_left_by_agents_are_no_terminal() {
+        assert_eq!(env_value(TERMINAL_ENV, Some("b00000a".into())), Some("b00000a".into()));
+        assert_eq!(env_value(TERMINAL_ENV, Some(TERMINAL_ENV.into())), None, "omp, the variable unset");
+        assert_eq!(env_value(TERMINAL_ENV, Some("{env:BOUNDLESSDECK_TERMINAL}".into())), None, "OpenCode, unset");
+        assert_eq!(env_value(TERMINAL_ENV, Some("  ".into())), None);
+        assert_eq!(env_value(TERMINAL_ENV, None), None);
+    }
 }

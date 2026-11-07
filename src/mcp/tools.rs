@@ -208,6 +208,7 @@ pub fn tool_list() -> Vec<(&'static str, &'static str, &'static str, Value)> {
         ("list_blocks", "列出 block", "列出画布上的 block，含每个的当前值与可写字段。可按 kind 过滤。", object_schema(json!({"kind": kind_prop}), &[])),
         ("get_block", "读一个 block", "按 id 读一个 block 的全部字段。", object_schema(json!({"id": {"type": "string", "description": "block ID"}}), &["id"])),
         ("read_selection", "读选择集", "读人当前选中的 block——「选择即上下文」。", object_schema(json!({}), &[])),
+        ("current_terminal", "当前终端", "告诉你两个终端：self 是你自己运行在其中的终端 block（你从 BoundlessDeck 的终端里启动时才有，按启动你的那个终端识别）；focused 是人此刻正在操作的终端 block。想在自己旁边放东西、改自己的标题，或知道人在看哪个终端时用。不是终端时为 null，并在 selfReason / focusedReason 里说明原因。", object_schema(json!({}), &[])),
         ("create_block", "新建 block", "在画布上建一个 block 并写初始字段；kind 必填。file 需要 path。省略 x/y 时落在视口中央附近的空位。", object_schema(Value::Object(create), &["kind"])),
         ("update_block", "改一个 block", "按 id 写一个或多个可写字段；字段按 block 的 kind 校验，写入是原子的（有一个不合法就一个都不写）。也可以用 fields 对象一次传多个字段。", object_schema(Value::Object(update), &["id"])),
         ("update_blocks", "批量改 block", "把同一组字段写到多个 block；任何一个不合法就整批失败。", object_schema(json!({"ids": ids_prop("要改的 block ID"), "fields": {"type": "object", "additionalProperties": true, "description": "要写的字段"}}), &["ids", "fields"])),
@@ -306,11 +307,21 @@ fn round(v: f32) -> f64 {
 }
 
 /// What a tool works on: the model, the view, and what the view must catch up with.
+/// Where the call comes from, and where the user is: for `current_terminal`.
+#[derive(Clone, Debug, Default)]
+pub struct Here {
+    /// The terminal the agent runs in, as its bridge says.
+    pub caller: crate::mcp::Caller,
+    /// The block the user works in or edits, if any.
+    pub focused: Option<String>,
+}
+
 pub struct Ctx<'a> {
     pub m: &'a mut Model,
     pub view: (f32, f32),
     /// About the MCP endpoint, for deck_info.
     pub mcp: Value,
+    pub here: Here,
     /// Something was written: the deck saves and redraws.
     pub dirty: bool,
     /// 笔记 whose file a tool wrote, with what it wrote.
@@ -407,8 +418,52 @@ impl Ctx<'_> {
             "view": {"w": round(self.view.0), "h": round(self.view.1)},
             "kinds": KIND_NAMES,
             "schemaVersion": SCHEMA_VERSION,
+            "callerTerminal": self.caller_terminal().ok(),
             "mcp": self.mcp,
         })
+    }
+
+    /// The terminal block the caller runs in, or why there is none.
+    fn caller_terminal(&self) -> Result<String, String> {
+        let c = &self.here.caller;
+        let Some(id) = &c.terminal else {
+            return Err("你不是从 BoundlessDeck 的终端里启动的（没有 BOUNDLESSDECK_TERMINAL 环境变量）".into());
+        };
+        let same = |a: &std::path::Path, b: &std::path::Path| {
+            a == b || std::fs::canonicalize(a).ok().zip(std::fs::canonicalize(b).ok()).is_some_and(|(x, y)| x == y)
+        };
+        if let Some(deck) = &c.deck
+            && !same(std::path::Path::new(deck), &self.m.root)
+        {
+            return Err(format!("你运行在另一个工作区的终端里：{deck}"));
+        }
+        match self.m.block(id) {
+            Some(b) if b.kind == BlockKind::Terminal => Ok(id.clone()),
+            Some(_) => Err(format!("{id} 不是终端 block")),
+            None => Err(format!("启动你的终端 {id} 已不在画布上")),
+        }
+    }
+
+    fn current_terminal(&self) -> Value {
+        let (me, why) = match self.caller_terminal() {
+            Ok(id) => (self.m.block(&id).map(|b| self.fields_json(b)), None),
+            Err(e) => (None, Some(e)),
+        };
+        let focused = self.here.focused.as_ref().and_then(|id| self.m.block(id));
+        let focused_why = match focused {
+            None => Some("人现在没有在操作任何 block"),
+            Some(b) if b.kind != BlockKind::Terminal => Some("人正在操作的不是终端"),
+            Some(_) => None,
+        };
+        let focused = focused.filter(|b| b.kind == BlockKind::Terminal).map(|b| self.fields_json(b));
+        let mut out = json!({"self": me, "focused": focused});
+        if let Some(w) = why {
+            out["selfReason"] = w.into();
+        }
+        if let Some(w) = focused_why {
+            out["focusedReason"] = w.into();
+        }
+        out
     }
 
     // ---- patches ----
@@ -838,6 +893,7 @@ impl Ctx<'_> {
                 let id = arg_str(args, "id")?.unwrap_or_default();
                 Ok(self.fields_json(self.block(&id)?))
             }
+            "current_terminal" => Ok(self.current_terminal()),
             "read_selection" => {
                 let blocks: Vec<Value> =
                     self.m.blocks.iter().filter(|b| self.m.sel.contains(&b.id)).map(|b| self.fields_json(b)).collect();
@@ -1204,8 +1260,45 @@ mod tests {
     }
 
     fn call(m: &mut Model, name: &str, args: Value) -> Result<Value, String> {
-        let mut c = Ctx { m, view: (1000., 800.), mcp: Value::Null, dirty: false, memos: vec![], reload: vec![] };
+        call_from(m, Here::default(), name, args)
+    }
+
+    fn call_from(m: &mut Model, here: Here, name: &str, args: Value) -> Result<Value, String> {
+        let mut c = Ctx { m, view: (1000., 800.), mcp: Value::Null, here, dirty: false, memos: vec![], reload: vec![] };
         c.call(name, args.as_object().unwrap())
+    }
+
+    #[test]
+    fn current_terminal_names_the_callers_and_the_users() {
+        let (dir, mut m) = ctx_model();
+        let mut t = Block::new(BlockKind::Terminal);
+        t.id = "b0000t1".into();
+        m.add_block(t);
+        let mut n = Block::new(BlockKind::Note);
+        n.id = "b0000n1".into();
+        m.add_block(n);
+        let root = dir.path().to_string_lossy().into_owned();
+
+        let out = call(&mut m, "current_terminal", json!({})).unwrap();
+        assert!(out["self"].is_null() && out["selfReason"].as_str().unwrap().contains("BOUNDLESSDECK_TERMINAL"));
+        assert!(out["focused"].is_null());
+
+        let here = |t: &str, deck: &str, f: Option<&str>| Here {
+            caller: crate::mcp::Caller { terminal: Some(t.into()), deck: Some(deck.into()) },
+            focused: f.map(str::to_string),
+        };
+        let out = call_from(&mut m, here("b0000t1", &root, Some("b0000t1")), "current_terminal", json!({})).unwrap();
+        assert_eq!(out["self"]["id"], "b0000t1");
+        assert_eq!(out["focused"]["id"], "b0000t1");
+        let info = call_from(&mut m, here("b0000t1", &root, None), "deck_info", json!({})).unwrap();
+        assert_eq!(info["callerTerminal"], "b0000t1");
+
+        let out = call_from(&mut m, here("b0000t1", "/elsewhere", Some("b0000n1")), "current_terminal", json!({})).unwrap();
+        assert!(out["self"].is_null() && out["selfReason"].as_str().unwrap().contains("另一个工作区"));
+        assert!(out["focused"].is_null() && out["focusedReason"].as_str().unwrap().contains("不是终端"));
+
+        let out = call_from(&mut m, here("b0000gone", &root, None), "current_terminal", json!({})).unwrap();
+        assert!(out["selfReason"].as_str().unwrap().contains("不在画布上"));
     }
 
     #[test]
@@ -1305,7 +1398,7 @@ mod tests {
         assert_eq!(normalize_url("example.com").unwrap(), "https://example.com");
         assert!(normalize_url("javascript:alert(1)").is_err());
         let (_d, mut m) = ctx_model();
-        let c = Ctx { m: &mut m, view: (0., 0.), mcp: Value::Null, dirty: false, memos: vec![], reload: vec![] };
+        let c = Ctx { m: &mut m, view: (0., 0.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![] };
         assert!(c.read_resource("boundlessdeck://schema").unwrap()["kinds"].as_array().unwrap().len() == 7);
         assert!(c.read_resource("other://x").is_err());
     }

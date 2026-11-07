@@ -351,18 +351,21 @@ impl DeckView {
     /// Serves this deck to agents: its socket, its descriptor, the active-deck registry.
     pub fn start_mcp(&mut self, cx: &mut Context<Self>) {
         use crate::mcp::{self, rpc::Job};
-        let (tx, rx) = smol::channel::unbounded::<(Job, std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>)>();
+        type Reply = std::sync::mpsc::SyncSender<Result<serde_json::Value, String>>;
+        let (tx, rx) = smol::channel::unbounded::<(Job, mcp::Caller, Reply)>();
         // Each job runs on the UI thread, in the deck's own add/remove/undo path.
         cx.spawn(async move |this, cx| {
-            while let Ok((job, reply)) = rx.recv().await {
-                let out = this.update(cx, |d, cx| d.run_job(job, cx)).unwrap_or_else(|_| Err("这个工作区已经关了".into()));
+            while let Ok((job, caller, reply)) = rx.recv().await {
+                let out = this
+                    .update(cx, |d, cx| d.run_job(job, &caller, cx))
+                    .unwrap_or_else(|_| Err("这个工作区已经关了".into()));
                 let _ = reply.send(out);
             }
         })
         .detach();
-        let run: Arc<mcp::rpc::Runner> = Arc::new(move |job| {
+        let run: Arc<mcp::server::DeckRunner> = Arc::new(move |job, caller| {
             let (reply, answer) = std::sync::mpsc::sync_channel(1);
-            tx.send_blocking((job, reply)).map_err(|_| "这个工作区已经关了".to_string())?;
+            tx.send_blocking((job, caller.clone(), reply)).map_err(|_| "这个工作区已经关了".to_string())?;
             answer.recv_timeout(Duration::from_secs(15)).map_err(|_| "窗口 15s 没有响应".to_string())?
         });
         let root = self.m.root.clone();
@@ -418,8 +421,17 @@ impl DeckView {
         }
     }
 
-    fn run_job(&mut self, job: crate::mcp::rpc::Job, cx: &mut Context<Self>) -> Result<serde_json::Value, String> {
+    fn run_job(
+        &mut self,
+        job: crate::mcp::rpc::Job,
+        caller: &crate::mcp::Caller,
+        cx: &mut Context<Self>,
+    ) -> Result<serde_json::Value, String> {
         use crate::mcp::{rpc::Job, tools::Ctx};
+        let here = crate::mcp::tools::Here {
+            caller: caller.clone(),
+            focused: self.focus_target(),
+        };
         let info = match &self.mcp {
             Some(s) => serde_json::json!({
                 "running": true, "socket": s.socket.to_string_lossy(), "startedAt": s.started.to_rfc3339(),
@@ -427,7 +439,7 @@ impl DeckView {
             }),
             None => serde_json::json!({"running": false, "error": self.mcp_err}),
         };
-        let mut ctx = Ctx { m: &mut self.m, view: self.view, mcp: info, dirty: false, memos: vec![], reload: vec![] };
+        let mut ctx = Ctx { m: &mut self.m, view: self.view, mcp: info, here, dirty: false, memos: vec![], reload: vec![] };
         let out = match job {
             Job::Tool(name, args) => ctx.call(&name, &args),
             Job::Resource(uri) => ctx.read_resource(&uri),
@@ -1151,7 +1163,7 @@ impl DeckView {
             return;
         }
         let (cols, rows) = terminal::grid_for(b.w, b.h - TITLE_H);
-        let term = match Terminal::spawn(&self.m.root, cols, rows) {
+        let term = match Terminal::spawn(&self.m.root, cols, rows, id) {
             Ok(make) => cx.new(make),
             Err(e) => {
                 rt.term_err = Some(format!("终端没能启动：{e}"));
