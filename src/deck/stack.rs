@@ -25,6 +25,39 @@ const EDGE_SPEED: f32 = 5.0;
 /// How far a press moves before it plucks the card out.
 const PLUCK_SLOP: f32 = 6.0;
 
+/// A value that moves toward its target as a damped spring does: over
+/// about `dur` seconds, overshooting by about `bounce`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Spring {
+    pub x: f32,
+    pub v: f32,
+}
+
+impl Spring {
+    pub fn at(x: f32) -> Spring {
+        Spring { x, v: 0. }
+    }
+
+    /// Moves it dt seconds toward target; says whether it still moves.
+    pub fn step(&mut self, target: f32, dt: f32, dur: f32, bounce: f32) -> bool {
+        let omega = 2. * std::f32::consts::PI / dur;
+        let zeta = 1. - bounce;
+        let mut left = dt.min(0.1);
+        while left > 0. {
+            let h = left.min(1. / 240.);
+            let a = -omega * omega * (self.x - target) - 2. * zeta * omega * self.v;
+            self.v += a * h;
+            self.x += self.v * h;
+            left -= h;
+        }
+        let moving = (self.x - target).abs() > 1e-3 * (1. + target.abs()) || self.v.abs() > 1e-2;
+        if !moving {
+            *self = Spring::at(target);
+        }
+        moving
+    }
+}
+
 /// A stack's state between frames.
 #[derive(Default)]
 pub(super) struct StackRt {
@@ -37,7 +70,9 @@ pub(super) struct StackRt {
     /// Where the pointer is in the body, while it is over it.
     pub hover: Option<f32>,
     /// Where each card shows, easing toward where it goes.
-    pub ys: std::collections::HashMap<String, (f32, f32)>,
+    pub ys: std::collections::HashMap<String, (Spring, Spring)>,
+    /// How far its cards stand apart, out of the long preview's way.
+    pub spread: Spring,
     pub frame: Option<Instant>,
 }
 
@@ -117,6 +152,11 @@ fn tint(k: BlockKind) -> Hsla {
         _ => (0x6B, 0x72, 0x80),
     };
     rgba_u8(r, g, b, 1.)
+}
+
+/// A stack's body width at scale s.
+fn b_w(st: &Block, s: f32) -> f32 {
+    st.w * s
 }
 
 fn cut(s: &str, max: usize) -> String {
@@ -266,20 +306,26 @@ impl DeckView {
                     self.pluck = None;
                     self.drag = None;
                 } else if self.preview.is_some() {
-                    self.preview = None;
+                    self.close_preview();
                 } else if self.stack_open.take().is_some() {
                 } else {
                     return;
                 }
             }
             "space" => {
-                if self.preview.take().is_none() {
+                if self.preview.is_some() {
+                    self.close_preview();
+                } else {
                     let Some(id) = self.selected_stack() else { return };
                     if self.m.block(&id).is_none_or(|b| self.members(b).is_empty()) {
                         return;
                     }
                     self.stack_open = Some(id.clone());
                     self.stack_rt(&id).out = true;
+                    if self.preview_leaving.as_deref() != Some(id.as_str()) {
+                        self.preview_t = Spring::at(0.); // it grows out of its card
+                    }
+                    self.preview_leaving = None;
                     self.preview = Some(id);
                 }
             }
@@ -291,10 +337,17 @@ impl DeckView {
         cx.notify();
     }
 
+    /// Closes the long preview: it shrinks back into its card.
+    pub(super) fn close_preview(&mut self) {
+        if let Some(id) = self.preview.take() {
+            self.preview_leaving = Some(id);
+        }
+    }
+
     /// Closes the open stack once it is no longer the one thing selected.
     pub(super) fn watch_stack(&mut self) {
         let Some(id) = self.stack_open.clone() else { return };
-        if self.preview.is_some() || self.pluck.is_some() {
+        if self.preview.is_some() || self.preview_leaving.is_some() || self.pluck.is_some() {
             return;
         }
         let gone = self.m.block(&id).is_none() || self.m.stacked_ids().contains(&id);
@@ -306,6 +359,9 @@ impl DeckView {
         }
         if self.preview.as_ref().is_some_and(|p| self.m.block(p).is_none()) {
             self.preview = None;
+        }
+        if self.preview_leaving.as_ref().is_some_and(|p| self.m.block(p).is_none()) {
+            self.preview_leaving = None;
         }
     }
 
@@ -400,7 +456,12 @@ impl DeckView {
         }
         let g = self.geom(st, members.len());
         let open = self.stack_open.as_deref() == Some(&st.id);
-        let shown = self.preview.as_deref() == Some(&st.id);
+        let open_preview = self.preview.as_deref() == Some(&st.id);
+        let leaving = self.preview_leaving.as_deref() == Some(&st.id);
+        let shown = open_preview || leaving;
+        // While the preview shrinks back, its card shows again once it is home.
+        let card_home = leaving && self.preview_t.x < 0.08;
+        let (body_x, body_y) = self.body_origin(st);
         let dragging = self.drag.is_some();
         let now = Instant::now();
         let id = st.id.clone();
@@ -445,29 +506,44 @@ impl DeckView {
         let (sc, pick) = (rt.scroll, rt.pick);
 
         // Each card eases toward where it goes.
-        let k = 1. - (-dt * 18.).exp();
+        // The cards spring to where they go; with the long preview open the
+        // others stand apart, out of its way.
+        let spread_to = if open_preview { 1. } else { 0. };
+        animating |= rt.spread.step(spread_to, dt, 0.46, 0.14);
+        let spread = rt.spread.x;
         let mut cards: Vec<(Block, usize, f32, f32)> = Vec::new();
+        let mut preview_from = None;
         for (i, m) in members.iter().enumerate() {
             let target_y = g.top(i, sc, out);
             let target_l = if out == Some(i) { 1. } else { 0. };
-            let e = rt.ys.entry(m.id.clone()).or_insert((target_y, target_l));
+            let e = rt.ys.entry(m.id.clone()).or_insert((Spring::at(target_y), Spring::at(target_l)));
             if dt > 0. {
-                e.0 += (target_y - e.0) * k;
-                e.1 += (target_l - e.1) * k;
+                animating |= e.0.step(target_y, dt, 0.38, 0.18);
+                animating |= e.1.step(target_l, dt, 0.38, 0.18);
             }
-            if (e.0 - target_y).abs() > 0.3 || (e.1 - target_l).abs() > 0.01 {
-                animating = true;
-            } else {
-                *e = (target_y, target_l);
+            let (mut y, l) = (e.0.x, e.1.x);
+            if let Some(o) = out {
+                if i < o {
+                    y -= spread * (g.peek * 1.5 + (o - i - 1) as f32 * g.peek * 0.6);
+                } else if i > o {
+                    y += spread * (g.peek * 2. + (i - o - 1) as f32 * g.peek * 0.6);
+                }
             }
-            let (y, l) = *e;
             if shown && out == Some(i) {
-                continue; // it is the preview now
+                // It is the preview now: where it lies is where the preview
+                // grows from and goes back into.
+                preview_from = Some((body_x + g.pad - l * 4. * s, body_y + y, (b_w(st, s) - 2. * g.pad) + l * 8. * s, g.card_h));
+                if !card_home {
+                    continue;
+                }
             }
             if i as f32 - sc < -3. || y > g.h || y + g.card_h < 0. {
                 continue;
             }
             cards.push((m.clone(), i, y, l));
+        }
+        if preview_from.is_some() {
+            self.preview_from = preview_from;
         }
         if animating {
             window.request_animation_frame();
@@ -681,11 +757,27 @@ impl DeckView {
 
     /// The long preview of a stack's card, over the window.
     pub(super) fn stack_preview(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let id = self.preview.clone()?;
+        let id = self.preview.clone().or_else(|| self.preview_leaving.clone())?;
+        let open = self.preview.is_some();
+        // It grows out of its card, and shrinks back into it.
+        let now = Instant::now();
+        let dt = self.preview_frame.map_or(1. / 60., |f| now.duration_since(f).as_secs_f32());
+        self.preview_frame = Some(now);
+        let moving = self.preview_t.step(if open { 1. } else { 0. }, dt, 0.42, 0.1);
+        if !open && !moving {
+            self.preview_leaving = None;
+            self.preview_frame = None;
+            return None;
+        }
+        if moving {
+            window.request_animation_frame();
+        }
+        let p = self.preview_t.x;
         let st = self.m.block(&id).cloned()?;
         let members = self.members(&st);
         if members.is_empty() {
             self.preview = None;
+            self.preview_leaving = None;
             return None;
         }
         let pick = self.stack_rt(&id).pick.min(members.len() - 1);
@@ -693,6 +785,10 @@ impl DeckView {
         let (vw, vh) = self.view;
         let w = (vw - 160.).clamp(320., 860.);
         let h = (vh - 140.).max(240.);
+        let to = ((vw - w) / 2., (vh - h) / 2., w, h);
+        let from = self.preview_from.unwrap_or((to.0 + w * 0.3, to.1 + h * 0.3, w * 0.4, h * 0.4));
+        let lerp = |a: f32, b: f32| a + (b - a) * p;
+        let (x, y, w, h) = (lerp(from.0, to.0), lerp(from.1, to.1), lerp(from.2, to.2), lerp(from.3, to.3));
 
         // Its content, at 100%: the card's own body, but for what would run.
         let content = match card.kind {
@@ -732,15 +828,12 @@ impl DeckView {
                 .left_0()
                 .top_0()
                 .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(rgba_u8(0, 0, 0, if t.dark { 0.5 } else { 0.28 }))
+                .bg(rgba_u8(0, 0, 0, if t.dark { 0.5 } else { 0.28 } * p.clamp(0., 1.)))
                 .occlude()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|d, _, window, cx| {
-                        d.preview = None;
+                        d.close_preview();
                         window.focus(&d.focus);
                         cx.notify();
                     }),
@@ -749,8 +842,11 @@ impl DeckView {
                 .child(
                     div()
                         .id("stack-preview-panel")
-                        .w(px(w))
-                        .h(px(h))
+                        .absolute()
+                        .left(px(x))
+                        .top(px(y))
+                        .w(px(w.max(40.)))
+                        .h(px(h.max(40.)))
                         .flex()
                         .flex_col()
                         .rounded(px(14.))
@@ -797,7 +893,16 @@ impl DeckView {
                                 .child(turn("preview-next", "›", 1, cx)),
                         )
                         .child(div().h(px(1.)).w_full().bg(t.border))
-                        .child(div().flex_1().min_h_0().w_full().relative().child(content))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .w_full()
+                                .relative()
+                                // Its content comes in once it has nearly grown.
+                                .opacity(((p - 0.6) / 0.4).clamp(0., 1.))
+                                .child(content),
+                        )
                         .child(
                             div()
                                 .h(px(30.))
@@ -832,6 +937,20 @@ mod tests {
         assert_eq!(g.top(1, 0., Some(1)), g.slot(1, 0.) - g.lift);
         assert!(g.max > 0.);
         assert!(g.slot(0, 2.) < g.pad, "cards scrolled past tuck up behind");
+    }
+
+    #[test]
+    fn springs_overshoot_a_little_and_settle() {
+        let mut sp = Spring::at(0.);
+        let mut peak = 0f32;
+        let mut t = 0.;
+        while sp.step(100., 1. / 60., 0.38, 0.18) && t < 3. {
+            peak = peak.max(sp.x);
+            t += 1. / 60.;
+        }
+        assert!(t < 1.5, "settles");
+        assert_eq!(sp.x, 100.);
+        assert!(peak > 100. && peak < 120., "bounces a little: {peak}");
     }
 
     #[test]

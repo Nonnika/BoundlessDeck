@@ -193,6 +193,13 @@ pub struct DeckView {
     stack_open: Option<String>,
     /// The 块堆 whose long preview shows.
     preview: Option<String>,
+    /// The 块堆 whose long preview, closed, still shrinks back into its card.
+    preview_leaving: Option<String>,
+    /// How far the long preview has grown out of its card, 0 to 1.
+    preview_t: stack::Spring,
+    preview_frame: Option<Instant>,
+    /// Where, in the window, the card the long preview shows lies.
+    preview_from: Option<(f32, f32, f32, f32)>,
     pluck: Option<stack::Pluck>,
     /// Where the pointer was last seen, in the window.
     last_pointer: (f32, f32),
@@ -251,6 +258,10 @@ impl DeckView {
             pressed_title: None,
             stack_open: None,
             preview: None,
+            preview_leaving: None,
+            preview_t: stack::Spring::default(),
+            preview_frame: None,
+            preview_from: None,
             pluck: None,
             last_pointer: (0.0, 0.0),
             popup: None,

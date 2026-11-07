@@ -173,7 +173,7 @@ impl DeckView {
 
     /// Why the page cannot show now over its body, if it cannot.
     fn web_hidden(&self, id: &str, r: (f32, f32, f32, f32)) -> Option<&'static str> {
-        if self.preview.is_some() || self.popup.is_some() || self.pluck.as_ref().is_some_and(|p| p.active) {
+        if self.preview.is_some() || self.preview_leaving.is_some() || self.popup.is_some() || self.pluck.as_ref().is_some_and(|p| p.active) {
             return Some("被浮层遮住");
         }
         if matches!(self.drag, Some(Drag::Marquee { .. }) | Some(Drag::Pan { .. })) {
