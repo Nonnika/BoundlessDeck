@@ -753,8 +753,8 @@ impl DeckView {
             if select_all {
                 e.select_all_text();
             }
-            // 笔记 edits Typora-style: rendered but for the lines being edited.
-            e.markdown = part == EditPart::Body && kind == BlockKind::Memo;
+            // 笔记 and QuickLook edit Typora-style: rendered but for the lines being edited.
+            e.markdown = part == EditPart::Body && matches!(kind, BlockKind::Memo | BlockKind::Note);
             e
         });
         let eid = id.to_string();
@@ -1709,8 +1709,26 @@ impl DeckView {
         self.animating |= appearing;
         card = card.child(self.title_bar(&b, t, &paper, window, cx));
         let body = self.body(&b, t, &paper, window, cx);
-        let mut body_box =
-            div().relative().flex_1().w_full().min_h_0().overflow_hidden().when(appearing, |d| d.opacity(appear)).child(body);
+        // A block worked in keeps the wheel: its content scrolls (it was
+        // offered the wheel first), and the canvas does not pan under it.
+        // GPUI's scrolling leaves the event going, so it is stopped here.
+        let wid = id.to_string();
+        let mut body_box = div()
+            .relative()
+            .flex_1()
+            .w_full()
+            .min_h_0()
+            .overflow_hidden()
+            .when(appearing, |d| d.opacity(appear))
+            .child(body)
+            .on_scroll_wheel(cx.listener(move |d, ev: &ScrollWheelEvent, _, cx| {
+                let zoom = ev.modifiers.platform || ev.modifiers.control;
+                let gesture = d.canvas_scroll_until.is_some_and(|t| t > Instant::now());
+                let worked_in = d.active.as_deref() == Some(wid.as_str()) || d.editing(&wid, EditPart::Body).is_some();
+                if worked_in && !zoom && !gesture {
+                    cx.stop_propagation();
+                }
+            }));
         if let Some(cover) = self.body_cover(&b, cx) {
             body_box = body_box.child(cover);
         }

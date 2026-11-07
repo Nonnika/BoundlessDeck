@@ -109,6 +109,9 @@ pub struct Editor {
     scroll_y: f32,
     /// The x the up/down keys keep to.
     goal_x: Option<Pixels>,
+    /// The cursor moved or the text changed: the next frame scrolls the
+    /// cursor into view. Otherwise the wheel's scrolling stays.
+    follow: bool,
     layout: Option<Layout>,
 }
 
@@ -249,6 +252,7 @@ impl Editor {
             selecting: false,
             scroll_y: 0.0,
             goal_x: None,
+            follow: true,
             layout: None,
         }
     }
@@ -275,10 +279,12 @@ impl Editor {
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected = offset..offset;
         self.reversed = false;
+        self.follow = true;
         cx.notify();
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.follow = true;
         if self.reversed {
             self.selected.start = offset;
         } else {
@@ -483,6 +489,7 @@ impl Editor {
         let lh = self.layout.as_ref().map_or(px(20.), |l| l.line_height);
         let dy = f32::from(ev.delta.pixel_delta(lh).y);
         self.scroll_y = (self.scroll_y - dy).max(0.);
+        self.follow = false;
         cx.notify();
         cx.stop_propagation();
     }
@@ -563,6 +570,7 @@ impl EntityInputHandler for Editor {
         self.reversed = false;
         self.marked = None;
         self.goal_x = None;
+        self.follow = true;
         cx.emit(EditorEvent::Changed);
         cx.notify();
     }
@@ -587,6 +595,7 @@ impl EntityInputHandler for Editor {
             .map(|s| self.range_from_utf16(s))
             .map(|s| r.start + s.start..r.start + s.end)
             .unwrap_or_else(|| r.start + new_text.len()..r.start + new_text.len());
+        self.follow = true;
         cx.emit(EditorEvent::Changed);
         cx.notify();
     }
@@ -799,8 +808,8 @@ impl Element for TextElement {
         if has_text {
             cursor_pt = point_for(cursor_off);
         }
-        if e.multiline && focused {
-            // Keep the cursor in view.
+        if e.multiline && focused && e.follow {
+            // Bring the cursor into view, once after it moved.
             let cy = f32::from(cursor_pt.y);
             let lh = f32::from(cursor_h);
             if cy < scroll_y {
@@ -869,8 +878,11 @@ impl Element for TextElement {
         });
         let lines = std::mem::take(&mut pp.lines);
         let (line_height, scroll_y) = (pp.line_height, pp.scroll_y);
+        // Followed only once it could be: with the keyboard.
+        let followed = self.editor.read(cx).focus.is_focused(window);
         self.editor.update(cx, |e, _| {
             e.scroll_y = scroll_y;
+            e.follow &= !followed;
             e.layout = Some(Layout { lines, bounds, line_height, scroll_y });
         });
     }
