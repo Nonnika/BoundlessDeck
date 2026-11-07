@@ -212,7 +212,6 @@ cx.spawn(async move |this, cx| {
 | `src/commands.rs` | 命令表：菜单、快捷键与快捷键窗口的单一来源。 |
 | `Cargo.toml` | 依赖；`gpui` 0.2.2 与 `runtime_shaders`；macOS 专属 objc2 系列。 |
 | `README.md` | 功能清单与 Go 版差异。 |
-| `12947` | git 跟踪的 PNG 截图（2560×1600），根目录，没有代码引用。是否删除由用户决定。 |
 
 ### 常见改动路径
 
