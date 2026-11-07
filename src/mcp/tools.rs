@@ -598,7 +598,10 @@ impl Ctx<'_> {
                 self.reload.push(id.to_string());
             }
             "page" => self.m.block_mut(id).unwrap().page = v.as_i64().unwrap_or(0) as i32,
-            "url" => self.m.block_mut(id).unwrap().url = normalize_url(&val_str(v, name)?)?,
+            "url" => {
+                self.m.block_mut(id).unwrap().url = normalize_url(&val_str(v, name)?)?;
+                self.reload.push(id.to_string());
+            }
             "chart" => self.m.block_mut(id).unwrap().chart = val_str(v, name)?,
             "items" => {
                 let ids: Vec<String> = v.as_array().unwrap().iter().filter_map(|x| x.as_str().map(str::to_string)).collect();

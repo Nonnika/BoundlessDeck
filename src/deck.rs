@@ -24,6 +24,7 @@ use gpui::{
     uniform_list,
 };
 
+mod browser;
 mod stack;
 
 use crate::editor::{Editor, EditorEvent};
@@ -89,6 +90,8 @@ pub enum DeckEvent {
 enum EditPart {
     Title,
     Body,
+    /// A browser's address bar.
+    Address,
 }
 
 struct Editing {
@@ -136,6 +139,8 @@ struct Runtime {
     _term_sub: Option<Subscription>,
     memo: MemoRt,
     stack: stack::StackRt,
+    web: Option<browser::WebRt>,
+    web_err: Option<String>,
 }
 
 struct WordDoc {
@@ -202,6 +207,14 @@ pub struct DeckView {
     /// The workspace's MCP endpoint while it runs, or why it could not start.
     mcp: Option<crate::mcp::server::Server>,
     mcp_err: Option<String>,
+    /// What the browser blocks' pages say, from WebKit's callbacks.
+    web_tx: smol::channel::Sender<browser::WebEvent>,
+    /// The pages this frame showed; the others are hidden at its end.
+    web_shown: HashSet<String>,
+    /// Where this frame lays the blocks out, back to front: what covers a page.
+    frame_rects: Vec<(String, (f32, f32, f32, f32))>,
+    /// When the canvas last zoomed by a gesture.
+    zoomed_at: Option<Instant>,
 }
 
 impl EventEmitter<DeckEvent> for DeckView {}
@@ -214,6 +227,15 @@ impl Focusable for DeckView {
 
 impl DeckView {
     pub fn new(m: Model, workspaces: Vec<String>, cx: &mut Context<Self>) -> DeckView {
+        let (web_tx, web_rx) = smol::channel::unbounded();
+        cx.spawn(async move |this, cx| {
+            while let Ok(ev) = web_rx.recv().await {
+                if this.update(cx, |d, cx| d.on_web_event(ev, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         DeckView {
             m,
             focus: cx.focus_handle(),
@@ -236,6 +258,10 @@ impl DeckView {
             save_seq: Arc::new(Mutex::new(0)),
             mcp: None,
             mcp_err: None,
+            web_tx,
+            web_shown: HashSet::new(),
+            frame_rects: Vec::new(),
+            zoomed_at: None,
         }
     }
 
@@ -324,6 +350,8 @@ impl DeckView {
                 rt.pdf = None;
                 rt.pdf_img = None;
                 rt.memo = MemoRt::default();
+                rt.web = None;
+                rt.web_err = None;
             }
         }
         if dirty {
@@ -410,6 +438,7 @@ impl DeckView {
 
     fn zoom_at(&mut self, x: f32, y: f32, factor: f32, cx: &mut Context<Self>) {
         self.m.zoom_at(x, y, factor);
+        self.note_zoom(cx);
         self.zoom_anchor = (x, y);
         self.zoom_gen += 1;
         let gen_now = self.zoom_gen;
@@ -498,8 +527,11 @@ impl DeckView {
             BlockKind::Memo => self.new_memo(sx, sy, window, cx),
             _ => {
                 let id = self.add_at(kind, sx, sy);
-                if kind == BlockKind::Note {
-                    self.start_editing(&id, EditPart::Body, window, cx);
+                match kind {
+                    BlockKind::Note => self.start_editing(&id, EditPart::Body, window, cx),
+                    // A new browser is there to type an address in.
+                    BlockKind::Browser => self.start_editing(&id, EditPart::Address, window, cx),
+                    _ => {}
                 }
                 self.after_edit(cx);
             }
@@ -582,20 +614,23 @@ impl DeckView {
         let kind = b.kind;
         let text = match (part, kind) {
             (EditPart::Title, _) => b.title.clone(),
+            (EditPart::Address, _) => b.url.clone(),
             (EditPart::Body, BlockKind::Memo) => self.rts.get(id).map(|r| r.memo.text.clone()).unwrap_or_default(),
             (EditPart::Body, _) => b.text.clone(),
         };
         let from_title = b.title.clone();
         let multiline = part == EditPart::Body;
+        let select_all = part != EditPart::Body;
         let editor = cx.new(|cx| {
             let mut e = Editor::new(text, multiline, window, cx);
             e.placeholder = match (part, kind) {
                 (EditPart::Title, _) => "标题".into(),
+                (EditPart::Address, _) => "输入网址或搜索 · 回车打开".into(),
                 (_, BlockKind::Note) => "支持 Markdown · Esc 或 ⌘↵ 完成".into(),
                 (_, BlockKind::Chart) => "名称\t数值 · 每行一项".into(),
                 _ => "Markdown · Esc 或 ⌘↵ 完成".into(),
             };
-            if part == EditPart::Title {
+            if select_all {
                 e.select_all_text();
             }
             e
@@ -608,6 +643,7 @@ impl DeckView {
                 let part = e.part;
                 let is_memo = d.m.block(&eid).is_some_and(|b| b.kind == BlockKind::Memo);
                 match part {
+                    EditPart::Address => {} // taken as the edit ends
                     EditPart::Title => {
                         if let Some(b) = d.m.block_mut(&eid) {
                             b.title = text;
@@ -646,8 +682,17 @@ impl DeckView {
     fn stop_editing(&mut self, cx: &mut Context<Self>) {
         let Some(e) = self.editing.take() else { return };
         let root = self.m.root.clone();
+        let typed = e.editor.read(cx).text.clone();
         let Some(b) = self.m.block_mut(&e.id) else { return };
         match e.part {
+            EditPart::Address => {
+                if let Ok(url) = browser::address_to_url(&typed)
+                    && url != b.url
+                {
+                    b.url = url.clone();
+                    self.web_go(&e.id, &url);
+                }
+            }
             EditPart::Title => {
                 b.title = b.title.trim().to_string();
                 if b.kind == BlockKind::Memo && b.title != e.from_title && !b.title.is_empty() {
@@ -1777,12 +1822,7 @@ impl DeckView {
                     .into_any_element()
             }
             BlockKind::Stack => self.stack_body(b, t, window, cx),
-            BlockKind::Browser => unsupported(
-                "浏览器 block 尚未在 Rust 版实现",
-                if b.url.is_empty() { "（未打开网页）".to_string() } else { b.url.clone() },
-                t,
-                s,
-            ),
+            BlockKind::Browser => self.browser_body(b, t, window, cx),
         }
     }
 
@@ -1977,6 +2017,7 @@ impl DeckView {
             .child(item("new-memo", "memo", "笔记", BlockKind::Memo, cx))
             .child(item("new-file", "file", "文件", BlockKind::File, cx))
             .child(item("new-term", "terminal", "终端", BlockKind::Terminal, cx))
+            .child(item("new-browser", "globe", "浏览器", BlockKind::Browser, cx))
             .child(item("new-chart", "chart", "图表", BlockKind::Chart, cx))
             .child(item("new-stack", "stack", "块堆", BlockKind::Stack, cx))
             .into_any_element()
@@ -2191,22 +2232,6 @@ fn message(text: String, color: Hsla, s: f32) -> AnyElement {
     div().size_full().p(px(10. * s)).text_size(px(12. * s)).text_color(color).child(text).into_any_element()
 }
 
-fn unsupported(title: &str, detail: String, t: &Theme, s: f32) -> AnyElement {
-    div()
-        .size_full()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(6. * s))
-        .p(px(12. * s))
-        .text_size(px(12. * s))
-        .text_color(t.muted)
-        .child(div().text_color(t.text).child(title.to_string()))
-        .child(detail)
-        .into_any_element()
-}
-
 fn shadow(t: &Theme) -> gpui::BoxShadow {
     gpui::BoxShadow { color: t.shade, offset: point(px(0.), px(4.)), blur_radius: px(16.), spread_radius: px(0.) }
 }
@@ -2320,10 +2345,20 @@ impl Render for DeckView {
 
         let visible: Vec<String> =
             self.m.visible(self.view.0, self.view.1).into_iter().map(|i| self.m.blocks[i].id.clone()).collect();
+        self.frame_rects = visible
+            .iter()
+            .filter_map(|id| self.m.block(id))
+            .map(|b| {
+                let (x, y) = cam.to_screen(b.x, b.y);
+                (b.id.clone(), (x, y, b.w * cam.s, b.h * cam.s))
+            })
+            .collect();
         let mut blocks = Vec::new();
         for id in &visible {
             blocks.extend(self.block_view(id, &t, window, cx));
         }
+
+        self.hide_unshown_pages();
 
         let marquee = match &self.drag {
             Some(Drag::Marquee { from, to }) => {

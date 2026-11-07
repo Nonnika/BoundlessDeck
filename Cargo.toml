@@ -21,4 +21,5 @@ libc = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = "0.37"
 tempfile = "3"
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 
