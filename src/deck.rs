@@ -158,6 +158,8 @@ struct Runtime {
     /// A browser's pages, one for each tab opened so far, by the tab's key.
     webs: HashMap<u64, browser::WebRt>,
     web_err: Option<String>,
+    /// A video file's player: its page's key, and the path it plays.
+    video: Option<(u64, String)>,
     /// Where the block is in its lifecycle (`lifecycle`).
     life: lifecycle::Life,
     /// The block was last drawn zoomed out, as its frame and title alone.
@@ -1986,7 +1988,7 @@ impl DeckView {
         live_preview(&b.id, content, [12. * s, 16. * s, 12. * s, 16. * s], b.w * s)
     }
 
-    fn file_body(&mut self, b: &Block, t: &Theme, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn file_body(&mut self, b: &Block, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let s = self.content_scale();
         let path = self.m.path_of(&b.path);
         match preview::of(&b.path) {
@@ -2041,6 +2043,7 @@ impl DeckView {
                 }
             }
             preview::Kind::Pdf => self.pdf_body(b, t, cx),
+            preview::Kind::Video => self.video_body(b, t, window),
             preview::Kind::Text => {
                 self.load_lines(&b.id, cx);
                 let rt = self.rts.entry(b.id.clone()).or_default();

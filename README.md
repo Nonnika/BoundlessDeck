@@ -13,7 +13,7 @@ cargo bundle --release       # 打包 .app（需 cargo-bundle）
 
 ## 画布上有什么
 
-- **QuickLook** 便签（会到期消失）、**笔记**（Markdown 文件）、**文件**预览（文本、Markdown、图片、PDF、Word）
+- **QuickLook** 便签（会到期消失）、**笔记**（Markdown 文件）、**文件**预览（文本、Markdown、图片、PDF、Word、视频）
 - **终端**（alacritty_terminal，支持输入法）、**浏览器**（WKWebView，多标签页）、**图表**、**块堆**
 - 平移、捏合与 ⌘ 滚轮缩放、框选、撤销重做；缩放后内容渐变变清晰
 

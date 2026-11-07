@@ -377,6 +377,7 @@ impl Ctx<'_> {
                     preview::Kind::Markdown => "markdown",
                     preview::Kind::Word => "word",
                     preview::Kind::Pdf => "pdf",
+                    preview::Kind::Video => "video",
                 };
                 o.insert("preview".into(), kind.into());
                 if let Some(a) = abs(&n.path) {
@@ -699,7 +700,13 @@ impl Ctx<'_> {
         }
         let id = self.m.new_id();
         self.validate_patch(kind, &id, &patch)?;
-        let (title, w, h) = kind_defaults(kind);
+        let (title, mut w, mut h) = kind_defaults(kind);
+        // A file starts at its kind's size (a page, 16:9 for a video).
+        if kind == BlockKind::File
+            && let Some(p) = patch.get("path").and_then(Value::as_str)
+        {
+            (w, h) = crate::model::file_block_size(std::path::Path::new(p));
+        }
         let mut b = Block::new(kind);
         b.id = id.clone();
         b.title = title.into();
@@ -1361,6 +1368,17 @@ mod tests {
         assert!(m.blocks.is_empty());
         call(&mut m, "undo", json!({})).unwrap();
         assert_eq!(m.blocks.len(), 1);
+    }
+
+    #[test]
+    fn a_video_file_starts_16_by_9_and_says_so() {
+        let (d, mut m) = ctx_model();
+        std::fs::write(d.path().join("clip.mp4"), b"x").unwrap();
+        let out = call(&mut m, "create_block", json!({"kind": "file", "path": "clip.mp4"})).unwrap();
+        assert_eq!(out["preview"], "video");
+        assert_eq!((out["w"].as_f64(), out["h"].as_f64()), (Some(640.), Some(386.)));
+        let out = call(&mut m, "create_block", json!({"kind": "file", "path": "clip.mp4", "w": 300, "h": 200})).unwrap();
+        assert_eq!((out["w"].as_f64(), out["h"].as_f64()), (Some(300.), Some(200.)));
     }
 
     #[test]

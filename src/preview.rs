@@ -13,6 +13,8 @@ pub enum Kind {
     Markdown,
     Word,
     Pdf,
+    /// Played by WebKit's own player.
+    Video,
 }
 
 pub fn of(path: &str) -> Kind {
@@ -22,6 +24,7 @@ pub fn of(path: &str) -> Kind {
         Some("md" | "markdown" | "mdown") => Kind::Markdown,
         Some("docx" | "doc") => Kind::Word,
         Some("pdf") => Kind::Pdf,
+        Some("mp4" | "m4v" | "mov" | "webm") => Kind::Video,
         _ => Kind::Text,
     }
 }
@@ -59,6 +62,8 @@ mod tests {
         assert_eq!(of("a/b.PNG"), Kind::Image);
         assert_eq!(of("readme.md"), Kind::Markdown);
         assert_eq!(of("x.pdf"), Kind::Pdf);
+        assert_eq!(of("clip.MOV"), Kind::Video);
+        assert_eq!(of("a.webm"), Kind::Video);
         assert_eq!(of("main.rs"), Kind::Text);
         assert_eq!(of("Makefile"), Kind::Text);
     }

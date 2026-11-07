@@ -162,7 +162,7 @@ impl WebTab {
     }
 }
 
-fn next_tab_key() -> u64 {
+pub(crate) fn next_tab_key() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
@@ -1086,10 +1086,12 @@ pub fn scale_keeping_ratio(w: f32, h: f32, dx: f32, dy: f32) -> (f32, f32) {
     (w * k, h * k)
 }
 
-/// The size a block linking the file starts at: a page for a PDF or Word, wider for others.
+/// The size a block linking the file starts at: a page for a PDF or Word, 16:9 for a video, wider for others.
 pub fn file_block_size(path: &Path) -> (f32, f32) {
     match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("pdf" | "docx" | "doc") => (440.0, 580.0),
+        // 16:9 under the title bar.
+        Some("mp4" | "m4v" | "mov" | "webm") => (640.0, 386.0),
         _ => (560.0, 420.0),
     }
 }

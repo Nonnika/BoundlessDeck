@@ -10,7 +10,12 @@
 //! page zoom lags behind the block). Meanwhile its body says why. Once the
 //! zoom rests, the page takes it (`WebView::zoom`), crisp at any scale,
 //! fading in over its picture (see `sharpen`).
+//!
+//! A video file block shows the same way: a page of WebKit's own player
+//! on the file (`video_body`), without the bar. It plays only when asked,
+//! and pauses when the block does (`lifecycle`).
 
+use std::path::Path;
 use std::time::Instant;
 
 use gpui::{
@@ -41,6 +46,8 @@ pub(super) struct WebRt {
     bounds: (f32, f32, f32, f32),
     visible: bool,
     pub loading: bool,
+    /// A video file's player, not a browser's page.
+    media: bool,
 }
 
 /// What a page says, with the block and the tab (by key) it is in.
@@ -87,6 +94,49 @@ fn set_alpha(_: &wry::WebView, _: f32) {}
 
 #[cfg(not(target_os = "macos"))]
 fn take_snapshot(_: &wry::WebView, _: &str, _: u64, _: &smol::channel::Sender<WebEvent>) {}
+
+/// A video starts only from a click or key in its player, never by itself.
+const NO_AUTOPLAY: &str = r#"(function () {
+  var asked = false;
+  ['pointerdown', 'keydown'].forEach(function (t) {
+    addEventListener(t, function () { asked = true; }, true);
+  });
+  addEventListener('play', function (e) {
+    if (!asked && e.target && e.target.pause) e.target.pause();
+  }, true);
+})();"#;
+
+const PAUSE_VIDEO: &str = "document.querySelectorAll('video').forEach(function (v) { v.pause(); })";
+
+/// A page of WebKit's player on the video file at path.
+fn make_video(path: &Path, window: &Window) -> Result<wry::WebView, String> {
+    let view = wry::WebViewBuilder::new()
+        .with_bounds(wry::Rect { position: LogicalPosition::new(0., 0.).into(), size: LogicalSize::new(10., 10.).into() })
+        .with_visible(false)
+        .with_accept_first_mouse(true)
+        .with_autoplay(false)
+        .with_initialization_script(NO_AUTOPLAY)
+        .with_navigation_handler(|url| url.starts_with("file:") || url.starts_with("about:"))
+        .build_as_child(window)
+        .map_err(|e| e.to_string())?;
+    load_file(&view, path)?;
+    Ok(view)
+}
+
+/// Opens a local file in the page, which may read that file alone.
+#[cfg(target_os = "macos")]
+fn load_file(view: &wry::WebView, path: &Path) -> Result<(), String> {
+    use objc2_foundation::{NSString, NSURL};
+    use wry::WebViewExtMacOS;
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    unsafe { view.webview().loadFileURL_allowingReadAccessToURL(&url, &url) };
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn load_file(view: &wry::WebView, path: &Path) -> Result<(), String> {
+    view.load_url(&format!("file://{}", path.display())).map_err(|e| e.to_string())
+}
 
 /// The schemes a page may go to; others are the system's.
 fn web_scheme(url: &str) -> bool {
@@ -221,6 +271,171 @@ impl DeckView {
             .map_err(|e| e.to_string())
     }
 
+    /// Makes a block's native page once (by make) and lays it over page
+    /// (window points), shown while nothing of the canvas should be over
+    /// it. Returns why it is not shown, and its picture to show meanwhile.
+    pub(super) fn native_page(
+        &mut self,
+        id: &str,
+        key: u64,
+        page: (f32, f32, f32, f32),
+        media: bool,
+        window: &mut Window,
+        make: impl FnOnce(&DeckView, &Window) -> Result<wry::WebView, String>,
+    ) -> (Option<String>, Option<std::sync::Arc<gpui::Image>>) {
+        let s = self.m.cam.s;
+        let tx = self.web_tx.clone();
+        let mut note: Option<String> = None;
+        let mut snap: Option<std::sync::Arc<gpui::Image>> = None;
+        if self.rts.get(id).is_some_and(|r| !r.webs.contains_key(&key) && r.web_err.is_none()) {
+            let made = make(self, window);
+            let rt = self.rts.entry(id.to_string()).or_default();
+            match made {
+                Ok(view) => {
+                    rt.webs.insert(key, WebRt {
+                        view,
+                        snap: None,
+                        snapping: false,
+                        zoom: 1.,
+                        alpha: 1.,
+                        bounds: (0., 0., 0., 0.),
+                        visible: false,
+                        loading: !media,
+                        media,
+                    });
+                }
+                Err(e) => rt.web_err = Some(format!("网页视图没能创建：{e}")),
+            }
+        }
+        let hidden = self.web_hidden(id, page);
+        let zooming = self.zooming();
+        let rt = self.rts.entry(id.to_string()).or_default();
+        let now = Instant::now();
+        if let Some(e) = &rt.web_err {
+            note = Some(e.clone());
+        } else if let Some(web) = rt.webs.get_mut(&key) {
+            match hidden {
+                None => {
+                    if web.bounds != page {
+                        let _ = web.view.set_bounds(wry::Rect {
+                            position: LogicalPosition::new(page.0 as f64, page.1 as f64).into(),
+                            size: LogicalSize::new(page.2.max(1.) as f64, page.3.max(1.) as f64).into(),
+                        });
+                        web.bounds = page;
+                    }
+                    if !zooming && (web.zoom - s).abs() > 1e-3 {
+                        let _ = web.view.zoom(s as f64);
+                        web.zoom = s;
+                    }
+                    // Coming into sight: its picture stays under while the live page fades in.
+                    if !web.visible && web.snap.is_some() {
+                        rt.sharpen.begin(now);
+                    }
+                    let fading = rt.sharpen.tick(now);
+                    let alpha = rt.sharpen.alpha(now);
+                    if (web.alpha - alpha).abs() > 1e-3 {
+                        set_alpha(&web.view, alpha);
+                        web.alpha = alpha;
+                    }
+                    if fading {
+                        snap = web.snap.clone();
+                        self.animating = true;
+                    }
+                    if !web.visible {
+                        let _ = web.view.set_visible(true);
+                        web.visible = true;
+                    }
+                    self.web_shown.insert(key);
+                }
+                Some(why) => {
+                    // Going out of sight: a picture of it takes its place.
+                    if web.visible && !web.snapping && (!zooming || web.snap.is_none()) {
+                        web.snapping = true;
+                        take_snapshot(&web.view, id, key, &tx);
+                    }
+                    snap = web.snap.clone();
+                    note = Some(why.to_string());
+                }
+            }
+        }
+        (note, snap)
+    }
+
+    /// A video file's body: WebKit's player over it, its picture while covered.
+    pub(super) fn video_body(&mut self, b: &Block, t: &Theme, window: &mut Window) -> AnyElement {
+        let s = self.m.cam.s;
+        let (sx, sy) = self.m.cam.to_screen(b.x, b.y);
+        let page = (sx + 1., sy + TITLE_H * s, b.w * s - 2., (b.h - TITLE_H) * s - 1.);
+        let path = self.m.path_of(&b.path);
+        let file = path.to_string_lossy().into_owned();
+        let rt = self.rts.entry(b.id.clone()).or_default();
+        // Another file: the old player goes.
+        if rt.video.as_ref().is_some_and(|(_, p)| *p != file) {
+            if let Some((k, _)) = rt.video.take() {
+                rt.webs.remove(&k);
+            }
+            rt.web_err = None;
+        }
+        let key = rt.video.get_or_insert_with(|| (crate::model::next_tab_key(), file)).0;
+        let (note, snap) = if !path.is_file() {
+            (Some("找不到这个视频文件".to_string()), None)
+        } else if s < LOD_SCALE {
+            (Some(String::new()), None)
+        } else {
+            self.native_page(&b.id, key, page, true, window, |_, w| make_video(&path, w))
+        };
+        let backdrop: Hsla = gpui::black();
+        let why = note.filter(|n| !n.is_empty());
+        let body = div().relative().size_full().bg(backdrop);
+        if let Some(img) = snap {
+            return body
+                .child(gpui::img(gpui::ImageSource::Image(img)).size_full().object_fit(gpui::ObjectFit::Fill))
+                .when_some(why, |d, why| {
+                    d.child(
+                        div().absolute().bottom(px(8. * s)).left_0().right_0().flex().justify_center().child(
+                            div()
+                                .px(px(9. * s))
+                                .py(px(3. * s))
+                                .rounded_full()
+                                .bg(t.surface.opacity(0.9))
+                                .text_size(px(10. * s))
+                                .text_color(t.muted)
+                                .child(why),
+                        ),
+                    )
+                })
+                .into_any_element();
+        }
+        let muted = gpui::white().opacity(0.6);
+        body.flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(6. * s))
+            .text_size(px(12. * s))
+            .text_color(muted)
+            .child(svg().path(icons::path("film")).size(px(28. * s)).text_color(muted))
+            .when_some(why, |d, why| d.child(why))
+            .into_any_element()
+    }
+
+    /// Pauses a video block's player, if it has one.
+    pub(super) fn pause_video(&self, id: &str) {
+        let rt = self.rts.get(id);
+        if let Some(web) = rt.and_then(|r| r.webs.get(&r.video.as_ref()?.0)).filter(|w| w.media) {
+            let _ = web.view.evaluate_script(PAUSE_VIDEO);
+        }
+    }
+
+    /// Lets a video block's player go: it stops, and is made again when shown.
+    pub(super) fn drop_video(&mut self, id: &str) {
+        if let Some(rt) = self.rts.get_mut(id)
+            && let Some((key, _)) = rt.video.take()
+        {
+            rt.webs.remove(&key);
+        }
+    }
+
     /// The page of the block's open tab, if it was made.
     fn open_web(&self, id: &str) -> Option<&WebRt> {
         let key = self.m.block(id).and_then(|b| b.tabs.get(b.tab))?.key;
@@ -259,7 +474,7 @@ impl DeckView {
                 continue;
             }
             if after && over(*rect) {
-                return Some("被其他 block 遮住 · 点它的胶带把它放到最上面");
+                return Some("被其他 block 遮住 · 点它的标题栏把它放到最上面");
             }
         }
         // The chrome: the workspace pill, the toolbar, the status bar.
@@ -289,86 +504,15 @@ impl DeckView {
         let rt = self.rts.entry(b.id.clone()).or_default();
         let loading = rt.webs.get(&key).is_some_and(|w| w.loading);
         // The open tab's page: made once there is an address, shown where nothing is over it.
-        let mut note: Option<String> = None;
-        let mut snap: Option<std::sync::Arc<gpui::Image>> = None;
-        let tx = self.web_tx.clone();
-        if b.url.is_empty() {
+        let (note, snap) = if b.url.is_empty() {
             rt.webs.remove(&key);
-            note = Some("在地址栏输入网址或要搜索的词".into());
+            (Some("在地址栏输入网址或要搜索的词".to_string()), None)
         } else if s < LOD_SCALE {
-            note = Some(String::new());
+            (Some(String::new()), None)
         } else {
-            if self.rts.get(&b.id).is_some_and(|r| !r.webs.contains_key(&key) && r.web_err.is_none()) {
-                let made = self.make_webview(&b.id, key, &b.url, window);
-                let rt = self.rts.entry(b.id.clone()).or_default();
-                match made {
-                    Ok(view) => {
-                        rt.webs.insert(key, WebRt {
-                            view,
-                            snap: None,
-                            snapping: false,
-                            zoom: 1.,
-                            alpha: 1.,
-                            bounds: (0., 0., 0., 0.),
-                            visible: false,
-                            loading: true,
-                        });
-                    }
-                    Err(e) => rt.web_err = Some(format!("网页视图没能创建：{e}")),
-                }
-            }
-            let hidden = self.web_hidden(&b.id, page);
-            let zooming = self.zooming();
-            let rt = self.rts.entry(b.id.clone()).or_default();
-            let now = Instant::now();
-            if let Some(e) = &rt.web_err {
-                note = Some(e.clone());
-            } else if let Some(web) = rt.webs.get_mut(&key) {
-                match hidden {
-                    None => {
-                        if web.bounds != page {
-                            let _ = web.view.set_bounds(wry::Rect {
-                                position: LogicalPosition::new(page.0 as f64, page.1 as f64).into(),
-                                size: LogicalSize::new(page.2.max(1.) as f64, page.3.max(1.) as f64).into(),
-                            });
-                            web.bounds = page;
-                        }
-                        if !zooming && (web.zoom - s).abs() > 1e-3 {
-                            let _ = web.view.zoom(s as f64);
-                            web.zoom = s;
-                        }
-                        // Coming into sight: its picture stays under while the live page fades in.
-                        if !web.visible && web.snap.is_some() {
-                            rt.sharpen.begin(now);
-                        }
-                        let fading = rt.sharpen.tick(now);
-                        let alpha = rt.sharpen.alpha(now);
-                        if (web.alpha - alpha).abs() > 1e-3 {
-                            set_alpha(&web.view, alpha);
-                            web.alpha = alpha;
-                        }
-                        if fading {
-                            snap = web.snap.clone();
-                            self.animating = true;
-                        }
-                        if !web.visible {
-                            let _ = web.view.set_visible(true);
-                            web.visible = true;
-                        }
-                        self.web_shown.insert(key);
-                    }
-                    Some(why) => {
-                        // Going out of sight: a picture of it takes its place.
-                        if web.visible && !web.snapping && (!zooming || web.snap.is_none()) {
-                            web.snapping = true;
-                            take_snapshot(&web.view, &b.id, key, &tx);
-                        }
-                        snap = web.snap.clone();
-                        note = Some(why.to_string());
-                    }
-                }
-            }
-        }
+            let (id, url) = (b.id.clone(), b.url.clone());
+            self.native_page(&b.id, key, page, false, window, |d, w| d.make_webview(&id, key, &url, w))
+        };
 
         let id = b.id.clone();
         let editing = self.editing(&b.id, EditPart::Address).cloned();

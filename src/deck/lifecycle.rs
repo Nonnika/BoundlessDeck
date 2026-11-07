@@ -124,11 +124,29 @@ impl BlockHooks for MemoHooks {
     }
 }
 
+/// A video file's player pauses when the block does (but not for another
+/// app coming to the front), and goes when its stay ends.
+struct FileHooks;
+impl BlockHooks for FileHooks {
+    fn on_pause(&self, d: &mut DeckView, b: &Block, why: Pause, _: &mut Context<DeckView>) {
+        if why != Pause::WindowInactive {
+            d.pause_video(&b.id);
+        }
+    }
+    fn on_close(&self, d: &mut DeckView, b: &Block, _: &mut Context<DeckView>) {
+        d.drop_video(&b.id);
+    }
+    fn on_delete(&self, d: &mut DeckView, b: &Block, _: &mut Context<DeckView>) {
+        d.drop_video(&b.id);
+    }
+}
+
 /// The hooks of a kind.
 pub(super) fn hooks(kind: BlockKind) -> &'static dyn BlockHooks {
     match kind {
         BlockKind::Terminal => &TerminalHooks,
         BlockKind::Memo => &MemoHooks,
+        BlockKind::File => &FileHooks,
         _ => &Plain,
     }
 }
