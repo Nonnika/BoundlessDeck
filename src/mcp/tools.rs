@@ -13,7 +13,7 @@ use crate::memo;
 use crate::model::{BlockKind, Block, MIN_BLOCK_H, MIN_BLOCK_W, Model};
 use crate::preview;
 
-pub const SCHEMA_VERSION: i32 = 4;
+pub const SCHEMA_VERSION: i32 = 5;
 pub const SERVER_NAME: &str = "boundlessdeck";
 
 pub type Args = Map<String, Value>;
@@ -34,14 +34,14 @@ pub struct Field {
 }
 
 const ALL: &[BlockKind] = &[];
-const KIND_NAMES: &[&str] = &["note", "memo", "file", "terminal", "browser", "chart", "stack"];
+const KIND_NAMES: &[&str] = &["quicklook", "note", "file", "terminal", "browser", "chart", "stack"];
 const CHART_NAMES: &[&str] = &["bar", "hbar", "line", "area", "pie"];
 
 pub const FIELDS: &[Field] = &[
     Field { name: "id", ty: "string", mutable: false, on_create: false, kinds: ALL, min: None, enum_: &[], derived: false,
         description: "block 的稳定 ID（b 加 6 位十六进制），创建后不可改；所有写操作都用它指名 block。" },
     Field { name: "kind", ty: "string", mutable: false, on_create: true, kinds: ALL, min: None, enum_: KIND_NAMES, derived: false,
-        description: "block 类型：note（QuickLook 便签，正文存在 deck 里）、memo（笔记：工作目录里的一个 Markdown 文件）、file（链接的本地文件）、terminal（终端）、browser（浏览器）、chart（图表：画它 text 里的表格）、stack（块堆：收纳其他 block 的钱包卡片，收进去的 block 不在画布上显示）。只在创建时给出，之后不可改。" },
+        description: "block 类型：note（笔记：工作目录里的一个 Markdown 文件；旧名 memo 仍可用）、quicklook（QuickLook 便签，正文存在 deck 里，默认 1 小时后消失）、file（链接的本地文件）、terminal（终端）、browser（浏览器）、chart（图表：画它 text 里的表格）、stack（块堆：收纳其他 block 的钱包卡片，收进去的 block 不在画布上显示）。只在创建时给出，之后不可改。" },
     Field { name: "title", ty: "string", mutable: true, on_create: true, kinds: ALL, min: None, enum_: &[], derived: false,
         description: "标题。写非空值会同时把它标记为用户命名（named=true）；写空串则回到 kind 或文件的默认标题。" },
     Field { name: "named", ty: "boolean", mutable: true, on_create: true, kinds: ALL, min: None, enum_: &[], derived: false,
@@ -55,13 +55,13 @@ pub const FIELDS: &[Field] = &[
     Field { name: "h", ty: "number", mutable: true, on_create: true, kinds: ALL, min: Some(MIN_BLOCK_H as f64), enum_: &[], derived: false,
         description: "世界坐标高度，最小 90。" },
     Field { name: "path", ty: "string", mutable: true, on_create: true, kinds: &[BlockKind::File, BlockKind::Memo], min: None, enum_: &[], derived: false,
-        description: "文件路径。工作区内的相对路径（相对 deck 根），工作区外用绝对路径；写绝对路径会尽量转成相对路径。改路径会重新加载预览。memo 创建时可省略：按标题在 deck 根下新建 <标题>.md（重名加序号）；给出的 .md 不存在时会新建空文件。" },
+        description: "文件路径。工作区内的相对路径（相对 deck 根），工作区外用绝对路径；写绝对路径会尽量转成相对路径。改路径会重新加载预览。note 创建时可省略：按标题在 deck 根下新建 <标题>.md（重名加序号）；给出的 .md 不存在时会新建空文件。" },
     Field { name: "text", ty: "string", mutable: true, on_create: true, kinds: &[BlockKind::Note, BlockKind::Memo, BlockKind::Chart], min: None, enum_: &[], derived: false,
-        description: "正文（Markdown）。note 存在 deck 里；memo 直接写进它的文件（覆盖整个文件），读 memo 的内容请读 absPath 指向的文件。chart 的 text 是它画的表格：每行一项，第一列是名称，其后每列一组数值，用逗号或 Tab 分隔（也可用 Markdown 表格）；第一行含非数字时作为列名（图例）。最多 8 组、200 行；饼图只画第一组。" },
+        description: "正文（Markdown）。quicklook 存在 deck 里；note 直接写进它的文件（覆盖整个文件），读 note 的内容请读 absPath 指向的文件。chart 的 text 是它画的表格：每行一项，第一列是名称，其后每列一组数值，用逗号或 Tab 分隔（也可用 Markdown 表格）；第一行含非数字时作为列名（图例）。最多 8 组、200 行；饼图只画第一组。" },
     Field { name: "chart", ty: "string", mutable: true, on_create: true, kinds: &[BlockKind::Chart], min: None, enum_: CHART_NAMES, derived: false,
         description: "图表类型：bar 柱状图、hbar 条形图、line 折线图、area 面积图、pie 饼图。省略为 bar。" },
     Field { name: "expires", ty: "integer", mutable: true, on_create: true, kinds: &[BlockKind::Note], min: Some(0.), enum_: &[], derived: false,
-        description: "QuickLook 自动消失的时刻，Unix 毫秒；0 为永久保留。新建 note 不给时默认 1 小时后消失。到时它会被删除（用户可 ⌘Z 找回）；关闭期间到期的在打开 deck 时直接移除。只想说“多久后消失”时用 ttlMinutes。" },
+        description: "quicklook 自动消失的时刻，Unix 毫秒；0 为永久保留。新建 quicklook 不给时默认 1 小时后消失。到时它会被删除（用户可 ⌘Z 找回）；关闭期间到期的在打开 deck 时直接移除。只想说“多久后消失”时用 ttlMinutes。" },
     Field { name: "ttlMinutes", ty: "number", mutable: true, on_create: true, kinds: &[BlockKind::Note], min: Some(0.), enum_: &[], derived: true,
         description: "从现在起多少分钟后消失（可带小数），写入时换算成 expires；0 为永久保留。读出的是剩余分钟数（保留一位小数，永久的为 0）。不能与 expires 同时给。" },
     Field { name: "page", ty: "integer", mutable: true, on_create: true, kinds: &[BlockKind::File], min: Some(0.), enum_: &[], derived: false,
@@ -112,7 +112,7 @@ fn field_json(f: &Field) -> Value {
         m.insert("onCreate".into(), true.into());
     }
     if !f.kinds.is_empty() {
-        m.insert("kinds".into(), f.kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>().into());
+        m.insert("kinds".into(), f.kinds.iter().map(|k| k.mcp_name()).collect::<Vec<_>>().into());
     }
     if let Some(min) = f.min {
         m.insert("min".into(), min.into());
@@ -133,7 +133,7 @@ pub fn block_schema() -> Vec<Value> {
             let (title, w, h) = kind_defaults(k);
             let fields: Vec<&Field> = FIELDS.iter().filter(|f| for_kind(f, k)).collect();
             json!({
-                "kind": k.as_str(),
+                "kind": k.mcp_name(),
                 "defaults": {"title": title, "w": w, "h": h},
                 "create": fields.iter().filter(|f| f.on_create).map(|f| f.name).collect::<Vec<_>>(),
                 "mutable": mutable_names(k),
@@ -156,7 +156,7 @@ pub fn schema_digest() -> Value {
 fn field_prop(f: &Field) -> Value {
     let mut desc = f.description.to_string();
     if !f.kinds.is_empty() {
-        desc += &format!("（仅 {}）", f.kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>().join("、"));
+        desc += &format!("（仅 {}）", f.kinds.iter().map(|k| k.mcp_name()).collect::<Vec<_>>().join("、"));
     }
     let mut p = json!({"type": f.ty, "description": desc});
     if let Some(min) = f.min {
@@ -341,7 +341,7 @@ impl Ctx<'_> {
 
     pub fn fields_json(&self, n: &Block) -> Value {
         let mut out = json!({
-            "id": n.id, "kind": n.kind.as_str(), "title": n.title, "named": n.named,
+            "id": n.id, "kind": n.kind.mcp_name(), "title": n.title, "named": n.named,
             "x": round(n.x), "y": round(n.y), "w": round(n.w), "h": round(n.h),
             "selected": self.m.sel.contains(&n.id),
             "editable": mutable_names(n.kind), "readOnly": read_only_names(n.kind),
@@ -476,7 +476,7 @@ impl Ctx<'_> {
             if !f.mutable || !for_kind(f, kind) {
                 return Err(format!(
                     "{} block 不能写字段 {name:?}（可写：{}）",
-                    kind.as_str(),
+                    kind.mcp_name(),
                     mutable_names(kind).join(", ")
                 ));
             }
@@ -691,7 +691,7 @@ impl Ctx<'_> {
 
     fn create_block(&mut self, args: &Args) -> Result<Value, String> {
         let kind_s = arg_str(args, "kind")?.ok_or_else(|| format!("create_block 需要 kind：{}", KIND_NAMES.join("、")))?;
-        let kind = BlockKind::parse(&kind_s).ok_or_else(|| format!("没有 kind {kind_s:?}：可用 {}", KIND_NAMES.join("、")))?;
+        let kind = BlockKind::parse_mcp(&kind_s).ok_or_else(|| format!("没有 kind {kind_s:?}：可用 {}", KIND_NAMES.join("、")))?;
         let mut patch = args.clone();
         patch.remove("kind");
         if kind == BlockKind::File && !patch.contains_key("path") {
@@ -878,13 +878,16 @@ impl Ctx<'_> {
                 let kinds = block_schema();
                 match arg_str(args, "kind")?.filter(|k| !k.is_empty()) {
                     None => Ok(json!({"schemaVersion": SCHEMA_VERSION, "kinds": kinds})),
-                    Some(k) => kinds.into_iter().find(|x| x["kind"] == k.as_str()).ok_or_else(|| format!("没有 kind {k:?}")),
+                    Some(k) => {
+                        let k = BlockKind::parse_mcp(&k).map(|x| x.mcp_name()).unwrap_or(k.as_str()).to_string();
+                        kinds.into_iter().find(|x| x["kind"] == k.as_str()).ok_or_else(|| format!("没有 kind {k:?}"))
+                    }
                 }
             }
             "list_blocks" => {
                 let kind = arg_str(args, "kind")?.filter(|k| !k.is_empty());
                 let kind = match kind {
-                    Some(k) => Some(BlockKind::parse(&k).ok_or_else(|| format!("没有 kind {k:?}"))?),
+                    Some(k) => Some(BlockKind::parse_mcp(&k).ok_or_else(|| format!("没有 kind {k:?}"))?),
                     None => None,
                 };
                 Ok(Value::Array(self.list(kind)))
@@ -955,7 +958,7 @@ impl Ctx<'_> {
         ids.iter()
             .map(|id| {
                 let b = self.m.block(id).unwrap();
-                json!({"id": id, "kind": b.kind.as_str(), "title": b.title, "x": round(b.x), "y": round(b.y), "w": round(b.w), "h": round(b.h)})
+                json!({"id": id, "kind": b.kind.mcp_name(), "title": b.title, "x": round(b.x), "y": round(b.y), "w": round(b.w), "h": round(b.h)})
             })
             .collect()
     }
@@ -1342,7 +1345,7 @@ mod tests {
     #[test]
     fn create_update_delete_and_undo() {
         let (_d, mut m) = ctx_model();
-        let out = call(&mut m, "create_block", json!({"kind": "note", "title": "想法", "text": "# hi"})).unwrap();
+        let out = call(&mut m, "create_block", json!({"kind": "quicklook", "title": "想法", "text": "# hi"})).unwrap();
         let id = out["id"].as_str().unwrap().to_string();
         assert_eq!(out["named"], true);
         assert_eq!(out["expires"], 1_000_000 + NOTE_LIFE_MS, "a note goes in an hour by default");
@@ -1363,9 +1366,17 @@ mod tests {
     #[test]
     fn memo_text_goes_to_its_file() {
         let (d, mut m) = ctx_model();
-        let out = call(&mut m, "create_block", json!({"kind": "memo", "title": "计划", "text": "- a"})).unwrap();
+        let out = call(&mut m, "create_block", json!({"kind": "note", "title": "计划", "text": "- a"})).unwrap();
         assert_eq!(out["path"], "计划.md");
+        assert_eq!(out["kind"], "note", "笔记 is note over MCP");
         assert_eq!(std::fs::read_to_string(d.path().join("计划.md")).unwrap(), "- a");
+        // deck.json keeps "memo", as the Go version reads it; "memo" still names it over MCP.
+        let saved = serde_json::to_value(m.block(out["id"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(saved["kind"], "memo");
+        let old = call(&mut m, "create_block", json!({"kind": "memo", "title": "旧名"})).unwrap();
+        assert_eq!(old["kind"], "note");
+        let ql = call(&mut m, "list_blocks", json!({"kind": "quicklook"})).unwrap();
+        assert_eq!(ql, json!([]));
         let id = out["id"].as_str().unwrap();
         let out = call(&mut m, "update_block", json!({"id": id, "title": "总结"})).unwrap();
         assert_eq!(out["path"], "总结.md");

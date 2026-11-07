@@ -88,6 +88,7 @@ GPUI 每帧重建整棵元素树，所以：
 - 全局配置（设置窗口里一键安装，`mcp/config.rs` 的 `agents_in`）：Claude Code、Claude 桌面版、Cursor、VS Code（JSON），Codex（`~/.codex/config.toml` 或 `$CODEX_HOME`，用 `toml_edit` 保留注释与排版，`env_vars` 放行终端变量），OpenCode v2（`~/.config/opencode/opencode.json(c)` 或 `$XDG_CONFIG_HOME`，`mcp.servers`、`type: local`、`environment` 用 `{env:NAME}`；含注释的 JSONC 只报告不改），oh-my-pi（`~/.omp/agent/mcp.json` 或 `$PI_CODING_AGENT_DIR`，`env` 按变量名传递）。桥会忽略未设置时留下的占位值（变量名本身、`{env:…}`）。
 - 项目配置（`.boundlessdeck/mcp.json`、`.mcp.json`、`.cursor/mcp.json`、`.vscode/mcp.json`）以合并方式写入，保留用户已有的 server；坏 JSON 备份为 `.bak`。
 - 写入类工具先干跑校验整批，再统一落笔；所有写操作都经过撤销栈与保存。
+- **kind 名在 MCP 与 deck.json 中不同**：MCP 里笔记叫 `note`、QuickLook 叫 `quicklook`（`BlockKind::mcp_name` / `parse_mcp`，旧名 `memo` 仍当作笔记）；deck.json 仍存 `memo` / `note`（`as_str`），以便与 Go 版互开。
 - **字段唯一来源**：`src/mcp/tools.rs:40` 的 `pub const FIELDS: &[Field]`。`block_schema`、校验、工具描述都从这里生成。新增 `Block` 字段必须登记到这张表。
 - 工具（`tools.rs` 的分派，约 804–856 行）共 18 个：`deck_info`、`block_schema`、`list_blocks`、`get_block`、`read_selection`、`current_terminal`、`create_block`、`update_block`、`update_blocks`、`delete_blocks`、`move_blocks`、`align_blocks`、`distribute_blocks`、`arrange_blocks`、`select_blocks`、`undo`、`redo`、`save_deck`。
 - 调用方的终端：终端 shell 的环境里有 `BOUNDLESSDECK_TERMINAL`（block ID）与 `BOUNDLESSDECK_DECK`（deck 文件夹），见 `mcp::TERMINAL_ENV`。从终端里启动的 agent 再启动 `mcp-stdio` 时继承它们，桥用 `X-BoundlessDeck-Terminal` / `X-BoundlessDeck-Deck` 请求头带给 `server.rs`，经 `DeckRunner` 的 `Caller` 进 `tools::Here`。`current_terminal` 返回 `self`（调用方所在终端）与 `focused`（人正在操作的终端，`focus_target`），`deck_info` 带 `callerTerminal`。

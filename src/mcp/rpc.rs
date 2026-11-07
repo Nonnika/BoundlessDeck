@@ -55,7 +55,7 @@ fn initialize(params: &Value) -> Value {
             "prompts": {"listChanged": false},
         },
         "serverInfo": {"name": SERVER_NAME, "title": "BoundlessDeck 画布", "version": SERVER_VERSION},
-        "instructions": "这是 BoundlessDeck 的无限画布。「block」是画布上的卡片，kind 有 note（QuickLook 便签）、memo（笔记：Markdown 文件）、file（本地文件预览）、terminal（终端）、browser（浏览器）、chart（图表）、stack（块堆：用 items 收纳其他 block）。先用 deck_info 和 block_schema 了解现场，用 list_blocks / read_selection 读，用 create_block / update_block / move_blocks / delete_blocks 写；排版用 align_blocks（对齐边或中线）、distribute_blocks（等间距）、arrange_blocks（行/列/网格）。加、删、移动、堆的收放与排版都进撤销栈，并保存到工作区。",
+        "instructions": "这是 BoundlessDeck 的无限画布。「block」是画布上的卡片，kind 有 note（笔记：Markdown 文件）、quicklook（QuickLook 便签，会自动消失）、file（本地文件预览）、terminal（终端）、browser（浏览器）、chart（图表）、stack（块堆：用 items 收纳其他 block）。先用 deck_info 和 block_schema 了解现场，用 list_blocks / read_selection 读，用 create_block / update_block / move_blocks / delete_blocks 写；排版用 align_blocks（对齐边或中线）、distribute_blocks（等间距）、arrange_blocks（行/列/网格）。加、删、移动、堆的收放与排版都进撤销栈，并保存到工作区。",
     })
 }
 

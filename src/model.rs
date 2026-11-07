@@ -61,6 +61,24 @@ impl BlockKind {
         Self::ALL.into_iter().find(|k| k.as_str() == s)
     }
 
+    /// The kind's name over MCP. There 笔记 is "note" and QuickLook
+    /// "quicklook"; deck.json keeps `as_str`, which the Go version reads.
+    pub fn mcp_name(self) -> &'static str {
+        match self {
+            BlockKind::Note => "quicklook",
+            BlockKind::Memo => "note",
+            k => k.as_str(),
+        }
+    }
+
+    /// A kind named over MCP; "memo", its old name, still means 笔记.
+    pub fn parse_mcp(s: &str) -> Option<BlockKind> {
+        if s == "memo" {
+            return Some(BlockKind::Memo);
+        }
+        Self::ALL.into_iter().find(|k| k.mcp_name() == s)
+    }
+
     /// The kind's name as the UI shows it.
     pub fn label(self) -> &'static str {
         match self {
