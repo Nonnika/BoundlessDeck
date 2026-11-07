@@ -12,6 +12,7 @@ mod homescene;
 mod icons;
 mod lifespan;
 mod markdown;
+mod mdlive;
 mod mcp;
 mod memo;
 mod model;

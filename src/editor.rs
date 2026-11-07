@@ -2,6 +2,11 @@
 //! QuickLook's or 笔记's Markdown). GPUI ships no text input, so this is
 //! one, after its input example: IME through `EntityInputHandler`, the
 //! selection, the clipboard, and the keys an editor is expected to know.
+//!
+//! With `markdown` on (笔记), lines show Typora-style (`mdlive`): rendered,
+//! except the lines the cursor or selection touch, which show their source.
+//! The text edited is always the source; each line's `Map` turns offsets
+//! into where they show.
 
 use std::ops::Range;
 
@@ -9,9 +14,11 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, Hsla, KeyBinding, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent,
-    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill,
-    point, prelude::*, px, relative, size,
+    SharedString, StrikethroughStyle, Style, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions,
+    div, fill, point, prelude::*, px, relative, size, Font, FontStyle, FontWeight,
 };
+
+use crate::mdlive::{self, Block, Sty};
 use unicode_segmentation::UnicodeSegmentation as _;
 
 actions!(
@@ -92,6 +99,8 @@ pub struct Editor {
     pub muted: Hsla,
     pub accent: Hsla,
     pub mono: bool,
+    /// Show Markdown Typora-style.
+    pub markdown: bool,
     selected: Range<usize>,
     reversed: bool,
     marked: Option<Range<usize>>,
@@ -103,14 +112,111 @@ pub struct Editor {
     layout: Option<Layout>,
 }
 
-/// The text as last painted: its lines, where each starts, and where they lie.
+/// The text as last painted.
 struct Layout {
-    lines: Vec<WrappedLine>,
-    starts: Vec<usize>,
-    tops: Vec<Pixels>,
+    lines: Lines,
     bounds: Bounds<Pixels>,
     line_height: Pixels,
     scroll_y: f32,
+}
+
+/// The text laid out: each source line as shown, where it starts in the
+/// text, where it lies (unscrolled), its line height and indent, and the
+/// map from its offsets to what it shows (none: it shows its source).
+#[derive(Default)]
+struct Lines {
+    lines: Vec<WrappedLine>,
+    starts: Vec<usize>,
+    tops: Vec<Pixels>,
+    heights: Vec<Pixels>,
+    lefts: Vec<Pixels>,
+    maps: Vec<Option<mdlive::Map>>,
+}
+
+impl Lines {
+    fn index_of(&self, offset: usize) -> usize {
+        self.starts.partition_point(|&s| s <= offset).saturating_sub(1)
+    }
+
+    fn height_at(&self, offset: usize) -> Option<Pixels> {
+        self.heights.get(self.index_of(offset)).copied()
+    }
+
+    /// Where the offset is painted, relative to the text's top-left (unscrolled).
+    fn point_for(&self, offset: usize) -> Option<Point<Pixels>> {
+        let i = self.index_of(offset);
+        let o = offset.checked_sub(*self.starts.get(i)?)?;
+        let d = self.maps[i].as_ref().map_or(o, |m| m.to_disp(o));
+        let p = self.lines[i].position_for_index(d, self.heights[i])?;
+        Some(point(p.x + self.lefts[i], p.y + self.tops[i]))
+    }
+
+    /// The offset nearest a point relative to the text's top-left (unscrolled).
+    fn offset_at(&self, p: Point<Pixels>, len: usize) -> usize {
+        if self.lines.is_empty() || p.y < px(0.) {
+            return 0;
+        }
+        let i = self.tops.partition_point(|&t| t <= p.y).saturating_sub(1);
+        let local = point((p.x - self.lefts[i]).max(px(0.)), p.y - self.tops[i]);
+        let d = match self.lines[i].closest_index_for_position(local, self.heights[i]) {
+            Ok(v) | Err(v) => v,
+        };
+        let o = self.maps[i].as_ref().map_or(d, |m| m.to_src(d));
+        (self.starts[i] + o).min(len)
+    }
+}
+
+/// How much bigger each heading level's text is.
+const HEADING: [f32; 6] = [1.6, 1.35, 1.2, 1.1, 1.0, 1.0];
+
+/// A run of len bytes styled as sty, on a line that is block.
+fn styled_run(len: usize, sty: Sty, block: Block, font: &Font, e: &Editor) -> TextRun {
+    let mut f = font.clone();
+    if sty.bold || matches!(block, Block::Heading(_)) {
+        f.weight = FontWeight::BOLD;
+    }
+    if sty.italic {
+        f.style = FontStyle::Italic;
+    }
+    if sty.code {
+        f.family = "Menlo".into();
+    }
+    let color = if sty.dim || block == Block::Quote {
+        e.muted
+    } else if sty.link {
+        e.accent
+    } else {
+        e.color
+    };
+    let in_block = matches!(block, Block::Code | Block::Fence);
+    TextRun {
+        len,
+        font: f,
+        color,
+        background_color: (sty.code && !in_block).then(|| e.muted.opacity(0.15)),
+        underline: sty.link.then_some(UnderlineStyle { color: Some(color), thickness: px(1.), wavy: false }),
+        strikethrough: sty.strike.then_some(StrikethroughStyle { thickness: px(1.), color: Some(color) }),
+    }
+}
+
+/// Underlines the bytes r of what runs cover (the IME's marked text).
+fn underline(runs: &mut Vec<TextRun>, r: Range<usize>, color: Hsla) {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for run in runs.drain(..) {
+        let (a, z) = (at, at + run.len);
+        at = z;
+        let cuts = [a, r.start.clamp(a, z), r.end.clamp(a, z), z];
+        for w in cuts.windows(2).filter(|w| w[1] > w[0]) {
+            let mut x = run.clone();
+            x.len = w[1] - w[0];
+            if w[0] >= r.start && w[1] <= r.end {
+                x.underline = Some(UnderlineStyle { color: Some(color), thickness: px(1.), wavy: false });
+            }
+            out.push(x);
+        }
+    }
+    *runs = out;
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -136,6 +242,7 @@ impl Editor {
             muted: gpui::black().opacity(0.4),
             accent: gpui::blue(),
             mono: false,
+            markdown: false,
             selected: end..end,
             reversed: false,
             marked: None,
@@ -217,28 +324,13 @@ impl Editor {
 
     /// Where the offset is painted, relative to the text's top-left (unscrolled).
     fn point_for(&self, offset: usize) -> Option<Point<Pixels>> {
-        let l = self.layout.as_ref()?;
-        let i = l.starts.partition_point(|&s| s <= offset).saturating_sub(1);
-        let p = l.lines.get(i)?.position_for_index(offset - l.starts[i], l.line_height)?;
-        Some(point(p.x, p.y + l.tops[i]))
+        self.layout.as_ref()?.lines.point_for(offset)
     }
 
     /// The offset nearest a point relative to the text's top-left (unscrolled).
     fn offset_at(&self, p: Point<Pixels>) -> usize {
         let Some(l) = self.layout.as_ref() else { return self.text.len() };
-        if l.lines.is_empty() {
-            return 0;
-        }
-        if p.y < px(0.) {
-            return 0;
-        }
-        let i = l.tops.partition_point(|&t| t <= p.y).saturating_sub(1);
-        let line = &l.lines[i];
-        let local = point(p.x.max(px(0.)), p.y - l.tops[i]);
-        let idx = match line.closest_index_for_position(local, l.line_height) {
-            Ok(v) | Err(v) => v,
-        };
-        (l.starts[i] + idx).min(self.text.len())
+        l.lines.offset_at(p, self.text.len())
     }
 
     fn offset_for_mouse(&self, pos: Point<Pixels>) -> usize {
@@ -249,12 +341,13 @@ impl Editor {
 
     fn vertical(&mut self, dir: f32, select: bool, cx: &mut Context<Self>) {
         let cur = self.cursor();
-        let (Some(p), Some(lh)) = (self.point_for(cur), self.layout.as_ref().map(|l| l.line_height)) else {
+        let (Some(p), Some(lh)) = (self.point_for(cur), self.layout.as_ref().and_then(|l| l.lines.height_at(cur))) else {
             return;
         };
         let x = *self.goal_x.get_or_insert(p.x);
-        let target = point(x, p.y + lh * dir + lh / 2.);
-        let to = if dir < 0. && p.y < lh / 2. {
+        // Just past this row's bottom, or just above its top: lines differ in height.
+        let target = point(x, if dir > 0. { p.y + lh + px(1.) } else { p.y - px(1.) });
+        let to = if dir < 0. && p.y < px(1.) {
             0
         } else {
             self.offset_at(target)
@@ -507,7 +600,7 @@ impl EntityInputHandler for Editor {
     ) -> Option<Bounds<Pixels>> {
         let r = self.range_from_utf16(&range);
         let l = self.layout.as_ref()?;
-        let (origin, lh, sy) = (l.bounds.origin, l.line_height, l.scroll_y);
+        let (origin, lh, sy) = (l.bounds.origin, l.lines.height_at(r.end).unwrap_or(l.line_height), l.scroll_y);
         let a = self.point_for(r.start)?;
         let b = self.point_for(r.end)?;
         Some(Bounds::from_corners(
@@ -569,10 +662,10 @@ struct TextElement {
 }
 
 struct Prepaint {
-    lines: Vec<WrappedLine>,
-    starts: Vec<usize>,
-    tops: Vec<Pixels>,
+    lines: Lines,
     line_height: Pixels,
+    /// Backgrounds, bars and rules, relative to the text's top-left.
+    decor: Vec<(Bounds<Pixels>, Hsla)>,
     selection: Vec<PaintQuad>,
     cursor: Option<PaintQuad>,
     scroll_y: f32,
@@ -621,80 +714,95 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> Prepaint {
         let e = self.editor.read(cx);
-        let size_px = px(e.font_size);
         let line_height = px(e.font_size * if e.multiline { 1.5 } else { 1.35 });
         let mut font = window.text_style().font();
         if e.mono {
             font.family = "Menlo".into();
         }
-        let (text, color) = if e.text.is_empty() {
-            (e.placeholder.to_string(), e.muted)
-        } else {
-            (e.text.clone(), e.color)
-        };
-        let base = TextRun { len: 0, font, color, background_color: None, underline: None, strikethrough: None };
+        let has_text = !e.text.is_empty();
+        let (text, color) = if has_text { (e.text.clone(), e.color) } else { (e.placeholder.to_string(), e.muted) };
+        let base = TextRun { len: 0, font: font.clone(), color, background_color: None, underline: None, strikethrough: None };
+        let focused = e.focus.is_focused(window);
+        let selected = e.selected.clone();
+        let parsed = if e.markdown && has_text { mdlive::lines(&text) } else { Vec::new() };
+        let width = bounds.size.width;
 
-        let mut lines = Vec::new();
-        let mut starts = Vec::new();
-        let mut tops = Vec::new();
+        let mut ls = Lines::default();
+        let mut decor = Vec::new();
         let mut y = px(0.);
-        let wrap = e.multiline.then_some(bounds.size.width);
         let mut start = 0;
-        for piece in text.split('\n') {
-            let mut runs = Vec::new();
+        for (k, piece) in text.split('\n').enumerate() {
             let end = start + piece.len();
-            match e.marked.as_ref().filter(|_| !e.text.is_empty()) {
-                Some(m) if m.start < end && m.end > start => {
-                    let (a, b) = (m.start.max(start) - start, m.end.min(end) - start);
-                    runs.push(TextRun { len: a, ..base.clone() });
-                    runs.push(TextRun {
-                        len: b - a,
-                        underline: Some(UnderlineStyle { color: Some(color), thickness: px(1.), wavy: false }),
-                        ..base.clone()
-                    });
-                    runs.push(TextRun { len: piece.len() - b, ..base.clone() });
+            let (shown, mut runs, map, block) = match parsed.get(k) {
+                Some(line) => {
+                    // The lines the cursor or selection touch show their source.
+                    let reveal = focused && selected.start <= end && selected.end >= start;
+                    let sh = mdlive::show(piece, line, reveal);
+                    let runs = sh.spans.iter().map(|(r, sty)| styled_run(r.len(), *sty, line.block, &font, e)).collect();
+                    (sh.text, runs, sh.map, line.block)
                 }
-                _ => runs.push(TextRun { len: piece.len(), ..base.clone() }),
+                None => (piece.to_string(), vec![TextRun { len: piece.len(), ..base.clone() }], None, Block::Para),
+            };
+            if let Some(m) = e.marked.as_ref().filter(|_| has_text && map.is_none())
+                && m.start < end
+                && m.end > start
+            {
+                underline(&mut runs, m.start.max(start) - start..m.end.min(end) - start, color);
             }
             runs.retain(|r| r.len > 0);
+            let scale = match block {
+                Block::Heading(h) => HEADING[(h as usize).clamp(1, 6) - 1],
+                _ => 1.,
+            };
+            let lh = line_height * scale;
+            let left = if block == Block::Quote { px(e.font_size * 0.9) } else { px(0.) };
+            let wrap = e.multiline.then_some((width - left).max(px(1.)));
             let shaped = window
                 .text_system()
-                .shape_text(SharedString::from(piece.to_string()), size_px, &runs, wrap, None)
+                .shape_text(SharedString::from(shown), px(e.font_size * scale), &runs, wrap, None)
                 .ok()
                 .and_then(|mut v| v.pop())
                 .unwrap_or_default();
-            let h = shaped.size(line_height).height.max(line_height);
-            starts.push(start);
-            tops.push(y);
-            lines.push(shaped);
+            let h = shaped.size(lh).height.max(lh);
+            match block {
+                Block::Code | Block::Fence => decor.push((Bounds::new(point(px(0.), y), size(width, h)), e.muted.opacity(0.1))),
+                Block::Quote => {
+                    decor.push((Bounds::new(point(px(0.), y), size(px((e.font_size / 5.).max(2.)), h)), e.muted.opacity(0.45)))
+                }
+                Block::Rule if map.is_some() => {
+                    decor.push((Bounds::new(point(px(0.), y + h / 2.), size(width, px(1.))), e.muted.opacity(0.5)))
+                }
+                _ => {}
+            }
+            ls.lines.push(shaped);
+            ls.starts.push(start);
+            ls.tops.push(y);
+            ls.heights.push(lh);
+            ls.lefts.push(left);
+            ls.maps.push(map);
             y += h;
             start = end + 1;
         }
         let content_h = f32::from(y);
-        let focused = e.focus.is_focused(window);
-        let selected = e.selected.clone();
         let cursor_off = e.cursor();
-        let has_text = !e.text.is_empty();
         let accent = e.accent;
         let mut scroll_y = e.scroll_y;
 
         let point_for = |off: usize| -> Point<Pixels> {
-            let i = starts.partition_point(|&s| s <= off).saturating_sub(1);
-            lines[i]
-                .position_for_index(off - starts[i], line_height)
-                .map(|p| point(p.x, p.y + tops[i]))
-                .unwrap_or(point(px(0.), tops[i]))
+            ls.point_for(off).unwrap_or_else(|| point(px(0.), ls.tops.get(ls.index_of(off)).copied().unwrap_or_default()))
         };
+        let height_at = |off: usize| ls.height_at(off).unwrap_or(line_height);
 
         let view_h = f32::from(bounds.size.height);
         let mut cursor_pt = point(px(0.), px(0.));
+        let cursor_h = if has_text { height_at(cursor_off) } else { ls.heights.first().copied().unwrap_or(line_height) };
         if has_text {
             cursor_pt = point_for(cursor_off);
         }
         if e.multiline && focused {
             // Keep the cursor in view.
             let cy = f32::from(cursor_pt.y);
-            let lh = f32::from(line_height);
+            let lh = f32::from(cursor_h);
             if cy < scroll_y {
                 scroll_y = cy;
             } else if cy + lh > scroll_y + view_h {
@@ -706,33 +814,25 @@ impl Element for TextElement {
 
         let mut selection = Vec::new();
         if has_text && !selected.is_empty() {
-            let a = point_for(selected.start);
-            let b = point_for(selected.end);
+            let (a, ha) = (point_for(selected.start), height_at(selected.start));
+            let (b, hb) = (point_for(selected.end), height_at(selected.end));
             let tint = accent.opacity(0.25);
             if a.y == b.y {
-                selection.push(fill(Bounds::from_corners(origin + a, origin + point(b.x, b.y + line_height)), tint));
+                selection.push(fill(Bounds::from_corners(origin + a, origin + point(b.x, b.y + hb)), tint));
             } else {
-                let right = bounds.size.width;
-                selection.push(fill(
-                    Bounds::from_corners(origin + a, origin + point(right, a.y + line_height)),
-                    tint,
-                ));
-                if b.y > a.y + line_height {
+                selection.push(fill(Bounds::from_corners(origin + a, origin + point(width, a.y + ha)), tint));
+                if b.y > a.y + ha {
                     selection.push(fill(
-                        Bounds::from_corners(origin + point(px(0.), a.y + line_height), origin + point(right, b.y)),
+                        Bounds::from_corners(origin + point(px(0.), a.y + ha), origin + point(width, b.y)),
                         tint,
                     ));
                 }
-                selection.push(fill(Bounds::from_corners(origin + point(px(0.), b.y), origin + point(b.x, b.y + line_height)), tint));
+                selection.push(fill(Bounds::from_corners(origin + point(px(0.), b.y), origin + point(b.x, b.y + hb)), tint));
             }
         }
-        let cursor = (focused && selected.is_empty()).then(|| {
-            fill(
-                Bounds::new(origin + cursor_pt, size(px((e.font_size / 10.).max(1.5)), line_height)),
-                accent,
-            )
-        });
-        Prepaint { lines, starts, tops, line_height, selection, cursor, scroll_y }
+        let cursor = (focused && selected.is_empty())
+            .then(|| fill(Bounds::new(origin + cursor_pt, size(px((e.font_size / 10.).max(1.5)), cursor_h)), accent));
+        Prepaint { lines: ls, line_height, decor, selection, cursor, scroll_y }
     }
 
     fn paint(
@@ -749,27 +849,29 @@ impl Element for TextElement {
         window.handle_input(&focus, ElementInputHandler::new(bounds, self.editor.clone()), cx);
         let origin = bounds.origin - point(px(0.), px(pp.scroll_y));
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            for (b, color) in pp.decor.drain(..) {
+                window.paint_quad(fill(Bounds::new(origin + b.origin, b.size), color));
+            }
             for q in pp.selection.drain(..) {
                 window.paint_quad(q);
             }
-            for (line, top) in pp.lines.iter().zip(&pp.tops) {
-                let at = origin + point(px(0.), *top);
-                if at.y > bounds.bottom() || at.y + line.size(pp.line_height).height < bounds.top() {
+            let ls = &pp.lines;
+            for (i, line) in ls.lines.iter().enumerate() {
+                let at = origin + point(ls.lefts[i], ls.tops[i]);
+                if at.y > bounds.bottom() || at.y + line.size(ls.heights[i]).height < bounds.top() {
                     continue;
                 }
-                let _ = line.paint(at, pp.line_height, gpui::TextAlign::Left, None, window, cx);
+                let _ = line.paint(at, ls.heights[i], gpui::TextAlign::Left, None, window, cx);
             }
             if let Some(c) = pp.cursor.take() {
                 window.paint_quad(c);
             }
         });
         let lines = std::mem::take(&mut pp.lines);
-        let starts = std::mem::take(&mut pp.starts);
-        let tops = std::mem::take(&mut pp.tops);
         let (line_height, scroll_y) = (pp.line_height, pp.scroll_y);
         self.editor.update(cx, |e, _| {
             e.scroll_y = scroll_y;
-            e.layout = Some(Layout { lines, starts, tops, bounds, line_height, scroll_y });
+            e.layout = Some(Layout { lines, bounds, line_height, scroll_y });
         });
     }
 }

@@ -700,6 +700,8 @@ impl DeckView {
             if select_all {
                 e.select_all_text();
             }
+            // 笔记 edits Typora-style: rendered but for the lines being edited.
+            e.markdown = part == EditPart::Body && kind == BlockKind::Memo;
             e
         });
         let eid = id.to_string();
@@ -1370,7 +1372,8 @@ impl DeckView {
     }
 
     /// A press on a card: the title bar drags it, a click on a title edits
-    /// it, a click on a note's body edits it.
+    /// it, a click on a QuickLook's body edits it, on a 笔记's focuses it
+    /// (a double click edits it).
     fn on_card_down(&mut self, id: &str, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         self.popup = None;
@@ -1401,9 +1404,13 @@ impl DeckView {
             window.focus(&self.focus);
         } else {
             match kind {
-                BlockKind::Note | BlockKind::Memo => {
-                    if self.active.as_deref() == Some(id) || kind == BlockKind::Note {
+                BlockKind::Note => self.start_editing(id, EditPart::Body, window, cx),
+                // 笔记: a click focuses it, a double click edits it.
+                BlockKind::Memo => {
+                    if ev.click_count >= 2 {
                         self.start_editing(id, EditPart::Body, window, cx);
+                    } else if self.editing(id, EditPart::Body).is_none() {
+                        self.focus_block(Some(id), window, cx);
                     }
                 }
                 BlockKind::Chart => {
@@ -2029,7 +2036,7 @@ impl DeckView {
             .gap(px(6. * s))
             .when_some(save_err, |d, e| d.child(div().text_size(px(12. * s)).text_color(t.danger).child(e)))
             .child(if text.trim().is_empty() {
-                div().text_size(px(size)).text_color(t.muted).child("点击开始写，支持 Markdown").into_any_element()
+                div().text_size(px(size)).text_color(t.muted).child("双击开始写，支持 Markdown").into_any_element()
             } else {
                 let parsed = self.parsed_markdown(&b.id, &text, &colors, t.dark);
                 markdown::render_parsed(&parsed, size, &colors)
