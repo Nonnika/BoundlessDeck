@@ -19,10 +19,11 @@ mod pinch;
 mod pdf;
 mod preview;
 mod recents;
+mod stage;
 mod tape;
 mod terminal;
-mod termstate;
 mod theme;
+mod webfocus;
 mod windows;
 mod word;
 
@@ -42,6 +43,7 @@ fn main() {
     Application::new().with_assets(icons::Assets).run(|cx| {
         editor::bind_keys(cx);
         pinch::install();
+        webfocus::install();
         commands::bind_keys(cx);
         cx.set_menus(commands::menus());
         cx.on_action(|_: &app::Quit, cx| cx.quit());
@@ -92,6 +94,24 @@ fn main() {
             }
         })
         .detach();
+        set_dock_icon();
         cx.activate(true);
     });
 }
+
+/// The app's icon in the Dock. A bundled .app takes it from its Info.plist,
+/// but `cargo run` starts a bare binary, which would show the generic one.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let data = NSData::with_bytes(include_bytes!("../resources/icon.png"));
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else { return };
+    unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_dock_icon() {}

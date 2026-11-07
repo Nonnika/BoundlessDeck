@@ -2,18 +2,19 @@
 //! and deck.json. Nothing here draws or needs a window, so it is tested
 //! headless; `deck.rs` is the view over it.
 //!
-//! deck.json is the same file the Go build reads and writes: field names,
-//! omitted empties and the terminal state's encoding all match, so either
-//! build opens a folder the other saved.
+//! deck.json is the same file the Go build reads and writes: field names
+//! and omitted empties match, so either build opens a folder the other saved.
+//! What only this build keeps (a browser's tabs) the Go build leaves alone;
+//! `url` stays the page the Go build shows.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::termstate::TermState;
 
 /// The folder inside a deck's folder that holds its canvas.
 pub const DECK_DIR: &str = ".boundlessdeck";
@@ -100,6 +101,53 @@ fn is_zero_i32(v: &i32) -> bool {
 fn is_zero_i64(v: &i64) -> bool {
     *v == 0
 }
+fn is_zero_usize(v: &usize) -> bool {
+    *v == 0
+}
+fn one_or_none(v: &[WebTab]) -> bool {
+    v.len() <= 1
+}
+
+/// One tab of a browser block.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct WebTab {
+    #[serde(default)]
+    pub url: String,
+    /// The page's title, as it last said.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// Tells the tab's page apart while the deck is open; never saved.
+    #[serde(skip)]
+    pub key: u64,
+}
+
+impl PartialEq for WebTab {
+    fn eq(&self, o: &WebTab) -> bool {
+        self.url == o.url && self.title == o.title
+    }
+}
+
+impl WebTab {
+    pub fn new(url: String) -> WebTab {
+        WebTab { url, title: String::new(), key: next_tab_key() }
+    }
+
+    /// What its tab says: the page's title, else its address.
+    pub fn label(&self) -> String {
+        if !self.title.trim().is_empty() {
+            self.title.clone()
+        } else if !self.url.is_empty() {
+            self.url.split("://").nth(1).unwrap_or(&self.url).trim_end_matches('/').to_string()
+        } else {
+            "新标签页".into()
+        }
+    }
+}
+
+fn next_tab_key() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 /// One card of the canvas. Positions and sizes are in world coordinates;
 /// the camera turns them into pixels of the window.
@@ -129,12 +177,17 @@ pub struct Block {
     pub text: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub chart: String,
+    /// The page a browser shows: its open tab's.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
+    /// A browser's tabs, the open one's address being `url`; kept only when there are two or more.
+    #[serde(default, skip_serializing_if = "one_or_none")]
+    pub tabs: Vec<WebTab>,
+    /// Which of `tabs` is open.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub tab: usize,
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub page: i32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub term: Option<TermState>,
     /// When a QuickLook goes by itself, in Unix ms; 0 keeps it.
     #[serde(default, skip_serializing_if = "is_zero_i64")]
     pub expires: i64,
@@ -163,6 +216,66 @@ impl Block {
         if !self.named && !title.trim().is_empty() {
             self.title = title.to_string();
         }
+    }
+
+    /// Makes a browser's tabs whole: one at least, the open one in range and
+    /// showing `url` (which wins, as the Go build or an agent may have changed
+    /// it alone), each with its key.
+    pub fn ensure_tabs(&mut self) {
+        if self.tabs.is_empty() {
+            self.tabs.push(WebTab::new(self.url.clone()));
+        }
+        self.tab = self.tab.min(self.tabs.len() - 1);
+        self.tabs[self.tab].url = self.url.clone();
+        for t in &mut self.tabs {
+            if t.key == 0 {
+                t.key = next_tab_key();
+            }
+        }
+    }
+
+    /// Opens tab i: its address becomes `url`, its page's title the block's.
+    pub fn select_tab(&mut self, i: usize) {
+        self.ensure_tabs();
+        if i >= self.tabs.len() {
+            return;
+        }
+        self.tab = i;
+        self.url = self.tabs[i].url.clone();
+        let title = self.tabs[i].title.clone();
+        self.auto_title(&title);
+    }
+
+    /// Adds a tab after the open one, opening it if asked; its key.
+    pub fn open_tab(&mut self, url: String, open: bool) -> u64 {
+        self.ensure_tabs();
+        let t = WebTab::new(url);
+        let key = t.key;
+        self.tabs.insert(self.tab + 1, t);
+        if open {
+            self.select_tab(self.tab + 1);
+        }
+        key
+    }
+
+    /// Closes tab i, unless it is the last; the one beside it opens if it was open.
+    pub fn close_tab(&mut self, i: usize) -> Option<WebTab> {
+        self.ensure_tabs();
+        if self.tabs.len() <= 1 || i >= self.tabs.len() {
+            return None;
+        }
+        let gone = self.tabs.remove(i);
+        let open = if i < self.tab || (i == self.tab && i == self.tabs.len()) { self.tab - 1 } else { self.tab };
+        // `url` was the closed tab's when it was open: the next one's now.
+        self.tab = open;
+        self.url = self.tabs[open].url.clone();
+        self.select_tab(open);
+        Some(gone)
+    }
+
+    /// The index of the tab with key, if it is still open.
+    pub fn tab_of(&self, key: u64) -> Option<usize> {
+        self.tabs.iter().position(|t| t.key == key)
     }
 
     pub fn contains(&self, x: f32, y: f32) -> bool {
@@ -224,6 +337,8 @@ pub const MIN_SCALE: f32 = 0.08;
 pub const MAX_SCALE: f32 = 4.0;
 /// Below this scale a block shows its frame and title alone.
 pub const LOD_SCALE: f32 = 0.3;
+/// During a zoom gesture the blocks layer is re-laid out only after the camera crosses this ratio from it.
+pub const ZOOM_REBASE: f32 = 0.5;
 /// Zoom levels per doubling: the camera rests on one.
 pub const ZOOM_LEVELS: f64 = 12.0;
 /// How many levels a key press zooms by.
@@ -232,6 +347,11 @@ pub const ZOOM_KEY_STEPS: i32 = 3;
 /// The zoom level nearest s.
 pub fn zoom_level(s: f32) -> f32 {
     zoom_level_of((f64::from(s).log2() * ZOOM_LEVELS).round())
+}
+
+/// Whether s is already on a zoom level.
+pub fn on_level(s: f32) -> bool {
+    (s - zoom_level(s)).abs() <= s * 1e-5
 }
 
 /// The largest zoom level not above s.
@@ -859,6 +979,10 @@ impl Model {
             self.root = PathBuf::from(ws.root);
         }
         self.blocks = ws.blocks;
+        // The Go build may have changed a browser's url alone: its open tab follows.
+        for b in self.blocks.iter_mut().filter(|b| b.kind == BlockKind::Browser) {
+            b.ensure_tabs();
+        }
         self.cam = Camera { x: ws.cam_x, y: ws.cam_y, s: if ws.cam_s == 0.0 { 1.0 } else { ws.cam_s } };
         self.drop_expired();
         self.prune_stacks();
@@ -1174,14 +1298,14 @@ mod tests {
         assert_eq!(m.root, dir.path(), "the folder is the root, wherever it moved");
         assert_eq!(m.cam, Camera { x: -12.5, y: 40.0, s: 0.75 });
         assert_eq!(m.blocks[0].kind, BlockKind::Note);
-        assert_eq!(m.blocks[1].term.as_ref().unwrap().history, b"hello");
+        assert_eq!(m.blocks[1].kind, BlockKind::Terminal);
         assert_eq!(m.blocks[2].items, vec!["b000001"]);
         assert_eq!(m.blocks[3].page, 3);
         m.save().unwrap();
         let v: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
         assert_eq!(v["blocks"][0]["kind"], "note");
         assert!(v["blocks"][0].get("path").is_none(), "empties are left out");
-        assert_eq!(v["blocks"][1]["term"]["history"], "aGVsbG8=");
+        assert!(v["blocks"][1].get("term").is_none(), "a terminal's old state is not kept");
         assert_eq!(v["blocks"][3]["chart"], "pie");
         let mut again = Model::new(dir.path());
         again.load();
@@ -1204,5 +1328,53 @@ mod tests {
         let (w, h) = scale_keeping_ratio(400.0, 200.0, -1000.0, -1000.0);
         assert!(w >= MIN_BLOCK_W && h >= MIN_BLOCK_H);
         assert!((w / h - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn browser_tabs_open_close_and_follow_url() {
+        let mut b = Block::new(BlockKind::Browser);
+        b.url = "https://a".into();
+        b.ensure_tabs();
+        assert_eq!(b.tabs.len(), 1);
+        assert!(serde_json::to_value(&b).unwrap().get("tabs").is_none(), "one tab is just the url");
+
+        b.open_tab("https://b".into(), false);
+        assert_eq!((b.tab, b.url.as_str()), (0, "https://a"), "a tab opened behind stays shut");
+        let key_c = b.open_tab("https://c".into(), true);
+        assert_eq!((b.tab, b.url.as_str()), (1, "https://c"), "c goes right after the open tab");
+        assert_eq!(b.tabs.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), ["https://a", "https://c", "https://b"]);
+        assert_eq!(b.tab_of(key_c), Some(1));
+
+        // An agent or the Go build changes url alone: the open tab follows.
+        b.url = "https://c2".into();
+        b.ensure_tabs();
+        assert_eq!(b.tabs[1].url, "https://c2");
+
+        // Closing the open tab opens the one after it; closing the last opens the one before.
+        b.close_tab(1);
+        assert_eq!((b.tab, b.url.as_str()), (1, "https://b"));
+        b.close_tab(1);
+        assert_eq!((b.tab, b.url.as_str()), (0, "https://a"));
+        assert!(b.close_tab(0).is_none(), "the last tab stays");
+
+        let v = serde_json::to_value({
+            let mut b2 = b.clone();
+            b2.open_tab("https://d".into(), true);
+            b2
+        })
+        .unwrap();
+        assert_eq!(v["tab"], 1);
+        assert_eq!(v["tabs"][1]["url"], "https://d");
+        assert_eq!(v["url"], "https://d", "the Go build still sees the open page");
+    }
+
+    #[test]
+    fn on_level_recognizes_discrete_zoom_steps() {
+        for step in -24..=24 {
+            let s = zoom_level_of(f64::from(step));
+            assert!(on_level(s), "step {step} ({s}) should be on a level");
+        }
+        assert!(!on_level(1.03));
+        assert!(!on_level(0.75));
     }
 }

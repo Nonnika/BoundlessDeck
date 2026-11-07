@@ -3,6 +3,14 @@ name = "boundlessdeck"
 version = "0.1.0"
 edition = "2024"
 
+# For `cargo bundle` (cargo-bundle): the .app's icon.
+[package.metadata.bundle]
+name = "BoundlessDeck"
+identifier = "com.boundlessdeck.app"
+icon = ["resources/icon.icns"]
+[package.metadata.bundle.osx]
+minimum_system_version = "13.0"
+
 [dependencies]
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 serde = { version = "1", features = ["derive"] }
@@ -15,9 +23,7 @@ pulldown-cmark = { version = "0.12", default-features = false }
 alacritty_terminal = "0.25"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 smol = "2"
-base64 = "0.22"
 unicode-segmentation = "1"
-libc = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = "0.37"
 tempfile = "3"
@@ -27,6 +33,8 @@ wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSThread", "NSString"] }
-objc2-app-kit = { version = "0.3.2", features = ["NSImage", "NSImageRep", "NSBitmapImageRep", "NSEvent", "NSResponder", "NSWindow", "NSView", "NSGraphics", "block2"] }
+objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSThread", "NSString", "NSArray", "NSValue", "NSKeyValueCoding"] }
+objc2-app-kit = { version = "0.3.2", features = ["objc2-core-image", "NSApplication", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSEvent", "NSResponder", "NSWindow", "NSView", "NSGraphics", "NSAccessibility", "NSWorkspace", "block2"] }
+objc2-core-image = { version = "0.3.2", features = ["CIFilter"] }
+raw-window-handle = "0.6"
 objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "WKSnapshotConfiguration", "block2", "objc2-app-kit"] }

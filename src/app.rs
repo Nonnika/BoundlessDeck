@@ -5,8 +5,9 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    App, AppContext, Context, Entity, ExternalPaths, FocusHandle, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
+    App, AnyView, AppContext, Context, Entity, ExternalPaths, FocusHandle, FontWeight, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Subscription,
+    Window,
     actions, canvas, div, point, prelude::FluentBuilder, px, svg,
 };
 
@@ -17,6 +18,9 @@ use crate::theme::{Paper, Theme};
 use crate::{icons, tape};
 
 actions!(app, [OpenFolder, Quit, About, OpenSettings, ShowShortcuts]);
+
+/// What changes the screen: opening a folder, going home.
+type Switch = Box<dyn FnOnce(&mut Root, &mut Context<Root>)>;
 
 pub struct Root {
     focus: FocusHandle,
@@ -31,10 +35,21 @@ pub struct Root {
     started: std::time::Instant,
     /// The frames those words take, while the home screen shows.
     ticking: bool,
+    /// The turning word and the backdrop, each its own view.
+    turning: Entity<Turning>,
+    backdrop: Entity<Backdrop>,
+    /// What changes the screen, done once the window has blurred out; None
+    /// while no switch is under way (see `stage`).
+    switching: Option<Switch>,
+    /// When the window started blurring out, or coming clear; None at rest.
+    stage_from: Option<std::time::Instant>,
+    /// How blurred the window is, as the last frame left it.
+    blur: f64,
 }
 
 impl Root {
     pub fn new(open: Option<PathBuf>, cx: &mut Context<Self>) -> Root {
+        let started = std::time::Instant::now();
         let mut r = Root {
             focus: cx.focus_handle(),
             recents: Recents::open(),
@@ -43,8 +58,13 @@ impl Root {
             err: None,
             focus_deck: false,
             settings: crate::mcp::config::Settings::load(),
-            started: std::time::Instant::now(),
+            started,
+            turning: cx.new(|_| Turning { started }),
+            backdrop: cx.new(|_| Backdrop),
             ticking: false,
+            switching: None,
+            stage_from: None,
+            blur: 0.,
         };
         if let Some(p) = open {
             r.open_folder(&p, cx);
@@ -63,7 +83,7 @@ impl Root {
             if let Ok(Ok(Some(paths))) = rx.await
                 && let Some(p) = paths.into_iter().next()
             {
-                let _ = this.update(cx, |r, cx| r.open_folder(&p, cx));
+                let _ = this.update(cx, |r, cx| r.begin_open(p, cx));
             }
         })
         .detach();
@@ -98,8 +118,8 @@ impl Root {
             d
         });
         self._deck_sub = Some(cx.subscribe(&deck, |r: &mut Root, _, ev: &DeckEvent, cx| match ev {
-            DeckEvent::Home => r.go_home(cx),
-            DeckEvent::Open(p) => r.open_folder(&PathBuf::from(p), cx),
+            DeckEvent::Home => r.begin_home(cx),
+            DeckEvent::Open(p) => r.begin_open(PathBuf::from(p), cx),
             DeckEvent::Pick => r.pick_folder(cx),
         }));
         self.deck = Some(deck);
@@ -127,6 +147,66 @@ impl Root {
         err.map_or(Ok(()), Err)
     }
 
+    /// Opens the folder as the window shows it, blurring out first. A folder
+    /// that will not open says why at once.
+    pub fn begin_open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !path.is_dir() {
+            self.open_folder(&path, cx);
+            return;
+        }
+        self.err = None;
+        self.switch_to(Box::new(move |r, cx| r.open_folder(&path, cx)), cx);
+    }
+
+    /// Goes home as the window shows it, blurring out first.
+    pub fn begin_home(&mut self, cx: &mut Context<Self>) {
+        self.switch_to(Box::new(|r, cx| r.go_home(cx)), cx);
+    }
+
+    /// Does go, which changes the screen, once the window has blurred out. A
+    /// switch under way keeps on, and this one is dropped; one coming clear
+    /// blurs out again from where it is.
+    fn switch_to(&mut self, go: Switch, cx: &mut Context<Self>) {
+        if self.switching.is_some() {
+            return;
+        }
+        let into = crate::stage::uneased(self.blur / crate::stage::BLUR) * crate::stage::OUT_MS;
+        self.stage_from = Some(std::time::Instant::now() - std::time::Duration::from_secs_f64(into / 1000.));
+        self.switching = Some(go);
+        cx.notify();
+    }
+
+    /// Steps the blur between screens for this frame: blurring out, then
+    /// switching at its blurriest, then coming clear.
+    fn step_stage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::stage::{BLUR, CLEAR_MS, OUT_MS, ease};
+        let Some(from) = self.stage_from else { return };
+        let ms = from.elapsed().as_secs_f64() * 1000.;
+        let r = if self.switching.is_some() {
+            if ms >= OUT_MS {
+                if let Some(go) = self.switching.take() {
+                    go(self, cx);
+                }
+                self.stage_from = Some(std::time::Instant::now());
+                BLUR
+            } else {
+                BLUR * ease(ms / OUT_MS)
+            }
+        } else if ms >= CLEAR_MS {
+            self.stage_from = None;
+            0.
+        } else {
+            BLUR * (1. - ease(ms / CLEAR_MS))
+        };
+        if (r - self.blur).abs() > 0.01 {
+            crate::stage::set_blur(window, r);
+            self.blur = r;
+        }
+        if self.stage_from.is_some() {
+            window.request_animation_frame();
+        }
+    }
+
     pub fn go_home(&mut self, cx: &mut Context<Self>) {
         self.close_deck(cx);
         self.recents.check();
@@ -146,7 +226,7 @@ impl Root {
         }
     }
 
-    /// Redraws the home screen when its turning words move: each frame of a
+    /// Redraws the home screen's turning word when it moves: each frame of a
     /// slide, then not again until the next one starts.
     fn tick(&mut self, cx: &mut Context<Self>) {
         if self.ticking {
@@ -161,7 +241,7 @@ impl Root {
                             r.ticking = false;
                             return None;
                         }
-                        cx.notify();
+                        r.turning.update(cx, |_, cx| cx.notify());
                         let ms = r.started.elapsed().as_millis() as u64;
                         let period = crate::homescene::ENDLESS_HOLD_MS + crate::homescene::ENDLESS_SLIDE_MS;
                         let into = ms % period;
@@ -178,7 +258,7 @@ impl Root {
 
     fn dropped(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         if let Some(p) = paths.iter().find(|p| p.is_dir()) {
-            self.open_folder(p, cx);
+            self.begin_open(p.clone(), cx);
         } else if !paths.is_empty() {
             self.err = Some("拖进来的是文件。请拖入一个文件夹，它会作为 deck 打开。".into());
             cx.notify();
@@ -205,10 +285,8 @@ impl Root {
                 }),
             )
             .child(
-                // The canvas seen in 3D, running off into the distance.
-                canvas(|_, _, _| (), move |b, _, window, _| crate::homescene::paint(window, b, &t, &paper))
-                .absolute()
-                .size_full(),
+                // The 3D canvas, running off into the distance.
+                AnyView::from(self.backdrop.clone()).cached(StyleRefinement::default().absolute().size_full()),
             )
             .child(
                 div().id("home-scroll").absolute().size_full().overflow_y_scroll().child(
@@ -218,7 +296,7 @@ impl Root {
                             .flex()
                             .flex_col()
                             .gap(px(32.))
-                            .child(head(&t, self.started.elapsed().as_millis() as u64))
+                            .child(self.turning.clone())
                             .child(self.recents_block(&t, &paper, now, cx)),
                     ),
                 ),
@@ -331,7 +409,7 @@ impl Root {
                                 cx.notify();
                             })),
                     )
-                    .on_click(cx.listener(move |r, _, _, cx| r.open_folder(&PathBuf::from(&path), cx))),
+                    .on_click(cx.listener(move |r, _, _, cx| r.begin_open(PathBuf::from(&path), cx))),
             );
         }
         // The block, drawn as a block on the canvas is: its tape sticking out above.
@@ -403,8 +481,32 @@ impl Root {
     }
 }
 
+/// The home screen's 3D backdrop. It is a cached view: the turning word's
+/// frames leave it alone, so its plane is painted only when the window changes.
+struct Backdrop;
+
+impl Render for Backdrop {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(window);
+        let paper = Paper::of(&t);
+        canvas(|_, _, _| (), move |b, _, window, _| crate::homescene::paint(window, b, &t, &paper)).absolute().size_full()
+    }
+}
+
+/// The turning word of the home title, as its own view: its frames repaint
+/// only it, not the window's root.
+struct Turning {
+    started: std::time::Instant,
+}
+
+impl Render for Turning {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        head(Theme::of(window), self.started.elapsed().as_millis() as u64)
+    }
+}
+
 /// The title: "Boundless" rushing on, its trail fading to the left, then "Deck".
-fn head(t: &Theme, ms: u64) -> impl IntoElement {
+fn head(t: Theme, ms: u64) -> impl IntoElement {
     let word = |c: gpui::Hsla| {
         div().text_size(px(38.)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().text_color(c).child("Boundless")
     };
@@ -416,15 +518,37 @@ fn head(t: &Theme, ms: u64) -> impl IntoElement {
             .child(word(t.text.opacity(0.09 * (1. - f) * (1. - f))).absolute().left(px(-f * 90.)).top_0());
     }
     boundless = boundless.child(word(t.text).absolute().left_0().top_0());
-    let t2 = *t;
+    let t2 = t;
     // "创意无止境": its first word takes turns with the others, each sliding
     // up out of the way of the next.
     use crate::homescene::{ENDLESS_WORDS, endless_at};
     let (w, slide) = endless_at(ms);
     let e = 1. - (1. - slide).powi(3);
     let line_h = 30.;
+    // Mid-slide the word smears: faint copies trail below it, strongest at the
+    // middle of the slide and gone at rest, so the change reads as motion blur.
+    const GHOSTS: usize = 4;
+    const SMEAR_PX: f32 = 10.;
+    let smear = (slide * std::f32::consts::PI).sin();
+    let ghosts = if smear > 0. { GHOSTS } else { 0 };
     let word_at = |text: &'static str, dy: f32, a: f32| {
-        div().absolute().left_0().top(px(dy)).h(px(line_h)).text_color(t.accent.opacity(a)).child(text)
+        let mut group = div().absolute().left_0().top(px(dy)).w(px(44.)).h(px(line_h));
+        for j in 1..=ghosts {
+            let f = j as f32 / GHOSTS as f32;
+            group = group.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(f * SMEAR_PX * smear))
+                    .h(px(line_h))
+                    .whitespace_nowrap()
+                    .text_color(t.accent.opacity(a * 0.18 * (1. - f) * smear))
+                    .child(text),
+            );
+        }
+        group.child(
+            div().absolute().left_0().top_0().h(px(line_h)).whitespace_nowrap().text_color(t.accent.opacity(a)).child(text),
+        )
     };
     let mut turning = div().relative().w(px(44.)).h(px(line_h)).overflow_hidden();
     turning = if slide == 0. {
@@ -475,6 +599,8 @@ fn head(t: &Theme, ms: u64) -> impl IntoElement {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Before the body: at the blurriest, the screen changes here.
+        self.step_stage(window, cx);
         let title = match &self.deck {
             Some(d) => format!("{} — BoundlessDeck", crate::model::file_name(&d.read(cx).m.root.to_string_lossy())),
             None => "BoundlessDeck".into(),
@@ -498,7 +624,10 @@ impl Render for Root {
             .key_context("Root")
             .track_focus(&self.focus)
             .on_action(cx.listener(|r, _: &OpenFolder, _, cx| r.pick_folder(cx)))
+            .relative()
             .child(body)
+            // Blurring out to another screen, nothing takes input.
+            .when(self.switching.is_some(), |d| d.child(div().absolute().inset_0().occlude()))
     }
 }
 

@@ -15,6 +15,7 @@ const ICONS: &[(&str, &str)] = &[
     ("arrow_left", r#"<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>"#),
     ("arrow_right", r#"<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>"#),
     ("reload", r#"<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>"#),
+    ("plus", r#"<path d="M5 12h14"/><path d="M12 5v14"/>"#),
     ("x", r#"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#),
     ("trash", r#"<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>"#),
     ("timer", r#"<line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/>"#),

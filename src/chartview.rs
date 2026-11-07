@@ -3,6 +3,7 @@
 //! for two series or more, and the category or slice hovered in a tooltip.
 
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Bounds, FontWeight, Hsla, InteractiveElement, StatefulInteractiveElement, IntoElement, ParentElement, PathBuilder, Pixels,
@@ -75,6 +76,22 @@ impl P<'_> {
         w
     }
 
+    /// Paints text with its top-right at (right_x, y) in a single shaping pass.
+    fn text_right(&mut self, right_x: f32, y: f32, text: &str, size_: f32, color: Hsla, bold: bool) -> f32 {
+        let line = self.shape(text, size_, color, bold);
+        let w = f32::from(line.width);
+        let _ = line.paint(point(px(right_x - w), px(y)), px(size_ * self.s * 1.3), self.window, self.cx);
+        w
+    }
+
+    /// Paints text horizontally centered on `center_x` in a single shaping pass.
+    fn text_center(&mut self, center_x: f32, y: f32, text: &str, size_: f32, color: Hsla, bold: bool) -> f32 {
+        let line = self.shape(text, size_, color, bold);
+        let w = f32::from(line.width);
+        let _ = line.paint(point(px(center_x - w / 2.), px(y)), px(size_ * self.s * 1.3), self.window, self.cx);
+        w
+    }
+
     fn path(&mut self, pts: &[(f32, f32)], color: Hsla) {
         if pts.len() < 3 {
             return;
@@ -127,8 +144,7 @@ impl View<'_> {
         if self.data.is_empty() {
             if !self.compact {
                 let msg = "还没有数据 · 双击或点标题栏的表格按钮填写";
-                let w = p.measure(msg, 12.);
-                p.text(r.x + (r.w - w) / 2., r.y + r.h / 2. - 8. * s, msg, 12., t.muted, false);
+                p.text_center(r.x + r.w / 2., r.y + r.h / 2. - 8. * s, msg, 12., t.muted, false);
             }
             return;
         }
@@ -150,8 +166,7 @@ impl View<'_> {
         }
         let mut plot = R { x: inner.x, y: top, w: inner.w, h: inner.y + inner.h - top };
         if !self.data.note.is_empty() && !self.compact {
-            let nw = p.measure(&self.data.note, 10.);
-            p.text(inner.x + inner.w - nw, inner.y + inner.h - 13. * s, &self.data.note.clone(), 10., t.muted, false);
+            p.text_right(inner.x + inner.w, inner.y + inner.h - 13. * s, &self.data.note.clone(), 10., t.muted, false);
             plot.h -= 17. * s;
         }
         if self.kind == Type::HBar { self.hbars(p, plot, r) } else { self.columns(p, plot, r) }
@@ -184,8 +199,7 @@ impl View<'_> {
             p.line(area.x, y, area.x + area.w, y, grid);
             if !self.compact {
                 let label = chart::tick_text(x, vmax, step);
-                let w = p.measure(&label, 10.5);
-                p.text(area.x - 8. * s - w, y - 7. * s, &label, 10.5, t.muted, false);
+                p.text_right(area.x - 8. * s, y - 7. * s, &label, 10.5, t.muted, false);
             }
             x += step;
         }
@@ -212,9 +226,8 @@ impl View<'_> {
                 if i % every != 0 {
                     continue;
                 }
-                let w = p.measure(c, 10.5);
                 let cx = area.x + band * (i as f32 + 0.5);
-                p.text(cx - w / 2., area.y + area.h + 4. * s, c, 10.5, t.muted, false);
+                p.text_center(cx, area.y + area.h + 4. * s, c, 10.5, t.muted, false);
             }
         }
         let nser = d.series.len();
@@ -302,8 +315,7 @@ impl View<'_> {
             p.line(gx, area.y, gx, area.y + area.h, grid);
             if !self.compact {
                 let label = chart::tick_text(x, vmax, step);
-                let w = p.measure(&label, 10.5);
-                p.text(gx - w / 2., area.y + area.h + 4. * s, &label, 10.5, t.muted, false);
+                p.text_center(gx, area.y + area.h + 4. * s, &label, 10.5, t.muted, false);
             }
             x += step;
         }
@@ -388,8 +400,7 @@ impl View<'_> {
             let y = b.y + pad + line_h * (i + 1) as f32;
             p.rect(R { x: b.x + pad, y: y + (line_h - sw) / 2. - 2. * s, w: sw, h: sw }, *c, 2. * s);
             p.text(b.x + pad + sw + 6. * s, y, name, 11., t.muted, false);
-            let vw = p.measure(value, 11.);
-            p.text(b.x + b.w - pad - vw, y, value, 11., t.text, true);
+            p.text_right(b.x + b.w - pad, y, value, 11., t.text, true);
         }
     }
 
@@ -538,15 +549,15 @@ fn bar(p: &mut P, r: R, up: bool, flat: bool, color: Hsla) {
 }
 
 /// A chart of the table, filling what it is given; hovering shows values.
-pub fn render(src: &str, kind: &str, s: f32, t: &Theme) -> AnyElement {
-    render_view(chart::parse(src), chart::of(kind), s, *t, false)
+pub fn render_data(data: Arc<Data>, kind: &str, s: f32, t: &Theme) -> AnyElement {
+    render_view(data, chart::of(kind), s, *t, false)
 }
 
-pub fn render_compact(src: &str, kind: &str, s: f32, t: &Theme) -> AnyElement {
-    render_view(chart::parse(src), chart::of(kind), s, *t, true)
+pub fn render_compact_data(data: Arc<Data>, kind: &str, s: f32, t: &Theme) -> AnyElement {
+    render_view(data, chart::of(kind), s, *t, true)
 }
 
-fn render_view(data: Data, kind: Type, s: f32, t: Theme, compact: bool) -> AnyElement {
+fn render_view(data: Arc<Data>, kind: Type, s: f32, t: Theme, compact: bool) -> AnyElement {
     div()
         .id("chart")
         .size_full()

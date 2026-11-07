@@ -2,6 +2,7 @@
 //! code and links, lists, quotes, code blocks, rules and tables.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use gpui::{
     AnyElement, FontStyle, FontWeight, HighlightStyle, IntoElement, ParentElement, SharedString, Styled,
@@ -12,7 +13,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use crate::theme::MdColors;
 
 /// One run of a paragraph being gathered: its text and highlights.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Inline {
     text: String,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
@@ -31,6 +32,7 @@ enum Container {
 }
 
 /// A block of the document as parsed, before it becomes an element.
+#[derive(Clone)]
 enum Node {
     Heading(u8, Inline),
     Para(Inline),
@@ -40,6 +42,19 @@ enum Node {
     Table(Vec<Vec<Inline>>),
     QuotePara(usize, Inline),
     Image(String),
+}
+
+/// A parsed Markdown document whose nodes can be rendered across frames without re-parsing.
+#[derive(Clone)]
+pub struct Parsed {
+    nodes: Arc<[Node]>,
+    dark: bool,
+}
+
+impl Parsed {
+    pub fn is_dark(&self) -> bool {
+        self.dark
+    }
 }
 
 fn parse(src: &str, c: &MdColors) -> Vec<Node> {
@@ -210,24 +225,39 @@ fn styled(inl: Inline) -> StyledText {
     StyledText::new(SharedString::from(inl.text)).with_highlights(h)
 }
 
-/// Renders src at font size `size`, in colors `c`; pictures by absolute path.
-pub fn render(src: &str, size: f32, c: &MdColors) -> AnyElement {
-    render_with(src, size, c, &|url| {
+/// Parses `src` once for the given palette so frames during zoom or scroll reuse the AST.
+pub fn parse_doc(src: &str, c: &MdColors, dark: bool) -> Parsed {
+    Parsed { nodes: parse(src, c).into(), dark }
+}
+
+/// Renders a pre-parsed document at font size `size`, in colors `c`.
+pub fn render_parsed(doc: &Parsed, size: f32, c: &MdColors) -> AnyElement {
+    render_nodes(&doc.nodes, size, c, &|url| {
         let p = std::path::Path::new(url);
         p.is_absolute().then(|| gpui::ImageSource::from(p.to_path_buf()))
     })
 }
 
-/// Renders src, its pictures as `images` finds them.
-pub fn render_with(
-    src: &str,
+/// Renders a pre-parsed document, its pictures as `images` finds them.
+pub fn render_parsed_with(
+    doc: &Parsed,
+    size: f32,
+    c: &MdColors,
+    images: &dyn Fn(&str) -> Option<gpui::ImageSource>,
+) -> AnyElement {
+    render_nodes(&doc.nodes, size, c, images)
+}
+
+fn render_nodes(
+    nodes: &[Node],
     size: f32,
     c: &MdColors,
     images: &dyn Fn(&str) -> Option<gpui::ImageSource>,
 ) -> AnyElement {
     let gap = size * 0.6;
-    let children: Vec<AnyElement> = parse(src, c)
-        .into_iter()
+    let children: Vec<AnyElement> = nodes
+        .iter()
+        .cloned()
         .map(|n| match n {
             Node::Heading(level, inl) => {
                 let k = match level {

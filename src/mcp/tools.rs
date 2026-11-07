@@ -68,8 +68,10 @@ pub const FIELDS: &[Field] = &[
         description: "PDF 显示的页，从 0 开始；对非 PDF 文件无意义，越界会由预览夹到有效范围。" },
     Field { name: "url", ty: "string", mutable: true, on_create: true, kinds: &[BlockKind::Browser], min: None, enum_: &[], derived: false,
         description: "浏览器显示的地址。http/https/file 原样使用；裸域名或搜索词会补上 https://；javascript: 与 data: 会被拒绝。空串清空页面。" },
-    Field { name: "term", ty: "object", mutable: false, on_create: false, kinds: &[BlockKind::Terminal], min: None, enum_: &[], derived: false,
-        description: "终端关掉 deck 时留下的恢复状态（历史字节数、工作目录、保存时间），只读；终端本身在运行时起。" },
+    Field { name: "tabs", ty: "array", mutable: false, on_create: false, kinds: &[BlockKind::Browser], min: None, enum_: &[], derived: false,
+        description: "浏览器的标签页，每项 {url, title}，按从左到右的顺序；只读。用户点开新窗口的链接时会在当前标签后新开一个。url 字段始终是打开的那个标签的地址，写 url 就是让打开的标签跳转。" },
+    Field { name: "tab", ty: "integer", mutable: false, on_create: false, kinds: &[BlockKind::Browser], min: Some(0.), enum_: &[], derived: false,
+        description: "打开的是 tabs 中的第几个，从 0 开始；只读。" },
     Field { name: "items", ty: "array", mutable: true, on_create: true, kinds: &[BlockKind::Stack], min: None, enum_: &[], derived: false,
         description: "块堆里的 block ID，按从上到下的卡片顺序。收进堆的 block 仍留在 deck 里、可用 get_block 读写，但不再画在画布上；一个 block 只属于一个堆，块堆不能装块堆。" },
 ];
@@ -372,16 +374,14 @@ impl Ctx<'_> {
             }
             BlockKind::Browser => {
                 o.insert("url".into(), n.url.clone().into());
+                // One tab is the url alone: it is listed all the same.
+                let mut b = n.clone();
+                b.ensure_tabs();
+                let tabs: Vec<Value> = b.tabs.iter().map(|t| json!({"url": t.url, "title": t.title})).collect();
+                o.insert("tabs".into(), tabs.into());
+                o.insert("tab".into(), b.tab.into());
             }
-            BlockKind::Terminal => {
-                o.insert(
-                    "term".into(),
-                    n.term
-                        .as_ref()
-                        .map(|t| json!({"historyBytes": t.history.len(), "dir": t.dir, "savedAt": t.saved_at.to_rfc3339()}))
-                        .unwrap_or(Value::Null),
-                );
-            }
+            BlockKind::Terminal => {}
             BlockKind::Stack => {
                 o.insert("items".into(), n.items.clone().into());
             }
@@ -599,7 +599,11 @@ impl Ctx<'_> {
             }
             "page" => self.m.block_mut(id).unwrap().page = v.as_i64().unwrap_or(0) as i32,
             "url" => {
-                self.m.block_mut(id).unwrap().url = normalize_url(&val_str(v, name)?)?;
+                let b = self.m.block_mut(id).unwrap();
+                b.url = normalize_url(&val_str(v, name)?)?;
+                if b.kind == BlockKind::Browser {
+                    b.ensure_tabs();
+                }
                 self.reload.push(id.to_string());
             }
             "chart" => self.m.block_mut(id).unwrap().chart = val_str(v, name)?,
@@ -1207,7 +1211,7 @@ mod tests {
     #[test]
     fn every_block_field_is_in_the_table() {
         // Each field deck.json keeps is one an agent can see.
-        let b = serde_json::to_value(Block { term: None, ..Block::new(BlockKind::Note) }).unwrap();
+        let b = serde_json::to_value(Block::new(BlockKind::Note)).unwrap();
         let all = serde_json::to_value(Block {
             named: true,
             path: "p".into(),
@@ -1217,13 +1221,29 @@ mod tests {
             page: 1,
             expires: 1,
             items: vec!["x".into()],
-            term: Some(crate::termstate::TermState::new(vec![1], "d".into())),
+            tabs: vec![crate::model::WebTab::new("a".into()), crate::model::WebTab::new("b".into())],
+            tab: 1,
             ..Block::new(BlockKind::Note)
         })
         .unwrap();
         for key in b.as_object().unwrap().keys().chain(all.as_object().unwrap().keys()) {
             assert!(field(key).is_some(), "{key} is not in the MCP field table");
         }
+    }
+
+    #[test]
+    fn writing_url_moves_the_open_tab() {
+        let (_d, mut m) = ctx_model();
+        let mut b = Block::new(BlockKind::Browser);
+        b.id = "b00000a".into();
+        b.url = "https://a".into();
+        b.open_tab("https://b".into(), false);
+        m.add_block(b);
+        let out = call(&mut m, "update_block", json!({"id": "b00000a", "fields": {"url": "https://c"}})).unwrap();
+        assert_eq!(out["tab"], 0);
+        assert_eq!(out["tabs"][0]["url"], "https://c");
+        assert_eq!(out["tabs"][1]["url"], "https://b", "the other tab is left alone");
+        assert!(call(&mut m, "update_block", json!({"id": "b00000a", "tab": 1})).is_err(), "tab is read-only");
     }
 
     #[test]

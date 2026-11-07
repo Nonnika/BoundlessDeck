@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- BoundlessDeck app icon: one white block, the robot's face on it, two more
+       blocks of the deck fanned out behind. Kept to one figure so it reads at 16 px.
+       Render: rsvg-convert -w 1024 -h 1024 resources/icon.svg -o resources/icon.png -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5A86FA"/>
+      <stop offset="1" stop-color="#2F5BE6"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EEF2FD"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14"/>
+      <feOffset dy="10" result="b"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.28"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="lift" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="18"/>
+      <feOffset dy="16" result="b"/>
+      <feFlood flood-color="#10245E" flood-opacity="0.35"/>
+      <feComposite in2="b" operator="in"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)" filter="url(#shadow)"/>
+
+  <!-- the deck behind: two blocks fanned to the right -->
+  <rect x="332" y="300" width="400" height="400" rx="88" fill="#FFFFFF" fill-opacity="0.28"
+        transform="rotate(16 532 500)"/>
+  <rect x="312" y="310" width="400" height="400" rx="88" fill="#FFFFFF" fill-opacity="0.5"
+        transform="rotate(8 512 510)"/>
+
+  <!-- the front block, with the robot's face -->
+  <g filter="url(#lift)">
+    <rect x="292" y="322" width="400" height="400" rx="88" fill="url(#card)"/>
+    <rect x="352" y="452" width="280" height="168" rx="84" fill="#202129"/>
+    <rect x="433" y="497" width="34" height="78" rx="17" fill="#FFFFFF"/>
+    <rect x="517" y="497" width="34" height="78" rx="17" fill="#FFFFFF"/>
+  </g>
+</svg>

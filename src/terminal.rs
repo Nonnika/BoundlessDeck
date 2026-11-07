@@ -3,18 +3,17 @@
 //! columns as the canvas zooms: the text grows and shrinks, nothing reflows.
 
 use std::borrow::Cow;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::tty;
-use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor, Rgb};
+use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 use gpui::{
     App, Bounds, Context, Element, ElementId, Entity, EventEmitter, FocusHandle, Focusable, Font, FontStyle,
     FontWeight, GlobalElementId, Hsla, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, Pixels,
@@ -57,19 +56,20 @@ impl Dimensions for GridSize {
 pub enum TerminalEvent {
     Title(String),
     Exited(i32),
-    /// The user typed or pasted into it: what it shows is worth keeping.
-    Used,
 }
 
 pub struct Terminal {
     focus: FocusHandle,
     term: Arc<FairMutex<Term<Listener>>>,
     sender: EventLoopSender,
-    pid: u32,
     cols: usize,
     rows: usize,
     pub font_size: f32,
     exited: bool,
+    /// The composition the input method is building: drawn at the cursor, not yet sent.
+    marked: Option<String>,
+    /// Where the cursor was last painted, in window coordinates: where candidates appear.
+    ime_cursor: Option<Bounds<Pixels>>,
     _events: gpui::Task<()>,
 }
 
@@ -89,13 +89,11 @@ pub fn grid_for(w: f32, h: f32) -> (usize, usize) {
 }
 
 impl Terminal {
-    /// Starts a shell in dir, under what the block's last terminal showed;
-    /// what it returns makes the terminal's entity.
+    /// Starts a shell in dir; what it returns makes the terminal's entity.
     pub fn spawn(
         dir: &Path,
         cols: usize,
         rows: usize,
-        history: &[u8],
     ) -> anyhow::Result<impl FnOnce(&mut Context<Self>) -> Terminal + use<>> {
         let (tx, rx) = smol::channel::unbounded();
         let listener = Listener(tx);
@@ -106,14 +104,9 @@ impl Terminal {
         let opts = tty::Options { shell: None, working_directory: Some(dir.to_path_buf()), drain_on_exit: false, env };
         let ws = window_size(cols, rows);
         let pty = tty::new(&opts, ws, 0)?;
-        let pid = pty.child().id();
         let config = Config { scrolling_history: 10_000, ..Config::default() };
         let term = Term::new(config, &GridSize { cols, rows }, listener.clone());
         let term = Arc::new(FairMutex::new(term));
-        if !history.is_empty() {
-            let mut p: Processor = Processor::new();
-            p.advance(&mut *term.lock(), history);
-        }
         let event_loop = EventLoop::new(term.clone(), listener, pty, false, false)?;
         let sender = event_loop.channel();
         event_loop.spawn();
@@ -131,11 +124,12 @@ impl Terminal {
                 focus: cx.focus_handle(),
                 term,
                 sender,
-                pid,
                 cols,
                 rows,
                 font_size: FONT_SIZE,
                 exited: false,
+                marked: None,
+                ime_cursor: None,
                 _events: events,
             }
         })
@@ -191,60 +185,21 @@ impl Terminal {
         let _ = self.sender.send(Msg::Shutdown);
     }
 
-    /// Where the shell is now, as the system says.
-    pub fn dir(&self) -> Option<PathBuf> {
-        cwd_of(self.pid)
-    }
-
-    /// What the terminal showed, scrollback and screen, as rows of VT sequences.
-    pub fn history(&self) -> Vec<u8> {
-        let term = self.term.lock();
-        let grid = term.grid();
-        let mut out = Vec::new();
-        let mut rows: Vec<String> = Vec::new();
-        for l in grid.topmost_line().0..=grid.bottommost_line().0 {
-            let row = &grid[Line(l)];
-            let mut s = String::new();
-            let mut style = (Color::Named(NamedColor::Foreground), Color::Named(NamedColor::Background), Flags::empty());
-            let last = (0..grid.columns()).rev().find(|&c| {
-                let cell = &row[Column(c)];
-                cell.c != ' ' || cell.bg != Color::Named(NamedColor::Background)
-            });
-            let Some(last) = last else {
-                rows.push(String::new());
-                continue;
-            };
-            for c in 0..=last {
-                let cell = &row[Column(c)];
-                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                    continue;
-                }
-                let key = (cell.fg, cell.bg, cell.flags & (Flags::BOLD | Flags::ITALIC | Flags::UNDERLINE | Flags::DIM | Flags::INVERSE));
-                if key != style {
-                    s.push_str(&sgr(key.0, key.1, key.2));
-                    style = key;
-                }
-                s.push(cell.c);
-            }
-            s.push_str("\x1b[0m");
-            rows.push(s);
-        }
-        // The empty rows at the bottom are the screen not yet written.
-        while rows.last().is_some_and(|r| r.is_empty()) {
-            rows.pop();
-        }
-        for (i, r) in rows.iter().enumerate() {
-            if i > 0 {
-                out.extend_from_slice(b"\r\n");
-            }
-            out.extend_from_slice(r.as_bytes());
-        }
-        out
-    }
 
     fn on_key(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         let m = ks.modifiers;
+        // While composing, GPUI gives the input method every key first; one that reaches here
+        // the input method let go of, so a composition still noted is stale (focus left mid-way):
+        // dropped, or it would hold every key back from the shell.
+        if self.marked.take().is_some() {
+            cx.notify();
+        }
+        // Typing text: the input method decides, and what it commits arrives in
+        // `replace_text_in_range`. Everything else is a key the terminal sends itself.
+        if is_text_key(m, ks.key_char.as_deref()) {
+            return;
+        }
         if m.platform {
             if ks.key == "v" {
                 if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
@@ -252,7 +207,6 @@ impl Terminal {
                     let text = text.replace("\r\n", "\r").replace('\n', "\r");
                     let bytes = if bracketed { format!("\x1b[200~{text}\x1b[201~") } else { text };
                     self.write(bytes.into_bytes());
-                    cx.emit(TerminalEvent::Used);
                     cx.stop_propagation();
                 }
             }
@@ -262,7 +216,6 @@ impl Terminal {
         if let Some(bytes) = key_bytes(&ks.key, ks.key_char.as_deref(), m, app_cursor) {
             self.term.lock().scroll_display(Scroll::Bottom);
             self.write(bytes);
-            cx.emit(TerminalEvent::Used);
             cx.stop_propagation();
         }
     }
@@ -297,67 +250,10 @@ fn window_size(cols: usize, rows: usize) -> WindowSize {
     }
 }
 
-/// The working directory of a process.
-#[cfg(target_os = "macos")]
-fn cwd_of(pid: u32) -> Option<PathBuf> {
-    use std::ffi::CStr;
-    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as i32;
-    let n = unsafe {
-        libc::proc_pidinfo(pid as i32, libc::PROC_PIDVNODEPATHINFO, 0, &mut info as *mut _ as *mut _, size)
-    };
-    if n != size {
-        return None;
-    }
-    let path = unsafe { CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr() as *const _) };
-    Some(PathBuf::from(path.to_string_lossy().into_owned()))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn cwd_of(pid: u32) -> Option<PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
-}
-
-fn sgr(fg: Color, bg: Color, flags: Flags) -> String {
-    let mut parts = vec!["0".to_string()];
-    if flags.contains(Flags::BOLD) {
-        parts.push("1".into());
-    }
-    if flags.contains(Flags::DIM) {
-        parts.push("2".into());
-    }
-    if flags.contains(Flags::ITALIC) {
-        parts.push("3".into());
-    }
-    if flags.contains(Flags::UNDERLINE) {
-        parts.push("4".into());
-    }
-    if flags.contains(Flags::INVERSE) {
-        parts.push("7".into());
-    }
-    let color = |c: Color, base: u8| -> Option<String> {
-        match c {
-            Color::Named(n) => {
-                let i = n as usize;
-                if i < 8 {
-                    Some(format!("{}", base as usize + i))
-                } else if i < 16 {
-                    Some(format!("{}", base as usize + 60 + i - 8))
-                } else {
-                    None
-                }
-            }
-            Color::Indexed(i) => Some(format!("{};5;{}", base + 8, i)),
-            Color::Spec(Rgb { r, g, b }) => Some(format!("{};2;{r};{g};{b}", base + 8)),
-        }
-    };
-    if let Some(s) = color(fg, 30) {
-        parts.push(s);
-    }
-    if let Some(s) = color(bg, 40) {
-        parts.push(s);
-    }
-    format!("\x1b[{}m", parts.join(";"))
+/// Keys that type text: a printable character with no ⌃, ⌥ or ⌘. The input method takes them so
+/// Chinese can be composed; what it commits reaches the shell in `replace_text_in_range`.
+fn is_text_key(m: gpui::Modifiers, key_char: Option<&str>) -> bool {
+    !m.control && !m.alt && !m.platform && key_char.is_some_and(|c| !c.is_empty() && !c.chars().any(char::is_control))
 }
 
 /// The bytes a key sends, as xterm does.
@@ -516,6 +412,79 @@ fn resolve(c: Color, colors: &alacritty_terminal::term::color::Colors, dark: boo
     }
 }
 
+impl gpui::EntityInputHandler for Terminal {
+    fn text_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        _: &mut Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<gpui::UTF16Selection> {
+        Some(gpui::UTF16Selection { range: 0..0, reversed: false })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<std::ops::Range<usize>> {
+        self.marked.as_ref().map(|m| 0..m.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.marked = None;
+        cx.notify();
+    }
+
+    /// Committed text: the composition is over, and the text goes to the shell.
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        text: &str,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.marked = None;
+        if !text.is_empty() {
+            self.term.lock().scroll_display(Scroll::Bottom);
+            self.write(text.as_bytes().to_vec());
+        }
+        cx.notify();
+    }
+
+    /// Composing text: drawn at the cursor, not sent until it is committed.
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        text: &str,
+        _: Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.marked = (!text.is_empty()).then(|| text.to_string());
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        _: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        self.ime_cursor.clone()
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _: gpui::Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+}
+
 impl Render for Terminal {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -595,6 +564,8 @@ impl Element for GridElement {
         let dark = matches!(window.appearance(), gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark);
         let t = self.term.read(cx);
         let focused = t.focus.is_focused(window);
+        let focus = t.focus.clone();
+        let marked = t.marked.clone();
         let font_px = px(t.font_size);
         let line_h = (t.font_size * LINE_HEIGHT).round().max(1.);
         let font = Font { family: FONT_FAMILY.into(), ..window.text_style().font() };
@@ -618,6 +589,8 @@ impl Element for GridElement {
             wide: bool,
         }
 
+        window.handle_input(&focus, gpui::ElementInputHandler::new(bounds, self.term.clone()), cx);
+        let mut ime_cursor = None;
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             let mut line_no = i32::MIN;
             let mut segs: Vec<Seg> = Vec::new();
@@ -702,20 +675,40 @@ impl Element for GridElement {
                 paint_line(&mut segs, line_no, window, cx);
             }
 
-            // The cursor: a block while focused, an outline otherwise.
+            // The cursor: a block while focused, an outline otherwise. The composition, if any,
+            // sits on it, and the input method is told where it is so candidates pop up there.
             let cur = content.cursor;
-            if content.mode.contains(TermMode::SHOW_CURSOR) && display_offset == 0 {
+            if display_offset == 0 {
                 let x = origin.x + px(cur.point.column.0 as f32 * cell_w);
                 let y = origin.y + px(cur.point.line.0 as f32 * line_h);
                 let b = Bounds::new(point(x, y), size(px(cell_w), px(line_h)));
-                let color = to_hsla(palette(258, dark));
-                if focused {
-                    window.paint_quad(fill(b, color.opacity(0.55)));
-                } else {
-                    window.paint_quad(gpui::outline(b, color.opacity(0.6), gpui::BorderStyle::Solid));
+                ime_cursor = Some(b.clone());
+                if let Some(text) = &marked {
+                    let color = to_hsla(palette(256, dark));
+                    let run = TextRun {
+                        len: text.len(),
+                        font: font.clone(),
+                        color,
+                        background_color: None,
+                        underline: Some(gpui::UnderlineStyle { color: Some(color), thickness: px(1.), wavy: false }),
+                        strikethrough: None,
+                    };
+                    let shaped =
+                        window.text_system().shape_line(SharedString::from(text.clone()), font_px, &[run], None);
+                    let at = point(x, y);
+                    window.paint_quad(fill(Bounds::new(at, size(shaped.width, px(line_h))), background(dark)));
+                    let _ = shaped.paint(at, px(line_h), window, cx);
+                } else if content.mode.contains(TermMode::SHOW_CURSOR) {
+                    let color = to_hsla(palette(258, dark));
+                    if focused {
+                        window.paint_quad(fill(b, color.opacity(0.55)));
+                    } else {
+                        window.paint_quad(gpui::outline(b, color.opacity(0.6), gpui::BorderStyle::Solid));
+                    }
                 }
             }
         });
+        self.term.update(cx, |t, _| t.ime_cursor = ime_cursor);
     }
 }
 
@@ -728,7 +721,6 @@ mod tests {
         let none = gpui::Modifiers::default();
         let ctrl = gpui::Modifiers { control: true, ..Default::default() };
         let alt = gpui::Modifiers { alt: true, ..Default::default() };
-        assert_eq!(key_bytes("a", Some("a"), none, false), Some(b"a".to_vec()));
         assert_eq!(key_bytes("c", Some("c"), ctrl, false), Some(vec![3]));
         assert_eq!(key_bytes("up", None, none, false), Some(b"\x1b[A".to_vec()));
         assert_eq!(key_bytes("up", None, none, true), Some(b"\x1bOA".to_vec()));
@@ -737,17 +729,22 @@ mod tests {
     }
 
     #[test]
+    fn typed_text_goes_to_the_input_method() {
+        let none = gpui::Modifiers::default();
+        let ctrl = gpui::Modifiers { control: true, ..Default::default() };
+        let alt = gpui::Modifiers { alt: true, ..Default::default() };
+        assert!(is_text_key(none, Some("中")));
+        assert!(is_text_key(none, Some(" ")));
+        assert!(!is_text_key(none, Some("\r")));
+        assert!(!is_text_key(none, None));
+        assert!(!is_text_key(ctrl, Some("c")));
+        assert!(!is_text_key(alt, Some("b")));
+    }
+
+    #[test]
     fn grid_fits_the_body() {
         let (c, r) = grid_for(560.0, 340.0 - 26.0);
         assert!(c > 60 && r > 15);
     }
 
-    #[test]
-    fn sgr_writes_colors_back() {
-        assert_eq!(sgr(Color::Named(NamedColor::Red), Color::Named(NamedColor::Background), Flags::BOLD), "\x1b[0;1;31m");
-        assert_eq!(
-            sgr(Color::Indexed(200), Color::Spec(Rgb { r: 1, g: 2, b: 3 }), Flags::empty()),
-            "\x1b[0;38;5;200;48;2;1;2;3m"
-        );
-    }
 }

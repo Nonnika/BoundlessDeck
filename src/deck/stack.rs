@@ -388,7 +388,7 @@ impl DeckView {
         match n.kind {
             BlockKind::Note => cut(n.text.trim(), 360),
             BlockKind::Memo | BlockKind::File => n.path.clone(),
-            BlockKind::Terminal => n.term.as_ref().map(|t| t.dir.clone()).filter(|d| !d.is_empty()).unwrap_or("终端".into()),
+            BlockKind::Terminal => "终端".into(),
             BlockKind::Browser => if n.url.is_empty() { "空白页面".into() } else { n.url.clone() },
             BlockKind::Chart => crate::chart::parse(&n.text).summary(crate::chart::of(&n.chart)),
             BlockKind::Stack => String::new(),
@@ -396,7 +396,7 @@ impl DeckView {
     }
 
     /// The Markdown a card's face shows rendered, loading what it needs; "" for none.
-    fn face_markdown(&mut self, n: &Block, cx: &mut Context<Self>) -> String {
+    pub(super) fn face_markdown(&mut self, n: &Block, cx: &mut Context<Self>) -> String {
         let src = match n.kind {
             BlockKind::Note => n.text.clone(),
             BlockKind::Memo => {
@@ -427,6 +427,7 @@ impl DeckView {
 
     pub(super) fn stack_body(&mut self, st: &Block, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let s = self.m.cam.s;
+        let cs = self.content_scale();
         let plucked = self.pluck.as_ref().filter(|p| p.active && p.stack == st.id).map(|p| p.card.clone());
         let members: Vec<Block> =
             self.members(st).into_iter().filter(|m| Some(&m.id) != plucked.as_ref()).collect();
@@ -571,13 +572,13 @@ impl DeckView {
             let face: AnyElement = if !face_shows {
                 div().into_any_element()
             } else if m.kind == BlockKind::Chart {
-                crate::chartview::render_compact(&m.text, &m.chart, s, t)
+                let data = self.chart_data(&m);
+                crate::chartview::render_compact_data(data, &m.chart, cs, t)
             } else {
-                let md = self.face_markdown(&m, cx);
-                if md.is_empty() {
-                    div().text_size(px(11. * s)).text_color(t.muted).child(self.snippet(&m)).into_any_element()
-                } else {
-                    markdown::render(&md, 11. * s, &MdColors::of_theme(t))
+                let colors = MdColors::of_theme(t);
+                match self.face_parsed_markdown(&m, &colors, t.dark, cx) {
+                    None => div().text_size(px(11. * cs)).text_color(t.muted).child(self.snippet(&m)).into_any_element(),
+                    Some(parsed) => markdown::render_parsed(&parsed, 11. * cs, &colors),
                 }
             };
             let tn = tint(m.kind);
@@ -618,12 +619,12 @@ impl DeckView {
                                     .min_w_0()
                                     .overflow_hidden()
                                     .whitespace_nowrap()
-                                    .text_size(px(12.5 * s))
+                                    .text_size(px(12.5 * cs))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(t.text)
                                     .child(title),
                             )
-                            .child(div().text_size(px(10. * s)).text_color(t.muted).child(m.kind.label())),
+                            .child(div().text_size(px(10. * cs)).text_color(t.muted).child(m.kind.label())),
                     )
                     .child(div().mx(px(12. * s)).h(px(1.)).bg(t.border.opacity(0.6)))
                     .child(div().h(px(face_h)).px(px(14. * s)).pt(px(7. * s)).overflow_hidden().child(face))
@@ -797,10 +798,13 @@ impl DeckView {
             }
             _ => {
                 let saved = self.m.cam;
+                let saved_lay = self.lay;
                 self.m.cam.s = 1.;
+                self.lay.s = 1.;
                 let paper = crate::theme::Paper::of(t);
                 let el = self.body(&card, t, &paper, window, cx);
                 self.m.cam = saved;
+                self.lay = saved_lay;
                 el
             }
         };

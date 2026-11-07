@@ -1,13 +1,17 @@
 //! The browser block: a native WKWebView (through wry) laid over the
 //! block's body, under a bar of back/forward/reload and the address.
+//! It has tabs: each its own page, made when first opened and kept while
+//! the deck is open; only the open tab's shows. A link that asks for a new
+//! window opens a tab beside the one it was in.
 //!
 //! A native view always draws over the canvas, so the page shows only
 //! while nothing of the canvas should be over it: not while another block,
 //! the chrome or an overlay covers it, not while a zoom goes on (WebKit's
 //! page zoom lags behind the block). Meanwhile its body says why. Once the
-//! zoom rests, the page takes it (`WebView::zoom`), crisp at any scale.
+//! zoom rests, the page takes it (`WebView::zoom`), crisp at any scale,
+//! fading in over its picture (see `sharpen`).
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use gpui::{
     AnyElement, Context, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
@@ -15,13 +19,15 @@ use gpui::{
 };
 use wry::dpi::{LogicalPosition, LogicalSize};
 
-use super::{DeckView, Drag, EditPart, TITLE_H};
+use super::{DeckView, EditPart, TITLE_H};
 use crate::icons;
-use crate::model::{Block, BlockKind, LOD_SCALE, new_block_of};
+use crate::model::{Block, LOD_SCALE};
 use crate::theme::Theme;
 
 /// The bar's height at 100%.
 pub(super) const BAR_H: f32 = 34.0;
+/// The tab strip's height at 100%; it shows once there are two tabs.
+pub(super) const TABS_H: f32 = 30.0;
 
 pub(super) struct WebRt {
     view: wry::WebView,
@@ -30,24 +36,27 @@ pub(super) struct WebRt {
     snapping: bool,
     /// The page zoom it was last given.
     zoom: f32,
+    /// The view's alpha as last set: below 1 while it fades in over its picture.
+    alpha: f32,
     bounds: (f32, f32, f32, f32),
     visible: bool,
     pub loading: bool,
 }
 
+/// What a page says, with the block and the tab (by key) it is in.
 pub(super) enum WebEvent {
-    Title(String, String),
-    Loading(String, bool, String),
+    Title(String, u64, String),
+    Loading(String, u64, bool, String),
     NewWindow(String, String),
     /// A link to what a browser does not show: the system opens it.
     External(String),
     /// A picture of the page, as PNG.
-    Snapshot(String, Vec<u8>),
+    Snapshot(String, u64, Vec<u8>),
 }
 
 /// Asks WebKit for a picture of the page as it shows now; it comes as an event.
 #[cfg(target_os = "macos")]
-fn take_snapshot(view: &wry::WebView, id: &str, tx: &smol::channel::Sender<WebEvent>) {
+fn take_snapshot(view: &wry::WebView, id: &str, key: u64, tx: &smol::channel::Sender<WebEvent>) {
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
     use objc2_foundation::{NSDictionary, NSError};
     use wry::WebViewExtMacOS;
@@ -59,15 +68,25 @@ fn take_snapshot(view: &wry::WebView, id: &str, tx: &smol::channel::Sender<WebEv
             .and_then(|tiff| NSBitmapImageRep::imageRepWithData(&tiff))
             .and_then(|rep| unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) });
         if let Some(png) = png {
-            let _ = tx.try_send(WebEvent::Snapshot(id.clone(), png.to_vec()));
+            let _ = tx.try_send(WebEvent::Snapshot(id.clone(), key, png.to_vec()));
         }
     });
     let wk = view.webview();
     unsafe { wk.takeSnapshotWithConfiguration_completionHandler(None, &handler) };
 }
 
+/// Sets how opaque the page's native view is, from 0 to 1.
+#[cfg(target_os = "macos")]
+fn set_alpha(view: &wry::WebView, alpha: f32) {
+    use wry::WebViewExtMacOS;
+    view.webview().setAlphaValue(f64::from(alpha));
+}
+
 #[cfg(not(target_os = "macos"))]
-fn take_snapshot(_: &wry::WebView, _: &str, _: &smol::channel::Sender<WebEvent>) {}
+fn set_alpha(_: &wry::WebView, _: f32) {}
+
+#[cfg(not(target_os = "macos"))]
+fn take_snapshot(_: &wry::WebView, _: &str, _: u64, _: &smol::channel::Sender<WebEvent>) {}
 
 /// The schemes a page may go to; others are the system's.
 fn web_scheme(url: &str) -> bool {
@@ -117,42 +136,48 @@ fn bar_button(id: SharedString, icon: &'static str, s: f32, t: &Theme) -> gpui::
 impl DeckView {
     pub(super) fn on_web_event(&mut self, ev: WebEvent, cx: &mut Context<Self>) {
         match ev {
-            WebEvent::Title(id, title) => {
-                if let Some(b) = self.m.block_mut(&id) {
-                    b.auto_title(&title);
+            WebEvent::Title(id, key, title) => {
+                if let Some(b) = self.m.block_mut(&id)
+                    && let Some(i) = b.tab_of(key)
+                {
+                    b.tabs[i].title = title.clone();
+                    if i == b.tab {
+                        b.auto_title(&title);
+                    }
                 }
             }
-            WebEvent::Loading(id, on, url) => {
+            WebEvent::Loading(id, key, on, url) => {
                 let tx = self.web_tx.clone();
-                if let Some(rt) = self.rts.get_mut(&id).and_then(|r| r.web.as_mut()) {
-                    rt.loading = on;
+                if let Some(web) = self.rts.get_mut(&id).and_then(|r| r.webs.get_mut(&key)) {
+                    web.loading = on;
                     // Loaded out of sight: a picture to show for it meanwhile.
-                    if !on && !rt.visible && !rt.snapping {
-                        rt.snapping = true;
-                        take_snapshot(&rt.view, &id, &tx);
+                    if !on && !web.visible && !web.snapping {
+                        web.snapping = true;
+                        take_snapshot(&web.view, &id, key, &tx);
                     }
                 }
                 if !on
                     && !url.is_empty()
                     && let Some(b) = self.m.block_mut(&id)
-                    && b.url != url
+                    && let Some(i) = b.tab_of(key)
+                    && b.tabs[i].url != url
                 {
-                    b.url = url;
+                    b.tabs[i].url = url.clone();
+                    if i == b.tab {
+                        b.url = url;
+                    }
                     self.request_save(cx);
                 }
             }
             WebEvent::NewWindow(id, url) => {
-                // A link to a new window opens a browser block beside its own.
-                let Some(src) = self.m.block(&id).cloned() else { return };
-                let mut b = new_block_of(BlockKind::Browser, self.m.now_ms());
-                b.url = url;
-                (b.x, b.y) = self.m.free_spot(src.x + src.w + 28., src.y, b.w, b.h);
-                self.m.add_block(b);
-                self.after_edit(cx);
+                // A link to a new window opens a tab beside the open one.
+                let Some(b) = self.m.block_mut(&id) else { return };
+                b.open_tab(url, true);
+                self.request_save(cx);
             }
             WebEvent::External(url) => cx.open_url(&url),
-            WebEvent::Snapshot(id, png) => {
-                if let Some(web) = self.rts.get_mut(&id).and_then(|r| r.web.as_mut()) {
+            WebEvent::Snapshot(id, key, png) => {
+                if let Some(web) = self.rts.get_mut(&id).and_then(|r| r.webs.get_mut(&key)) {
                     web.snapping = false;
                     web.snap = Some(std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)));
                 }
@@ -161,7 +186,7 @@ impl DeckView {
         cx.notify();
     }
 
-    fn make_webview(&self, id: &str, url: &str, window: &Window) -> Result<wry::WebView, String> {
+    fn make_webview(&self, id: &str, key: u64, url: &str, window: &Window) -> Result<wry::WebView, String> {
         let tx = self.web_tx.clone();
         let (t1, t2, t3, t4) = (tx.clone(), tx.clone(), tx.clone(), tx);
         let (i1, i2, i3) = (id.to_string(), id.to_string(), id.to_string());
@@ -186,19 +211,26 @@ impl DeckView {
                 wry::NewWindowResponse::Deny
             })
             .with_document_title_changed_handler(move |title| {
-                let _ = t3.try_send(WebEvent::Title(i2.clone(), title));
+                let _ = t3.try_send(WebEvent::Title(i2.clone(), key, title));
             })
             .with_on_page_load_handler(move |ev, url| {
                 let on = matches!(ev, wry::PageLoadEvent::Started);
-                let _ = t4.try_send(WebEvent::Loading(i3.clone(), on, url));
+                let _ = t4.try_send(WebEvent::Loading(i3.clone(), key, on, url));
             })
             .build_as_child(window)
             .map_err(|e| e.to_string())
     }
 
-    /// Navigates the block's page, as the address bar or an agent asks.
+    /// The page of the block's open tab, if it was made.
+    fn open_web(&self, id: &str) -> Option<&WebRt> {
+        let key = self.m.block(id).and_then(|b| b.tabs.get(b.tab))?.key;
+        self.rts.get(id)?.webs.get(&key)
+    }
+
+    /// Navigates the open tab's page, as the address bar or an agent asks.
     pub(super) fn web_go(&mut self, id: &str, url: &str) {
-        if let Some(web) = self.rts.get_mut(id).and_then(|r| r.web.as_mut()) {
+        let key = self.m.block(id).and_then(|b| b.tabs.get(b.tab)).map(|t| t.key);
+        if let Some(web) = key.and_then(|k| self.rts.get_mut(id)?.webs.get_mut(&k)) {
             if url.is_empty() {
                 let _ = web.view.load_url("about:blank");
             } else {
@@ -207,17 +239,12 @@ impl DeckView {
         }
     }
 
-    /// Whether a zoom goes on, or has just rested and still glides.
-    fn zooming(&self) -> bool {
-        self.zoomed_at.is_some_and(|t| t.elapsed() < Duration::from_millis(400))
-    }
-
     /// Why the page cannot show now over its body, if it cannot.
     fn web_hidden(&self, id: &str, r: (f32, f32, f32, f32)) -> Option<&'static str> {
         if self.preview.is_some() || self.preview_leaving.is_some() || self.popup.is_some() || self.pluck.as_ref().is_some_and(|p| p.active) {
             return Some("被浮层遮住");
         }
-        if matches!(self.drag, Some(Drag::Marquee { .. }) | Some(Drag::Pan { .. })) {
+        if self.gesture_covers(r) {
             return Some("");
         }
         if self.zooming() {
@@ -246,35 +273,46 @@ impl DeckView {
     }
 
     pub(super) fn browser_body(&mut self, b: &Block, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let b = &match self.m.block_mut(&b.id) {
+            Some(m) => {
+                m.ensure_tabs();
+                m.clone()
+            }
+            None => return div().into_any_element(),
+        };
+        let key = b.tabs[b.tab].key;
         let s = self.m.cam.s;
         let (sx, sy) = self.m.cam.to_screen(b.x, b.y);
-        let page = (sx + 1., sy + (TITLE_H + BAR_H) * s, b.w * s - 2., (b.h - TITLE_H - BAR_H) * s - 1.);
+        let strip_h = if b.tabs.len() > 1 { TABS_H } else { 0. };
+        let top = TITLE_H + strip_h + BAR_H;
+        let page = (sx + 1., sy + top * s, b.w * s - 2., (b.h - top) * s - 1.);
         let rt = self.rts.entry(b.id.clone()).or_default();
-        let loading = rt.web.as_ref().is_some_and(|w| w.loading);
-        // The page: made once there is an address, shown where nothing is over it.
+        let loading = rt.webs.get(&key).is_some_and(|w| w.loading);
+        // The open tab's page: made once there is an address, shown where nothing is over it.
         let mut note: Option<String> = None;
         let mut snap: Option<std::sync::Arc<gpui::Image>> = None;
         let tx = self.web_tx.clone();
         if b.url.is_empty() {
-            rt.web = None;
+            rt.webs.remove(&key);
             note = Some("在地址栏输入网址或要搜索的词".into());
         } else if s < LOD_SCALE {
             note = Some(String::new());
         } else {
-            if self.rts.get(&b.id).is_some_and(|r| r.web.is_none() && r.web_err.is_none()) {
-                let made = self.make_webview(&b.id, &b.url, window);
+            if self.rts.get(&b.id).is_some_and(|r| !r.webs.contains_key(&key) && r.web_err.is_none()) {
+                let made = self.make_webview(&b.id, key, &b.url, window);
                 let rt = self.rts.entry(b.id.clone()).or_default();
                 match made {
                     Ok(view) => {
-                        rt.web = Some(WebRt {
+                        rt.webs.insert(key, WebRt {
                             view,
                             snap: None,
                             snapping: false,
                             zoom: 1.,
+                            alpha: 1.,
                             bounds: (0., 0., 0., 0.),
                             visible: false,
                             loading: true,
-                        })
+                        });
                     }
                     Err(e) => rt.web_err = Some(format!("网页视图没能创建：{e}")),
                 }
@@ -282,9 +320,10 @@ impl DeckView {
             let hidden = self.web_hidden(&b.id, page);
             let zooming = self.zooming();
             let rt = self.rts.entry(b.id.clone()).or_default();
+            let now = Instant::now();
             if let Some(e) = &rt.web_err {
                 note = Some(e.clone());
-            } else if let Some(web) = rt.web.as_mut() {
+            } else if let Some(web) = rt.webs.get_mut(&key) {
                 match hidden {
                     None => {
                         if web.bounds != page {
@@ -298,17 +337,31 @@ impl DeckView {
                             let _ = web.view.zoom(s as f64);
                             web.zoom = s;
                         }
+                        // Coming into sight: its picture stays under while the live page fades in.
+                        if !web.visible && web.snap.is_some() {
+                            rt.sharpen.begin(now);
+                        }
+                        let fading = rt.sharpen.tick(now);
+                        let alpha = rt.sharpen.alpha(now);
+                        if (web.alpha - alpha).abs() > 1e-3 {
+                            set_alpha(&web.view, alpha);
+                            web.alpha = alpha;
+                        }
+                        if fading {
+                            snap = web.snap.clone();
+                            self.animating = true;
+                        }
                         if !web.visible {
                             let _ = web.view.set_visible(true);
                             web.visible = true;
                         }
-                        self.web_shown.insert(b.id.clone());
+                        self.web_shown.insert(key);
                     }
                     Some(why) => {
                         // Going out of sight: a picture of it takes its place.
-                        if web.visible && !web.snapping {
+                        if web.visible && !web.snapping && (!zooming || web.snap.is_none()) {
                             web.snapping = true;
-                            take_snapshot(&web.view, &b.id, &tx);
+                            take_snapshot(&web.view, &b.id, key, &tx);
                         }
                         snap = web.snap.clone();
                         note = Some(why.to_string());
@@ -353,7 +406,7 @@ impl DeckView {
                     .into_any_element()
             }
         };
-        let (i1, i2, i3) = (id.clone(), id.clone(), id.clone());
+        let (i1, i2, i3, i4) = (id.clone(), id.clone(), id.clone(), id.clone());
         let bar = div()
             .h(px(BAR_H * s))
             .w_full()
@@ -367,21 +420,21 @@ impl DeckView {
             .border_color(t.border)
             .child(bar_button(SharedString::from(format!("back:{id}")), "arrow_left", s, t).on_click(cx.listener(
                 move |d, _, _, _| {
-                    if let Some(w) = d.rts.get(&i1).and_then(|r| r.web.as_ref()) {
+                    if let Some(w) = d.open_web(&i1) {
                         let _ = w.view.evaluate_script("history.back()");
                     }
                 },
             )))
             .child(bar_button(SharedString::from(format!("fwd:{id}")), "arrow_right", s, t).on_click(cx.listener(
                 move |d, _, _, _| {
-                    if let Some(w) = d.rts.get(&i2).and_then(|r| r.web.as_ref()) {
+                    if let Some(w) = d.open_web(&i2) {
                         let _ = w.view.evaluate_script("history.forward()");
                     }
                 },
             )))
             .child(bar_button(SharedString::from(format!("reload:{id}")), if loading { "x" } else { "reload" }, s, t).on_click(
                 cx.listener(move |d, _, _, _| {
-                    if let Some(w) = d.rts.get(&i3).and_then(|r| r.web.as_ref()) {
+                    if let Some(w) = d.open_web(&i3) {
                         let _ = if w.loading { w.view.evaluate_script("window.stop()") } else { w.view.reload() };
                     }
                 }),
@@ -398,7 +451,17 @@ impl DeckView {
                     .bg(t.surface_hover)
                     .text_size(px(12. * s))
                     .child(address),
-            );
+            )
+            .child(bar_button(SharedString::from(format!("newtab:{id}")), "plus", s, t).on_click(cx.listener(
+                move |d, _, window, cx| {
+                    if let Some(b) = d.m.block_mut(&i4) {
+                        b.open_tab(String::new(), true);
+                        d.request_save(cx);
+                        d.start_editing(&i4, EditPart::Address, window, cx);
+                    }
+                },
+            )));
+        let strip = (b.tabs.len() > 1).then(|| self.tab_strip(b, t, s, cx));
         let backdrop: Hsla = if t.dark { gpui::rgb(0x1a1b1f).into() } else { gpui::rgb(0xf3f4f6).into() };
         if let Some(img) = snap {
             // The page's picture, scaled with the block; why it is a picture, faintly.
@@ -407,6 +470,7 @@ impl DeckView {
                 .size_full()
                 .flex()
                 .flex_col()
+                .children(strip)
                 .child(bar)
                 .child(
                     div()
@@ -436,6 +500,7 @@ impl DeckView {
             .size_full()
             .flex()
             .flex_col()
+            .children(strip)
             .child(bar)
             .child(
                 div()
@@ -456,28 +521,93 @@ impl DeckView {
             .into_any_element()
     }
 
-    /// Hides the pages this frame did not show: out of view, covered, gone.
-    pub(super) fn hide_unshown_pages(&mut self) {
-        let shown = std::mem::take(&mut self.web_shown);
-        for (id, rt) in self.rts.iter_mut() {
-            if let Some(web) = rt.web.as_mut()
-                && web.visible
-                && !shown.contains(id)
-            {
-                let _ = web.view.set_visible(false);
-                web.visible = false;
-            }
-        }
+    /// The tabs, over the bar: click one to open it, × to close it.
+    fn tab_strip(&self, b: &Block, t: &Theme, s: f32, cx: &mut Context<Self>) -> AnyElement {
+        let tabs = b.tabs.iter().enumerate().map(|(i, tab)| {
+            let open = i == b.tab;
+            let (pick, shut) = (b.id.clone(), b.id.clone());
+            div()
+                .id(SharedString::from(format!("tab:{}:{}", b.id, tab.key)))
+                .flex_1()
+                .min_w_0()
+                .max_w(px(200. * s))
+                .h(px((TABS_H - 6.) * s))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(2. * s))
+                .pl(px(9. * s))
+                .pr(px(3. * s))
+                .rounded(px(6. * s))
+                .text_size(px(11.5 * s))
+                .when(open, |d| d.bg(t.surface_hover).text_color(t.text))
+                .when(!open, |d| d.text_color(t.muted).cursor_pointer().hover(|d| d.bg(t.surface_hover.opacity(0.6))))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(tab.label()))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("tabx:{}:{}", b.id, tab.key)))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(16. * s))
+                        .rounded(px(4. * s))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(t.border))
+                        .child(svg().path(icons::path("x")).size(px(10. * s)).text_color(t.muted))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |d, _, _, cx| {
+                            cx.stop_propagation();
+                            d.close_tab(&shut, i, cx);
+                        })),
+                )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |d, _, _, cx| {
+                    if let Some(b) = d.m.block_mut(&pick)
+                        && b.tab != i
+                    {
+                        b.select_tab(i);
+                        d.request_save(cx);
+                        cx.notify();
+                    }
+                }))
+        });
+        div()
+            .h(px(TABS_H * s))
+            .w_full()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(3. * s))
+            .px(px(6. * s))
+            .border_b_1()
+            .border_color(t.border)
+            .children(tabs)
+            .into_any_element()
     }
 
-    /// Notes that the canvas zoomed now, for `zooming`; a frame comes once the zoom rests.
-    pub(super) fn note_zoom(&mut self, cx: &mut Context<Self>) {
-        self.zoomed_at = Some(Instant::now());
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(450)).await;
-            let _ = this.update(cx, |_, cx| cx.notify());
-        })
-        .detach();
+    /// Closes a block's tab i and lets its page go.
+    fn close_tab(&mut self, id: &str, i: usize, cx: &mut Context<Self>) {
+        let Some(gone) = self.m.block_mut(id).and_then(|b| b.close_tab(i)) else { return };
+        if let Some(rt) = self.rts.get_mut(id) {
+            rt.webs.remove(&gone.key);
+        }
+        self.request_save(cx);
+        cx.notify();
+    }
+
+    /// Hides the pages this frame did not show: out of view, covered, gone, or in a tab not open.
+    pub(super) fn hide_unshown_pages(&mut self) {
+        let shown = std::mem::take(&mut self.web_shown);
+        for rt in self.rts.values_mut() {
+            for (key, web) in rt.webs.iter_mut() {
+                if web.visible && !shown.contains(key) {
+                    let _ = web.view.set_visible(false);
+                    web.visible = false;
+                }
+            }
+        }
     }
 }
 

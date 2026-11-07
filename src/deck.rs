@@ -25,7 +25,9 @@ use gpui::{
 };
 
 mod browser;
+mod sharpen;
 mod stack;
+mod zoomlayer;
 
 use crate::editor::{Editor, EditorEvent};
 use crate::lifespan::{self, LIFE_CHOICES};
@@ -38,7 +40,6 @@ use crate::model::{
 use crate::recents::short_path;
 use crate::tape;
 use crate::terminal::{self, Terminal, TerminalEvent};
-use crate::termstate::{self, TermState};
 use crate::theme::{MdColors, Paper, Theme};
 use crate::{icons, preview};
 
@@ -76,8 +77,6 @@ const CHROME_LEFT: f32 = 84.0;
 const CHROME_TOP: f32 = 8.0;
 /// How long after its last move a scroll the canvas took is still the canvas's.
 const GESTURE_HOLD: Duration = Duration::from_millis(300);
-/// How long a zoom rests before it glides to the nearest zoom level.
-const ZOOM_REST: Duration = Duration::from_millis(150);
 
 /// What the deck asks of the app.
 pub enum DeckEvent {
@@ -118,6 +117,15 @@ enum Popup {
     ChartType { id: String, at: (f32, f32) },
 }
 
+/// Whether a marquee from `from` to `to` (world) has grown past a click and
+/// lies over r (window points).
+fn marquee_over(cam: model::Camera, from: (f32, f32), to: (f32, f32), r: (f32, f32, f32, f32)) -> bool {
+    let (ax, ay) = cam.to_screen(from.0, from.1);
+    let (bx, by) = cam.to_screen(to.0, to.1);
+    let (x0, x1, y0, y1) = (ax.min(bx), ax.max(bx), ay.min(by), ay.max(by));
+    (x1 - x0 > 3. || y1 - y0 > 3.) && x0 < r.0 + r.2 && x1 > r.0 && y0 < r.1 + r.3 && y1 > r.1
+}
+
 /// A block's state between frames: never saved.
 #[derive(Default)]
 struct Runtime {
@@ -131,16 +139,30 @@ struct Runtime {
     /// A PDF open for its preview, and its page as last rendered: page, width, image.
     pdf: Option<Result<Arc<crate::pdf::Doc>, String>>,
     pdf_img: Option<(usize, usize, Arc<gpui::RenderImage>)>,
+    /// The page as rendered before, under the new one while that fades in.
+    pdf_prev: Option<Arc<gpui::RenderImage>>,
     pdf_rendering: bool,
+    /// Parsed Markdown AST cached across frames while text and palette are unchanged.
+    md_cache: Option<(String, markdown::Parsed)>,
+    /// Parsed Markdown AST for a stack card's snippet face.
+    face_md_cache: Option<(String, markdown::Parsed)>,
+    /// Parsed chart table cached across frames while `b.text` is unchanged.
+    chart_cache: Option<(String, Arc<crate::chart::Data>)>,
     list: UniformListScrollHandle,
     term: Option<Entity<Terminal>>,
     term_err: Option<String>,
-    term_used: bool,
     _term_sub: Option<Subscription>,
     memo: MemoRt,
     stack: stack::StackRt,
-    web: Option<browser::WebRt>,
+    /// A browser's pages, one for each tab opened so far, by the tab's key.
+    webs: HashMap<u64, browser::WebRt>,
     web_err: Option<String>,
+    /// The block was last drawn zoomed out, as its frame and title alone.
+    lod: bool,
+    /// The body fading in on coming back from LOD.
+    appear: sharpen::Sharpen,
+    /// A sharper version of the content (a bitmap, a native view) fading in over the old.
+    sharpen: sharpen::Sharpen,
 }
 
 struct WordDoc {
@@ -180,6 +202,14 @@ struct MemoRt {
 
 pub struct DeckView {
     pub m: Model,
+    /// The camera the blocks layer is currently laid out at; frozen during zoom gestures.
+    pub lay: model::Camera,
+    /// Until when a wheel/pinch zoom is considered in-flight.
+    pub zoom_settle: Option<Instant>,
+    snap: zoomlayer::ZoomSnap,
+    zoom_timer_active: bool,
+    /// Something drawn this frame is fading: the next frame is asked for.
+    animating: bool,
     focus: FocusHandle,
     rts: HashMap<String, Runtime>,
     view: (f32, f32),
@@ -221,9 +251,13 @@ pub struct DeckView {
     /// What the browser blocks' pages say, from WebKit's callbacks.
     web_tx: smol::channel::Sender<browser::WebEvent>,
     /// The pages this frame showed; the others are hidden at its end.
-    web_shown: HashSet<String>,
+    /// The tabs whose pages this frame showed, by key.
+    web_shown: HashSet<u64>,
     /// Where this frame lays the blocks out, back to front: what covers a page.
     frame_rects: Vec<(String, (f32, f32, f32, f32))>,
+    /// The resize handles this frame drew, in window points: a press on one
+    /// over a web page comes to the deck (see `webfocus`).
+    resize_corners: Vec<[f32; 4]>,
     /// When the canvas last zoomed by a gesture.
     zoomed_at: Option<Instant>,
 }
@@ -243,8 +277,13 @@ impl DeckView {
         let pinches = crate::pinch::channel();
         while pinches.try_recv().is_ok() {}
         cx.spawn(async move |this, cx| {
-            while let Ok((x, y, k)) = pinches.recv().await {
+            while let Ok((mut x, mut y, mut k)) = pinches.recv().await {
                 if this.update(cx, |d, cx| {
+                    while let Ok((nx, ny, nk)) = pinches.try_recv() {
+                        x = nx;
+                        y = ny;
+                        k *= nk;
+                    }
                     d.zoom_at(x, y, k, cx);
                     cx.notify();
                 }).is_err() {
@@ -262,8 +301,14 @@ impl DeckView {
             }
         })
         .detach();
+        let lay = m.cam;
         DeckView {
             m,
+            lay,
+            zoom_settle: None,
+            snap: zoomlayer::ZoomSnap::default(),
+            zoom_timer_active: false,
+            animating: false,
             focus: cx.focus_handle(),
             rts: HashMap::new(),
             view: (1280.0, 800.0),
@@ -293,6 +338,7 @@ impl DeckView {
             web_tx,
             web_shown: HashSet::new(),
             frame_rects: Vec::new(),
+            resize_corners: Vec::new(),
             zoomed_at: None,
         }
     }
@@ -399,8 +445,17 @@ impl DeckView {
                 rt.word = None;
                 rt.pdf = None;
                 rt.pdf_img = None;
+                rt.md_cache = None;
+                rt.face_md_cache = None;
+                rt.chart_cache = None;
                 rt.memo = MemoRt::default();
-                rt.web = None;
+                // The open tab's page goes again where it was sent; the other tabs keep theirs.
+                match self.m.block(&id).and_then(|b| b.tabs.get(b.tab)) {
+                    Some(tab) => {
+                        rt.webs.remove(&tab.key);
+                    }
+                    None => rt.webs.clear(),
+                }
                 rt.web_err = None;
             }
         }
@@ -431,11 +486,10 @@ impl DeckView {
         .detach();
     }
 
-    /// Keeps what each used terminal shows, saves the deck, and hangs the shells up.
+    /// Saves the deck and hangs the shells up.
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.stop_mcp();
         self.stop_editing(cx);
-        self.keep_terminals(cx);
         let ids: Vec<String> = self.m.blocks.iter().map(|b| b.id.clone()).collect();
         for id in ids {
             self.flush_memo(&id);
@@ -449,29 +503,10 @@ impl DeckView {
         }
     }
 
-    fn keep_terminals(&mut self, cx: &mut Context<Self>) {
-        let ids: Vec<String> = self.m.blocks.iter().map(|b| b.id.clone()).collect();
-        for id in ids {
-            self.keep_terminal(&id, cx);
-        }
-    }
-
-    /// Keeps what a terminal the user typed into shows, and where its shell is.
-    fn keep_terminal(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(rt) = self.rts.get(id) else { return };
-        let (Some(t), true) = (rt.term.as_ref(), rt.term_used) else { return };
-        let (history, dir) = t.read_with(cx, |t, _| (t.history(), t.dir()));
-        let dir = dir.map(|d| self.m.link_path(&d)).unwrap_or_default();
-        if let Some(b) = self.m.block_mut(id) {
-            b.term = Some(TermState::new(history, dir));
-        }
-    }
-
     /// Lets go of what blocks that left the deck hold.
     fn hang_up_gone(&mut self, cx: &mut Context<Self>) {
         let gone: Vec<String> = std::mem::take(&mut self.m.hung_up);
         for id in gone {
-            self.keep_terminal(&id, cx);
             self.flush_memo(&id);
             if let Some(rt) = self.rts.remove(&id)
                 && let Some(t) = rt.term
@@ -487,49 +522,32 @@ impl DeckView {
     // ---- the camera ----
 
     fn zoom_at(&mut self, x: f32, y: f32, factor: f32, cx: &mut Context<Self>) {
-        self.m.zoom_at(x, y, factor);
-        self.note_zoom(cx);
+        self.last_pointer = (x, y);
         self.zoom_anchor = (x, y);
         self.zoom_gen += 1;
-        let gen_now = self.zoom_gen;
-        // Once the zoom rests, it glides to the nearest zoom level.
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(ZOOM_REST).await;
-            for step in 1..=8 {
-                let go_on = this
-                    .update(cx, |d, cx| {
-                        if d.zoom_gen != gen_now {
-                            return false;
-                        }
-                        let to = model::zoom_level(d.m.cam.s);
-                        let k = (to / d.m.cam.s).powf(1.0 / (9 - step) as f32);
-                        let (ax, ay) = d.zoom_anchor;
-                        d.m.zoom_at(ax, ay, k);
-                        if step == 8 {
-                            d.m.cam.s = to;
-                        }
-                        cx.notify();
-                        true
-                    })
-                    .unwrap_or(false);
-                if !go_on {
-                    break;
-                }
-                cx.background_executor().timer(Duration::from_millis(15)).await;
-            }
-        }).detach();
+        self.m.zoom_at(x, y, factor);
+        self.note_zoom(cx);
     }
 
     fn fit_all(&mut self, _: &FitAll, _: &mut Window, cx: &mut Context<Self>) {
         self.m.fit_all(self.view.0, self.view.1);
+        self.lay = self.m.cam;
+        self.zoom_settle = None;
+        self.snap.on = false;
         cx.notify();
     }
     fn zoom_in(&mut self, _: &ZoomIn, _: &mut Window, cx: &mut Context<Self>) {
         self.m.zoom_step(self.view.0 / 2.0, self.view.1 / 2.0, 1);
+        self.lay = self.m.cam;
+        self.zoom_settle = None;
+        self.snap.on = false;
         cx.notify();
     }
     fn zoom_out(&mut self, _: &ZoomOut, _: &mut Window, cx: &mut Context<Self>) {
         self.m.zoom_step(self.view.0 / 2.0, self.view.1 / 2.0, -1);
+        self.lay = self.m.cam;
+        self.zoom_settle = None;
+        self.snap.on = false;
         cx.notify();
     }
 
@@ -723,6 +741,7 @@ impl DeckView {
             }
         });
         let f = editor.focus_handle(cx);
+        crate::webfocus::release();
         window.focus(&f);
         self.editing = Some(Editing { id: id.to_string(), part, editor, from_title, _sub: sub });
         cx.notify();
@@ -740,6 +759,7 @@ impl DeckView {
                     && url != b.url
                 {
                     b.url = url.clone();
+                    b.ensure_tabs();
                     self.web_go(&e.id, &url);
                 }
             }
@@ -1037,7 +1057,12 @@ impl DeckView {
                 let rt = d.rts.entry(id).or_default();
                 rt.pdf_rendering = false;
                 match r {
-                    Ok(img) => rt.pdf_img = Some((page, width, img)),
+                    Ok(img) => {
+                        // The sharper page fades in over the one it replaces.
+                        rt.pdf_prev = rt.pdf_img.take().map(|(_, _, old)| old);
+                        rt.pdf_img = Some((page, width, img));
+                        rt.sharpen.begin(Instant::now());
+                    }
                     Err(e) => rt.pdf = Some(Err(e)),
                 }
                 cx.notify();
@@ -1047,7 +1072,7 @@ impl DeckView {
     }
 
     fn pdf_body(&mut self, b: &Block, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let s = self.m.cam.s;
+        let s = self.content_scale();
         self.open_pdf(&b.id, cx);
         let doc = match self.rts.get(&b.id).and_then(|r| r.pdf.clone()) {
             None => return message("加载中…".into(), t.muted, s),
@@ -1056,10 +1081,23 @@ impl DeckView {
         };
         let pages = doc.pages();
         let page = (b.page.max(0) as usize).min(pages - 1);
-        self.render_pdf(&b.id, page, crate::pdf::width_for(b.w * s), cx);
-        let img_el = self.rts.get(&b.id).and_then(|r| r.pdf_img.clone()).map(|(_, _, im)| {
-            img(gpui::ImageSource::Render(im)).size_full().object_fit(ObjectFit::Contain)
+        let has_img = self.rts.get(&b.id).is_some_and(|r| r.pdf_img.is_some());
+        if !self.zooming() || !has_img {
+            let render_s = if self.lay.s > 0.0 { self.lay.s } else { s };
+            self.render_pdf(&b.id, page, crate::pdf::width_for(b.w * render_s), cx);
+        }
+        let now = Instant::now();
+        let rt = self.rts.entry(b.id.clone()).or_default();
+        let fading = rt.sharpen.tick(now);
+        if !fading {
+            rt.pdf_prev = None;
+        }
+        let alpha = rt.sharpen.alpha(now);
+        let pic = |im| img(gpui::ImageSource::Render(im)).size_full().object_fit(ObjectFit::Contain).into_any_element();
+        let img_el = rt.pdf_img.clone().map(|(_, _, im)| {
+            if fading { sharpen::crossfade(rt.pdf_prev.clone().map(pic), pic(im), alpha).into_any_element() } else { pic(im) }
         });
+        self.animating |= fading;
         let ps = s.min(1.5);
         let turn = |key: &str, glyph: &'static str, to: Option<usize>, cx: &mut Context<Self>| {
             let id = b.id.clone();
@@ -1117,17 +1155,15 @@ impl DeckView {
             .into_any_element()
     }
 
-    /// Starts the block's shell: where its last one was, under what it showed.
+    /// Starts the block's shell in the deck's folder.
     fn start_terminal(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(b) = self.m.block(id) else { return };
         let rt = self.rts.entry(id.to_string()).or_default();
         if rt.term.is_some() || rt.term_err.is_some() {
             return;
         }
-        let dir = termstate::term_dir(&self.m.root, b.term.as_ref());
-        let history = termstate::restored(b.term.as_ref());
         let (cols, rows) = terminal::grid_for(b.w, b.h - TITLE_H);
-        let term = match Terminal::spawn(&dir, cols, rows, &history) {
+        let term = match Terminal::spawn(&self.m.root, cols, rows) {
             Ok(make) => cx.new(make),
             Err(e) => {
                 rt.term_err = Some(format!("终端没能启动：{e}"));
@@ -1147,11 +1183,6 @@ impl DeckView {
                         b.title = format!("{} — 已退出 ({code})", b.title);
                     }
                 }
-                TerminalEvent::Used => {
-                    if let Some(rt) = d.rts.get_mut(&eid) {
-                        rt.term_used = true;
-                    }
-                }
             }
             cx.notify();
         });
@@ -1166,9 +1197,7 @@ impl DeckView {
     fn on_canvas_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
         self.popup = None;
-        window.focus(&self.focus);
-        self.active = None;
-        self.stop_editing(cx);
+        self.focus_block(None, window, cx);
         if y < DRAG_BAND {
             if ev.click_count == 2 {
                 window.titlebar_double_click();
@@ -1387,13 +1416,39 @@ impl DeckView {
                     window.focus(&self.focus);
                     self.stack_press(id, x, y);
                 }
-                _ => {
-                    self.active = Some(id.to_string());
-                    window.focus(&self.focus);
-                }
+                _ => self.focus_block(Some(id), window, cx),
             }
         }
         cx.notify();
+    }
+
+    /// Makes `id` the block worked in, or none: the one way a block gains or
+    /// loses focus. Editing elsewhere ends, and the keyboard goes to the
+    /// block's terminal or to the canvas. Nothing else changes: losing focus
+    /// never hides, reloads or redraws a block's content, so no kind needs
+    /// blur handling of its own. (A page clicked into gives back the keyboard
+    /// and the wheel on the next press elsewhere, in `webfocus`.)
+    fn focus_block(&mut self, id: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.as_ref().is_some_and(|e| Some(e.id.as_str()) != id) {
+            self.stop_editing(cx);
+        }
+        self.active = id.map(str::to_string);
+        crate::webfocus::release();
+        match id.and_then(|i| self.rts.get(i)).and_then(|r| r.term.clone()) {
+            Some(t) => window.focus(&t.focus_handle(cx)),
+            None => window.focus(&self.focus),
+        }
+    }
+
+    /// Whether a canvas gesture under way changes what lies at r (window
+    /// points): a marquee grown over it, or a pan that has moved the canvas.
+    /// A press alone changes nothing, so it hides no page.
+    fn gesture_covers(&self, r: (f32, f32, f32, f32)) -> bool {
+        match &self.drag {
+            Some(Drag::Pan { cam, .. }) => cam.x != self.m.cam.x || cam.y != self.m.cam.y,
+            Some(Drag::Marquee { from, to }) => marquee_over(self.m.cam, *from, *to, r),
+            _ => false,
+        }
     }
 
     fn on_tape_down(&mut self, id: &str, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1433,14 +1488,9 @@ impl DeckView {
             cx.notify();
             return;
         }
-        self.stop_editing(cx);
         self.m.sel.clear();
-        self.active = Some(id.to_string());
         self.canvas_scroll_until = None;
-        match self.rts.get(id).and_then(|r| r.term.as_ref()) {
-            Some(t) => window.focus(&t.focus_handle(cx)),
-            None => window.focus(&self.focus),
-        }
+        self.focus_block(Some(id), window, cx);
         cx.notify();
     }
 
@@ -1476,6 +1526,54 @@ impl DeckView {
                 self.active = Some(id.clone());
             }
         }
+    }
+
+    pub(super) fn parsed_markdown(&mut self, id: &str, src: &str, c: &MdColors, dark: bool) -> markdown::Parsed {
+        let rt = self.rts.entry(id.to_string()).or_default();
+        if let Some((cached_src, parsed)) = &rt.md_cache
+            && cached_src == src
+            && parsed.is_dark() == dark
+        {
+            return parsed.clone();
+        }
+        let parsed = markdown::parse_doc(src, c, dark);
+        rt.md_cache = Some((src.to_string(), parsed.clone()));
+        parsed
+    }
+
+    pub(super) fn face_parsed_markdown(
+        &mut self,
+        b: &Block,
+        c: &MdColors,
+        dark: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<markdown::Parsed> {
+        let md = self.face_markdown(b, cx);
+        if md.is_empty() {
+            return None;
+        }
+        let rt = self.rts.entry(b.id.clone()).or_default();
+        if let Some((cached_src, parsed)) = &rt.face_md_cache
+            && cached_src == &md
+            && parsed.is_dark() == dark
+        {
+            return Some(parsed.clone());
+        }
+        let parsed = markdown::parse_doc(&md, c, dark);
+        rt.face_md_cache = Some((md, parsed.clone()));
+        Some(parsed)
+    }
+
+    pub(super) fn chart_data(&mut self, b: &Block) -> Arc<crate::chart::Data> {
+        let rt = self.rts.entry(b.id.clone()).or_default();
+        if let Some((cached_src, data)) = &rt.chart_cache
+            && cached_src == &b.text
+        {
+            return data.clone();
+        }
+        let data = Arc::new(crate::chart::parse(&b.text));
+        rt.chart_cache = Some((b.text.clone(), data.clone()));
+        data
     }
 
     fn block_view(&mut self, id: &str, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1564,8 +1662,11 @@ impl DeckView {
             card.border_1().border_color(t.border)
         };
 
+        let rt = self.rts.entry(id.to_string()).or_default();
         if s < LOD_SCALE {
+            rt.lod = true;
             // Zoomed out, a card is its frame and its title alone.
+            let cs = self.content_scale();
             let color = if note { paper.text } else { t.text };
             card = card.child(
                 div()
@@ -1573,7 +1674,7 @@ impl DeckView {
                     .px(px(8. * s))
                     .flex()
                     .items_center()
-                    .text_size(px(TITLE_FONT * s))
+                    .text_size(px(TITLE_FONT * cs))
                     .text_color(color)
                     .whitespace_nowrap()
                     .child(b.title.clone()),
@@ -1582,9 +1683,18 @@ impl DeckView {
             return out;
         }
 
+        // Back from LOD: the body fades in under the title it kept.
+        let now = Instant::now();
+        if std::mem::take(&mut rt.lod) {
+            rt.appear.begin(now);
+        }
+        let appearing = rt.appear.tick(now);
+        let appear = rt.appear.alpha(now);
+        self.animating |= appearing;
         card = card.child(self.title_bar(&b, t, &paper, window, cx));
         let body = self.body(&b, t, &paper, window, cx);
-        let mut body_box = div().relative().flex_1().w_full().min_h_0().overflow_hidden().child(body);
+        let mut body_box =
+            div().relative().flex_1().w_full().min_h_0().overflow_hidden().when(appearing, |d| d.opacity(appear)).child(body);
         if let Some(cover) = self.body_cover(&b, cx) {
             body_box = body_box.child(cover);
         }
@@ -1625,6 +1735,7 @@ impl DeckView {
         // The resize handle, in the bottom-right corner.
         let hs = (22. * s).max(14.);
         if w >= hs * 3. && h >= hs * 3. {
+            self.resize_corners.push([sx + w - hs, sy + h - hs, hs, hs]);
             let eid = id.to_string();
             let grip = t.muted;
             let resizing = matches!(&self.drag, Some(Drag::Resize { id: d, .. }) if d == id);
@@ -1656,6 +1767,7 @@ impl DeckView {
 
     fn title_bar(&mut self, b: &Block, t: &Theme, paper: &Paper, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let s = self.m.cam.s;
+        let cs = self.content_scale();
         let note = b.kind == BlockKind::Note;
         let color = if note { paper.text } else { t.text };
         let mut bar = div()
@@ -1667,12 +1779,12 @@ impl DeckView {
             .items_center()
             .gap(px(6. * s))
             .px(px(if note { 10. } else { 8. } * s))
-            .text_size(px(TITLE_FONT * s))
+            .text_size(px(TITLE_FONT * cs))
             .text_color(color)
             .when(note, |d| d.bg(paper.header).font_weight(FontWeight::SEMIBOLD));
         if let Some(ed) = self.editing(&b.id, EditPart::Title).cloned() {
             ed.update(cx, |e, _| {
-                e.font_size = TITLE_FONT * s;
+                e.font_size = TITLE_FONT * cs;
                 e.color = color;
                 e.muted = t.muted;
                 e.accent = t.accent;
@@ -1689,7 +1801,7 @@ impl DeckView {
             bar = bar.child(self.chart_controls(b, t, cx));
         } else {
             bar = bar.child(
-                div().text_size(px(10. * s)).text_color(t.muted).whitespace_nowrap().child(b.kind.label()),
+                div().text_size(px(10. * cs)).text_color(t.muted).whitespace_nowrap().child(b.kind.label()),
             );
         }
         bar.into_any_element()
@@ -1697,7 +1809,7 @@ impl DeckView {
 
     /// A chart's type chip (a menu of types) and its table button.
     fn chart_controls(&mut self, b: &Block, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let s = self.m.cam.s;
+        let s = self.content_scale();
         let kind = crate::chart::of(&b.chart);
         let editing = self.editing(&b.id, EditPart::Body).is_some();
         let (id1, id2) = (b.id.clone(), b.id.clone());
@@ -1760,7 +1872,7 @@ impl DeckView {
 
     /// How long a QuickLook has left; a click picks another span.
     fn life_chip(&mut self, b: &Block, paper: &Paper, cx: &mut Context<Self>) -> AnyElement {
-        let s = self.m.cam.s;
+        let s = self.content_scale();
         let label = if b.expires <= 0 { "∞".to_string() } else { lifespan::life_left(b.expires - self.m.now_ms()) };
         let id = b.id.clone();
         div()
@@ -1793,7 +1905,7 @@ impl DeckView {
     }
 
     fn body(&mut self, b: &Block, t: &Theme, paper: &Paper, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let s = self.m.cam.s;
+        let s = self.content_scale();
         match b.kind {
             BlockKind::Note => {
                 if let Some(ed) = self.editing(&b.id, EditPart::Body).cloned() {
@@ -1814,9 +1926,11 @@ impl DeckView {
                 let content = if b.text.is_empty() {
                     div().text_size(px(14. * s)).text_color(paper.muted).child("点击编辑，支持 Markdown").into_any_element()
                 } else {
-                    markdown::render(&b.text, 14. * s, &MdColors::of_paper(paper))
+                    let colors = MdColors::of_paper(paper);
+                    let parsed = self.parsed_markdown(&b.id, &b.text, &colors, t.dark);
+                    markdown::render_parsed(&parsed, 14. * s, &colors)
                 };
-                live_preview(&b.id, content, [12. * s, 14. * s, 26. * s, 14. * s])
+                live_preview(&b.id, content, [12. * s, 14. * s, 26. * s, 14. * s], b.w * s)
             }
             BlockKind::Memo => self.memo_body(b, t, cx),
             BlockKind::File => self.file_body(b, t, window, cx),
@@ -1843,7 +1957,8 @@ impl DeckView {
                 }
             }
             BlockKind::Chart => {
-                let chart = crate::chartview::render(&b.text, &b.chart, s, t);
+                let data = self.chart_data(b);
+                let chart = crate::chartview::render_data(data, &b.chart, s, t);
                 let Some(ed) = self.editing(&b.id, EditPart::Body).cloned() else { return chart };
                 ed.update(cx, |e, _| {
                     e.font_size = 12. * s;
@@ -1877,7 +1992,7 @@ impl DeckView {
     }
 
     fn memo_body(&mut self, b: &Block, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let s = self.m.cam.s;
+        let s = self.content_scale();
         let size = DOC_FONT * s;
         let editing = self.editing(&b.id, EditPart::Body).cloned();
         let rt = self.rts.entry(b.id.clone()).or_default();
@@ -1914,14 +2029,15 @@ impl DeckView {
             .child(if text.trim().is_empty() {
                 div().text_size(px(size)).text_color(t.muted).child("点击开始写，支持 Markdown").into_any_element()
             } else {
-                markdown::render(&text, size, &colors)
+                let parsed = self.parsed_markdown(&b.id, &text, &colors, t.dark);
+                markdown::render_parsed(&parsed, size, &colors)
             })
             .into_any_element();
-        live_preview(&b.id, content, [12. * s, 16. * s, 12. * s, 16. * s])
+        live_preview(&b.id, content, [12. * s, 16. * s, 12. * s, 16. * s], b.w * s)
     }
 
     fn file_body(&mut self, b: &Block, t: &Theme, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let s = self.m.cam.s;
+        let s = self.content_scale();
         let path = self.m.path_of(&b.path);
         match preview::of(&b.path) {
             preview::Kind::Image => div()
@@ -1934,17 +2050,22 @@ impl DeckView {
                 match self.rts.get(&b.id).and_then(|r| r.doc.clone()) {
                     None => message("加载中…".into(), t.muted, s),
                     Some(Err(e)) => message(e, t.danger, s),
-                    Some(Ok(text)) => live_preview(
-                        &b.id,
-                        markdown::render_with(&text, DOC_FONT * s, &MdColors::of_theme(t), &|url| {
-                            if url.starts_with("http://") || url.starts_with("https://") {
-                                return None;
-                            }
-                            let p = std::path::Path::new(url);
-                            Some(gpui::ImageSource::from(if p.is_absolute() { p.to_path_buf() } else { base.join(p) }))
-                        }),
-                        [12. * s, 16. * s, 12. * s, 16. * s],
-                    ),
+                    Some(Ok(text)) => {
+                        let colors = MdColors::of_theme(t);
+                        let parsed = self.parsed_markdown(&b.id, &text, &colors, t.dark);
+                        live_preview(
+                            &b.id,
+                            markdown::render_parsed_with(&parsed, DOC_FONT * s, &colors, &|url| {
+                                if url.starts_with("http://") || url.starts_with("https://") {
+                                    return None;
+                                }
+                                let p = std::path::Path::new(url);
+                                Some(gpui::ImageSource::from(if p.is_absolute() { p.to_path_buf() } else { base.join(p) }))
+                            }),
+                            [12. * s, 16. * s, 12. * s, 16. * s],
+                            b.w * s,
+                        )
+                    }
                 }
             }
             preview::Kind::Word => {
@@ -1955,13 +2076,16 @@ impl DeckView {
                     Some(Ok(doc)) if doc.markdown.trim().is_empty() => message("（空文档）".into(), t.muted, s),
                     Some(Ok(doc)) => {
                         let d2 = doc.clone();
+                        let colors = MdColors::of_theme(t);
+                        let parsed = self.parsed_markdown(&b.id, &doc.markdown, &colors, t.dark);
                         live_preview(
                             &b.id,
-                            markdown::render_with(&doc.markdown, DOC_FONT * s, &MdColors::of_theme(t), &move |url| {
+                            markdown::render_parsed_with(&parsed, DOC_FONT * s, &colors, &move |url| {
                                 let name = url.strip_prefix(crate::word::MEDIA_SCHEME)?;
                                 d2.media.get(name).map(|im| gpui::ImageSource::Image(im.clone()))
                             }),
                             [12. * s, 16. * s, 16. * s, 16. * s],
+                            b.w * s,
                         )
                     }
                 }
@@ -2269,12 +2393,12 @@ impl DeckView {
 }
 
 /// A QuickLook's or 笔记's body as it reads, in a scroller of its own.
-fn live_preview(id: &str, content: AnyElement, pad: [f32; 4]) -> AnyElement {
+fn live_preview(id: &str, content: AnyElement, pad: [f32; 4], outer_w: f32) -> AnyElement {
     div()
         .id(SharedString::from(format!("live:{id}")))
         .size_full()
         .overflow_y_scroll()
-        .child(div().pt(px(pad[0])).pr(px(pad[1])).pb(px(pad[2])).pl(px(pad[3])).child(content))
+        .child(div().w(px(outer_w.max(40.))).pt(px(pad[0])).pr(px(pad[1])).pb(px(pad[2])).pl(px(pad[3])).child(content))
         .into_any_element()
 }
 
@@ -2321,6 +2445,7 @@ impl Render for DeckView {
         let t = Theme::of(window);
         let vs = window.viewport_size();
         self.view = (f32::from(vs.width), f32::from(vs.height));
+        self.settle_layer(Some(window));
         self.track_active(window, cx);
         self.expire_notes(window, cx);
         self.hang_up_gone(cx);
@@ -2404,11 +2529,17 @@ impl Render for DeckView {
             })
             .collect();
         let mut blocks = Vec::new();
+        self.resize_corners.clear();
         for id in &visible {
             blocks.extend(self.block_view(id, &t, window, cx));
         }
 
         self.hide_unshown_pages();
+        if std::mem::take(&mut self.animating) {
+            window.request_animation_frame();
+        }
+        crate::webfocus::guard(window);
+        crate::webfocus::set_corners(self.resize_corners.clone());
 
         let marquee = match &self.drag {
             Some(Drag::Marquee { from, to }) => {
@@ -2491,5 +2622,100 @@ impl Render for DeckView {
             .children(self.stack_preview(&t, window, cx))
             .children(self.pluck_view(&t))
             .children(self.popup_view(&t, cx))
+    }
+}
+
+#[cfg(test)]
+mod zoom_tests {
+    use super::*;
+    use crate::model::{Camera, ZOOM_REBASE, on_level, zoom_level};
+
+    struct Harness {
+        m: Model,
+        lay: Camera,
+        zoom_settle: Option<Instant>,
+        snap: zoomlayer::ZoomSnap,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let m = Model::new(std::path::Path::new("/tmp"));
+            let lay = m.cam;
+            Self { m, lay, zoom_settle: None, snap: zoomlayer::ZoomSnap::default() }
+        }
+
+        fn zoom_gesture(&mut self) {
+            self.zoom_settle = Some(Instant::now() + zoomlayer::ZOOM_SETTLE_HOLD);
+        }
+
+        fn settle(&mut self) {
+            if self.lay.s == 0.0 {
+                self.lay = self.m.cam;
+            }
+            let now = Instant::now();
+            if self.zoom_settle.is_some_and(|u| now < u) {
+                self.snap.on = false;
+                if self.m.cam.s < self.lay.s * ZOOM_REBASE || self.m.cam.s > self.lay.s / ZOOM_REBASE {
+                    self.lay = Camera { x: self.m.cam.x, y: self.m.cam.y, s: zoom_level(self.m.cam.s) };
+                }
+                return;
+            }
+            self.zoom_settle = None;
+            if !self.snap.on && (self.lay.s - self.m.cam.s).abs() > 1e-6 && !on_level(self.m.cam.s) {
+                let to = zoom_level(self.m.cam.s);
+                self.m.zoom_at(640.0, 400.0, to / self.m.cam.s);
+                self.lay = self.m.cam;
+                return;
+            }
+            self.lay = self.m.cam;
+        }
+
+        fn layer_scale(&self) -> f32 {
+            self.m.cam.s / self.lay.s
+        }
+    }
+
+    #[test]
+    fn zoom_layer_holds_scale_during_gesture_and_snaps_on_rest() {
+        let mut h = Harness::new();
+        assert_eq!(h.lay.s, 1.0);
+
+        // Mid-gesture: `lay.s` stays frozen at 1.0 while `m.cam.s` moves.
+        for _ in 0..8 {
+            h.m.zoom_at(640.0, 400.0, 0.96);
+            h.zoom_gesture();
+            h.settle();
+        }
+        assert_eq!(h.lay.s, 1.0);
+        assert!((h.layer_scale() - h.m.cam.s).abs() < 1e-6);
+
+        // Crossing `ZOOM_REBASE` (0.5x) rebases `lay.s` to a discrete zoom level.
+        h.m.zoom_at(640.0, 400.0, 0.4 / h.m.cam.s);
+        h.zoom_gesture();
+        h.settle();
+        assert!(on_level(h.lay.s));
+        assert!((h.lay.s - zoom_level(0.4)).abs() < 1e-6);
+
+        // Once the gesture rests, `m.cam.s` snaps to the nearest zoom level and `lay == m.cam`.
+        h.m.zoom_at(640.0, 400.0, 0.77 / h.m.cam.s);
+        h.zoom_settle = Some(Instant::now() - Duration::from_millis(10));
+        h.settle();
+        assert!(on_level(h.m.cam.s));
+        assert_eq!(h.lay, h.m.cam);
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+
+    #[test]
+    fn a_click_on_the_canvas_hides_no_page() {
+        let cam = model::Camera { x: 0., y: 0., s: 1. };
+        let page = (100., 100., 400., 300.);
+        assert!(!marquee_over(cam, (50., 50.), (50., 50.), page), "a press alone");
+        assert!(!marquee_over(cam, (150., 150.), (151., 152.), page), "a press that slipped a pixel");
+        assert!(marquee_over(cam, (50., 50.), (200., 200.), page), "a marquee grown over the page");
+        assert!(!marquee_over(cam, (600., 50.), (700., 90.), page), "a marquee beside it");
     }
 }
