@@ -1679,31 +1679,43 @@ impl DeckView {
             card.border_1().border_color(t.border)
         };
 
+        // Zoomed out, the body is a mask of the card's own background; coming
+        // back, the mask fades off the content.
+        let mask = |d: Div| {
+            if note {
+                d.bg(linear_gradient(180., linear_color_stop(paper.top, 0.), linear_color_stop(paper.bottom, 1.)))
+            } else {
+                d.bg(t.surface)
+            }
+        };
         let rt = self.rts.entry(id.to_string()).or_default();
         if s < LOD_SCALE {
             rt.lod = true;
-            // Zoomed out, a card is its frame and its title alone.
+            // Zoomed out, a card is its frame, its title and the mask.
             let cs = self.content_scale();
             let color = if note { paper.text } else { t.text };
-            card = card.child(
-                div()
-                    .h(px(TITLE_H * s))
-                    .px(px(8. * s))
-                    .flex()
-                    .items_center()
-                    .text_size(px(TITLE_FONT * cs))
-                    .text_color(color)
-                    .whitespace_nowrap()
-                    .child(b.title.clone()),
-            );
+            card = card
+                .child(
+                    div()
+                        .h(px(TITLE_H * s))
+                        .flex_none()
+                        .px(px(8. * s))
+                        .flex()
+                        .items_center()
+                        .text_size(px(TITLE_FONT * cs))
+                        .text_color(color)
+                        .whitespace_nowrap()
+                        .child(b.title.clone()),
+                )
+                .child(mask(div().flex_1().w_full().min_h_0()));
             out.push(card.into_any_element());
             return out;
         }
 
-        // Back from LOD: the body fades in under the title it kept.
+        // Back from LOD: the mask over the body fades off under the title it kept.
         let now = Instant::now();
         if std::mem::take(&mut rt.lod) {
-            rt.appear.begin(now);
+            rt.appear.reveal(now);
         }
         let appearing = rt.appear.tick(now);
         let appear = rt.appear.alpha(now);
@@ -1720,7 +1732,6 @@ impl DeckView {
             .w_full()
             .min_h_0()
             .overflow_hidden()
-            .when(appearing, |d| d.opacity(appear))
             .child(body)
             .on_scroll_wheel(cx.listener(move |d, ev: &ScrollWheelEvent, _, cx| {
                 let zoom = ev.modifiers.platform || ev.modifiers.control;
@@ -1732,6 +1743,9 @@ impl DeckView {
             }));
         if let Some(cover) = self.body_cover(&b, cx) {
             body_box = body_box.child(cover);
+        }
+        if appearing {
+            body_box = body_box.child(mask(div().absolute().top_0().left_0().size_full()).opacity(1. - appear));
         }
         card = card.child(body_box);
         if note {

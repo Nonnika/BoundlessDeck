@@ -5,8 +5,10 @@
 //!
 //! - **Vector** (text and paths: note, memo, file, terminal, chart): drawn at
 //!   any scale in the same frame, sharp at once. The only change to fade is
-//!   coming back from LOD, where the body was not drawn at all; `block_view`
-//!   does that for every kind through `Runtime::appear`.
+//!   coming back from LOD, where the body is a mask of the block's own
+//!   background: the content is drawn whole at once and the mask over it
+//!   fades off, slower and eased in and out (`REVEAL_TIME`, `ease_in_out`);
+//!   `block_view` does that for every kind through `Runtime::appear`.
 //! - **Raster** (a PDF page): the sharper bitmap is made in the background.
 //!   The old one stays under, stretched, and the new one fades in over it
 //!   when it arrives (`Runtime::sharpen` and `crossfade`).
@@ -23,33 +25,45 @@ use gpui::{AnyElement, Div, ParentElement, Styled, div};
 /// How long a sharper version takes to fade in.
 pub(super) const SHARPEN_TIME: Duration = Duration::from_millis(180);
 
+/// How long the mask takes to fade off a body coming back from LOD.
+pub(super) const REVEAL_TIME: Duration = Duration::from_millis(450);
+
+/// An easing curve, f from 0 to 1.
+type Curve = fn(f32) -> f32;
+
 /// One fade in of a sharper version; idle when none is under way.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Sharpen {
-    at: Option<Instant>,
+    /// When it began, how long it takes, and its curve.
+    at: Option<(Instant, Duration, Curve)>,
 }
 
 impl Sharpen {
     /// Starts fading the new version in now, unless the system asks for less motion.
     pub fn begin(&mut self, now: Instant) {
-        self.start(now, !reduce_motion());
+        self.start(now, SHARPEN_TIME, ease, !reduce_motion());
     }
 
-    fn start(&mut self, now: Instant, animate: bool) {
-        self.at = animate.then_some(now);
+    /// Starts taking the mask off a body back from LOD now (`REVEAL_TIME`, eased in and out).
+    pub fn reveal(&mut self, now: Instant) {
+        self.start(now, REVEAL_TIME, ease_in_out, !reduce_motion());
+    }
+
+    fn start(&mut self, now: Instant, len: Duration, curve: Curve, animate: bool) {
+        self.at = animate.then_some((now, len, curve));
     }
 
     /// How far the new version has come in, eased: 0 just begun, 1 done or idle.
     pub fn alpha(&self, now: Instant) -> f32 {
         match self.at {
             None => 1.0,
-            Some(at) => ease(now.saturating_duration_since(at).as_secs_f32() / SHARPEN_TIME.as_secs_f32()),
+            Some((at, len, curve)) => curve(now.saturating_duration_since(at).as_secs_f32() / len.as_secs_f32()),
         }
     }
 
     /// Whether a fade is under way at now; a finished one is cleared.
     pub fn tick(&mut self, now: Instant) -> bool {
-        if self.at.is_some_and(|at| now < at + SHARPEN_TIME) {
+        if self.at.is_some_and(|(at, len, _)| now < at + len) {
             return true;
         }
         self.at = None;
@@ -61,6 +75,12 @@ impl Sharpen {
 pub(super) fn ease(f: f32) -> f32 {
     let f = f.clamp(0.0, 1.0);
     1.0 - (1.0 - f).powi(3)
+}
+
+/// Ease in and out (cubic), f from 0 to 1: starts and ends gently.
+pub(super) fn ease_in_out(f: f32) -> f32 {
+    let f = f.clamp(0.0, 1.0);
+    if f < 0.5 { 4.0 * f * f * f } else { 1.0 - (-2.0 * f + 2.0).powi(3) / 2.0 }
 }
 
 /// The new version at alpha over the old one, both filling the box.
@@ -93,7 +113,7 @@ mod tests {
         let mut f = Sharpen::default();
         assert!(!f.tick(now));
         assert_eq!(f.alpha(now), 1.0, "idle shows the content fully");
-        f.start(now, true);
+        f.start(now, SHARPEN_TIME, ease, true);
         assert!(f.tick(now));
         assert!(f.alpha(now) < 0.01);
         let mid = now + SHARPEN_TIME / 2;
@@ -107,20 +127,33 @@ mod tests {
     fn less_motion_skips_the_fade() {
         let now = Instant::now();
         let mut f = Sharpen::default();
-        f.start(now, false);
+        f.start(now, SHARPEN_TIME, ease, false);
         assert!(!f.tick(now));
         assert_eq!(f.alpha(now), 1.0);
     }
 
     #[test]
-    fn ease_is_clamped_and_monotonic() {
-        assert_eq!(ease(-1.0), 0.0);
-        assert_eq!(ease(2.0), 1.0);
-        let mut last = 0.0;
-        for i in 0..=20 {
-            let v = ease(i as f32 / 20.0);
-            assert!(v >= last);
-            last = v;
+    fn a_reveal_takes_its_own_time() {
+        let now = Instant::now();
+        let mut f = Sharpen::default();
+        f.start(now, REVEAL_TIME, ease_in_out, true);
+        assert!(f.tick(now + SHARPEN_TIME), "still under way past the sharpen time");
+        assert!(f.alpha(now + REVEAL_TIME / 4) < 0.25, "starts gently");
+        assert!(!f.tick(now + REVEAL_TIME));
+        assert_eq!(f.alpha(now + REVEAL_TIME), 1.0);
+    }
+
+    #[test]
+    fn eases_are_clamped_and_monotonic() {
+        for curve in [ease as Curve, ease_in_out] {
+            assert_eq!(curve(-1.0), 0.0);
+            assert_eq!(curve(2.0), 1.0);
+            let mut last = 0.0;
+            for i in 0..=20 {
+                let v = curve(i as f32 / 20.0);
+                assert!(v >= last);
+                last = v;
+            }
         }
     }
 }
