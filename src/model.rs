@@ -304,6 +304,8 @@ pub enum Change {
     Moves(Vec<MoveChange>),
     /// What stacks hold.
     Stack(Vec<StackEdit>),
+    /// Changes that undo as one, applied in order.
+    Group(Vec<Change>),
 }
 
 /// The deck's state without its window.
@@ -463,7 +465,17 @@ impl Model {
 
     pub fn undo_last(&mut self) {
         let Some(mut c) = self.undo.pop() else { return };
-        match &mut c {
+        self.reverse(&mut c);
+        self.redo.push(c);
+    }
+
+    fn reverse(&mut self, c: &mut Change) {
+        match c {
+            Change::Group(cs) => {
+                for c in cs.iter_mut().rev() {
+                    self.reverse(c);
+                }
+            }
             Change::Add { block, sel, .. } => {
                 if let Some(i) = self.index_of(&block.id) {
                     *block = self.detach(i);
@@ -484,12 +496,21 @@ impl Model {
             }
             Change::Stack(edits) => self.restore_stack_edits(edits, false),
         }
-        self.redo.push(c);
     }
 
     pub fn redo_last(&mut self) {
         let Some(mut c) = self.redo.pop() else { return };
-        match &mut c {
+        self.apply(&mut c);
+        self.undo.push(c);
+    }
+
+    fn apply(&mut self, c: &mut Change) {
+        match c {
+            Change::Group(cs) => {
+                for c in cs.iter_mut() {
+                    self.apply(c);
+                }
+            }
             Change::Add { block, index, .. } => {
                 self.attach(*index, block.clone());
                 self.sel = HashSet::from([block.id.clone()]);
@@ -509,7 +530,6 @@ impl Model {
             }
             Change::Stack(edits) => self.restore_stack_edits(edits, true),
         }
-        self.undo.push(c);
     }
 
     /// Records a move or resize done by hand, from the boxes before it, as one undoable change.
@@ -605,22 +625,66 @@ impl Model {
             .collect()
     }
 
-    /// Puts a block into a stack, as one undoable edit.
+    /// Puts a block into a stack, last, taking it from any other stack it
+    /// was in, as one undoable edit. A stack never holds a stack.
     pub fn stack_add(&mut self, stack: &str, id: &str) -> bool {
         let Some(st) = self.block(stack) else { return false };
         let Some(b) = self.block(id) else { return false };
-        if st.kind != BlockKind::Stack || b.kind == BlockKind::Stack || st.items.iter().any(|i| i == id) {
+        if st.kind != BlockKind::Stack || b.kind == BlockKind::Stack || stack == id {
             return false;
         }
+        if st.items.iter().any(|i| i == id) {
+            self.sel = HashSet::from([stack.to_string()]);
+            return false;
+        }
+        let mut edits: Vec<StackEdit> = self
+            .blocks
+            .iter()
+            .filter(|o| o.kind == BlockKind::Stack && o.id != stack && o.items.iter().any(|i| i == id))
+            .map(|o| StackEdit {
+                stack: o.id.clone(),
+                before: o.items.clone(),
+                after: o.items.iter().filter(|i| *i != id).cloned().collect(),
+            })
+            .collect();
         let before = st.items.clone();
-        let mut after = vec![id.to_string()];
-        after.extend(before.iter().cloned());
+        let mut after = before.clone();
+        after.push(id.to_string());
+        edits.push(StackEdit { stack: stack.to_string(), before, after });
         self.forget_redo();
-        let edit = StackEdit { stack: stack.to_string(), before, after };
-        self.restore_stack_edits(std::slice::from_ref(&edit), true);
-        self.undo.push(Change::Stack(vec![edit]));
-        self.sel.remove(id);
+        self.restore_stack_edits(&edits, true);
+        self.undo.push(Change::Stack(edits));
+        self.sel = HashSet::from([stack.to_string()]);
         self.hung_up.push(id.to_string());
+        true
+    }
+
+    /// Takes a block out of its stack onto the canvas at (x, y), selected:
+    /// the membership change and where it lands undo as one.
+    pub fn stack_take(&mut self, stack: &str, id: &str, x: f32, y: f32) -> bool {
+        let Some(st) = self.block(stack) else { return false };
+        if !st.items.iter().any(|i| i == id) {
+            return false;
+        }
+        let Some(g) = self.block(id).map(Geometry::of) else { return false };
+        let edit = StackEdit {
+            stack: stack.to_string(),
+            before: st.items.clone(),
+            after: st.items.iter().filter(|i| *i != id).cloned().collect(),
+        };
+        self.forget_redo();
+        self.restore_stack_edits(std::slice::from_ref(&edit), true);
+        let b = self.block_mut(id).expect("checked above");
+        b.x = x;
+        b.y = y;
+        let after = Geometry::of(b);
+        // One undo: the move and the stack edit go back together.
+        self.undo.push(Change::Group(vec![
+            Change::Stack(vec![edit]),
+            Change::Moves(vec![MoveChange { id: id.to_string(), before: g, after }]),
+        ]));
+        self.raise(id);
+        self.sel = HashSet::from([id.to_string()]);
         true
     }
 
@@ -957,6 +1021,27 @@ mod tests {
         assert!(!m.visible(1000.0, 1000.0).contains(&0));
         m.undo_last();
         assert!(m.visible(1000.0, 1000.0).contains(&0));
+    }
+
+    #[test]
+    fn stacks_take_blocks_from_each_other_and_give_them_back() {
+        let mut m = deck();
+        let (a, b) = (m.blocks[0].id.clone(), m.blocks[1].id.clone());
+        let s1 = m.add_block(Block::new(BlockKind::Stack));
+        let s2 = m.add_block(Block::new(BlockKind::Stack));
+        assert!(m.stack_add(&s1, &a));
+        assert!(m.stack_add(&s1, &b));
+        assert_eq!(m.block(&s1).unwrap().items, vec![a.clone(), b.clone()]);
+        assert!(!m.stack_add(&s1, &s2), "no stack in a stack");
+        assert!(m.stack_add(&s2, &a));
+        assert_eq!(m.block(&s1).unwrap().items, vec![b.clone()]);
+        assert!(m.stack_take(&s2, &a, 900.0, 900.0));
+        assert_eq!((m.block(&a).unwrap().x, m.stacked_ids().contains(&a)), (900.0, false));
+        m.undo_last();
+        assert!(m.block(&s2).unwrap().items.contains(&a));
+        assert_eq!(m.block(&a).unwrap().x, 0.0, "one undo puts it back in, where it was");
+        m.redo_last();
+        assert_eq!(m.block(&a).unwrap().x, 900.0);
     }
 
     #[test]

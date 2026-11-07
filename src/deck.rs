@@ -24,6 +24,8 @@ use gpui::{
     uniform_list,
 };
 
+mod stack;
+
 use crate::editor::{Editor, EditorEvent};
 use crate::lifespan::{self, LIFE_CHOICES};
 use crate::markdown;
@@ -102,6 +104,8 @@ enum Drag {
     Marquee { from: (f32, f32), to: (f32, f32) },
     Move { id: String, off: (f32, f32), from: (f32, f32), moved: bool, before: HashMap<String, Geometry> },
     Resize { id: String, from: (f32, f32), start: (f32, f32), before: Geometry },
+    /// A stack's card pressed, maybe plucked out (`DeckView::pluck`).
+    Pluck,
 }
 
 #[derive(Clone)]
@@ -130,6 +134,7 @@ struct Runtime {
     term_used: bool,
     _term_sub: Option<Subscription>,
     memo: MemoRt,
+    stack: stack::StackRt,
 }
 
 struct WordDoc {
@@ -178,6 +183,13 @@ pub struct DeckView {
     active: Option<String>,
     /// The block whose title bar the last press was on: a click without a drag edits its title.
     pressed_title: Option<String>,
+    /// The 块堆 a click opened: hovering it pushes its cards out.
+    stack_open: Option<String>,
+    /// The 块堆 whose long preview shows.
+    preview: Option<String>,
+    pluck: Option<stack::Pluck>,
+    /// Where the pointer was last seen, in the window.
+    last_pointer: (f32, f32),
     popup: Option<Popup>,
     /// The recent folders, for the workspace menu.
     pub workspaces: Vec<String>,
@@ -207,6 +219,10 @@ impl DeckView {
             editing: None,
             active: None,
             pressed_title: None,
+            stack_open: None,
+            preview: None,
+            pluck: None,
+            last_pointer: (0.0, 0.0),
             popup: None,
             workspaces,
             canvas_scroll_until: None,
@@ -983,9 +999,11 @@ impl DeckView {
 
     fn on_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
         let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
+        self.last_pointer = (x, y);
         let cam = self.m.cam;
         match &mut self.drag {
             None => return,
+            Some(Drag::Pluck) => self.pluck_move(x, y),
             Some(Drag::Pan { from, cam: c0 }) => {
                 self.m.cam.x = c0.x - (x - from.0) / cam.s;
                 self.m.cam.y = c0.y - (y - from.1) / cam.s;
@@ -1021,6 +1039,12 @@ impl DeckView {
         let Some(drag) = self.drag.take() else { return };
         match drag {
             Drag::Pan { .. } => {}
+            Drag::Pluck => {
+                if self.pluck_release(x, y) {
+                    self.after_edit(cx);
+                }
+                self.pluck = None;
+            }
             Drag::Marquee { from, to } => {
                 let (x0, y0) = (from.0.min(to.0), from.1.min(to.1));
                 self.m.select_in(x0, y0, (to.0 - from.0).abs(), (to.1 - from.1).abs());
@@ -1028,15 +1052,7 @@ impl DeckView {
             Drag::Move { id, moved, before, .. } => {
                 if moved {
                     // Let go over a stack: the stack takes it.
-                    let (wx, wy) = self.m.cam.to_world(x, y);
-                    let stack = self
-                        .m
-                        .blocks
-                        .iter()
-                        .rev()
-                        .filter(|b| b.kind == BlockKind::Stack && b.id != id && !self.m.stacked_ids().contains(&b.id))
-                        .find(|b| b.contains(wx, wy))
-                        .map(|b| b.id.clone());
+                    let stack = self.stack_at(x, y, &id);
                     match stack {
                         Some(st) if self.m.block(&id).is_some_and(|b| b.kind != BlockKind::Stack) => {
                             // Back where it was first, so an undo of the stack edit shows it there.
@@ -1171,6 +1187,10 @@ impl DeckView {
                     if ev.click_count >= 2 {
                         self.start_editing(id, EditPart::Body, window, cx);
                     }
+                }
+                BlockKind::Stack => {
+                    window.focus(&self.focus);
+                    self.stack_press(id, x, y);
                 }
                 _ => {
                     self.active = Some(id.to_string());
@@ -1575,7 +1595,7 @@ impl DeckView {
                 }
                 crate::chartview::render(&b.text, &b.chart, s, t)
             }
-            BlockKind::Stack => self.stack_body(b, t),
+            BlockKind::Stack => self.stack_body(b, t, window, cx),
             BlockKind::Browser => unsupported(
                 "浏览器 block 尚未在 Rust 版实现",
                 if b.url.is_empty() { "（未打开网页）".to_string() } else { b.url.clone() },
@@ -1583,36 +1603,6 @@ impl DeckView {
                 s,
             ),
         }
-    }
-
-    fn stack_body(&self, b: &Block, t: &Theme) -> AnyElement {
-        let s = self.m.cam.s;
-        let cards: Vec<&Block> = b.items.iter().filter_map(|id| self.m.block(id)).collect();
-        if cards.is_empty() {
-            return message("把 block 的胶带拖到这里放进块堆".into(), t.muted, s);
-        }
-        div()
-            .size_full()
-            .p(px(10. * s))
-            .flex()
-            .flex_col()
-            .gap(px(6. * s))
-            .children(cards.into_iter().take(12).map(|c| {
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6. * s))
-                    .px(px(8. * s))
-                    .py(px(5. * s))
-                    .rounded(px(6. * s))
-                    .bg(t.surface_hover)
-                    .text_size(px(12. * s))
-                    .child(svg().path(icons::path(kind_icon(c.kind))).size(px(13. * s)).text_color(t.muted))
-                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().child(c.title.clone()))
-            }))
-            .child(div().text_size(px(11. * s)).text_color(t.muted).child("块堆的展开、拔出与长预览尚未在 Rust 版实现"))
-            .into_any_element()
     }
 
     fn memo_body(&mut self, b: &Block, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -2052,6 +2042,7 @@ impl Render for DeckView {
         self.track_active(window, cx);
         self.expire_notes(window, cx);
         self.hang_up_gone(cx);
+        self.watch_stack();
         if let Some(e) = &self.editing
             && self.m.block(&e.id).is_none()
         {
@@ -2190,6 +2181,7 @@ impl Render for DeckView {
                 d.add_kind_at(BlockKind::Browser, x, y, w, cx)
             }))
             .on_action(cx.listener(|_, _: &GoHome, _, cx| cx.emit(DeckEvent::Home)))
+            .on_key_down(cx.listener(Self::stack_keys))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_canvas_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_pan_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_pan_down))
@@ -2204,6 +2196,8 @@ impl Render for DeckView {
             .child(self.home_pill(&t, cx))
             .child(self.toolbar(&t, cx))
             .child(self.status_bar(&t))
+            .children(self.stack_preview(&t, window, cx))
+            .children(self.pluck_view(&t))
             .children(self.popup_view(&t, cx))
     }
 }
