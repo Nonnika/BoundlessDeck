@@ -661,7 +661,8 @@ impl DeckView {
     fn add_at(&mut self, kind: BlockKind, sx: f32, sy: f32) -> String {
         let (wx, wy) = self.m.cam.to_world(sx, sy);
         let mut b = new_block_of(kind, self.m.now_ms());
-        (b.x, b.y) = self.m.free_spot(wx - b.w / 2.0, wy - b.h / 2.0, b.w, b.h);
+        // Centered where asked, over whatever is there.
+        (b.x, b.y) = (wx - b.w / 2.0, wy - b.h / 2.0);
         self.m.add_block(b)
     }
 
@@ -710,7 +711,7 @@ impl DeckView {
                 continue; // a folder is no block yet
             }
             let (w, h) = file_block_size(&abs);
-            let (px_, py_) = self.m.free_spot(wx - w / 2.0, wy - h / 2.0, w, h);
+            let (px_, py_) = (wx - w / 2.0, wy - h / 2.0);
             let mut b = Block::new(BlockKind::File);
             b.title = model::file_name(&abs.to_string_lossy());
             b.path = self.m.link_path(&abs);

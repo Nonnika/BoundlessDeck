@@ -752,26 +752,6 @@ impl Model {
         }
     }
 
-    /// A place near (x, y) where a block of w×h overlaps no other.
-    pub fn free_spot(&self, mut x: f32, mut y: f32, w: f32, h: f32) -> (f32, f32) {
-        for _ in 0..64 {
-            if !self.overlaps(x, y, w, h) {
-                return (x, y);
-            }
-            x += 28.0;
-            y += 28.0;
-        }
-        (x, y)
-    }
-
-    fn overlaps(&self, x: f32, y: f32, w: f32, h: f32) -> bool {
-        let hidden = self.stacked_ids();
-        self.blocks
-            .iter()
-            .filter(|b| !hidden.contains(&b.id))
-            .any(|b| x < b.x + b.w && x + w > b.x && y < b.y + b.h && y + h > b.y)
-    }
-
     /// The blocks the window shows some of, tape and shadow included, back to front.
     pub fn visible(&self, vw: f32, vh: f32) -> Vec<usize> {
         let hidden = self.stacked_ids();
@@ -1204,14 +1184,6 @@ mod tests {
         assert_eq!(m.blocks[1].x, 400.0);
         m.redo_last();
         assert_eq!(m.blocks[1].x, 450.0);
-    }
-
-    #[test]
-    fn free_spot_steps_aside() {
-        let m = deck();
-        assert_eq!(m.free_spot(-500.0, -500.0, 100.0, 100.0), (-500.0, -500.0));
-        let (x, y) = m.free_spot(0.0, 0.0, 100.0, 100.0);
-        assert!(x > 0.0 && x == y && !m.overlaps(x, y, 100.0, 100.0));
     }
 
     #[test]

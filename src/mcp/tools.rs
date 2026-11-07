@@ -47,7 +47,7 @@ pub const FIELDS: &[Field] = &[
     Field { name: "named", ty: "boolean", mutable: true, on_create: true, kinds: ALL, min: None, enum_: &[], derived: false,
         description: "标题是否由用户命名；false 时终端 shell 或网页可以自动改标题。" },
     Field { name: "x", ty: "number", mutable: true, on_create: true, kinds: ALL, min: None, enum_: &[], derived: false,
-        description: "世界坐标 X（画布坐标，不是屏幕像素）。省略时新 block 落在视口中央附近的空位。" },
+        description: "世界坐标 X（画布坐标，不是屏幕像素）。省略时新 block 以视野中心为中心。" },
     Field { name: "y", ty: "number", mutable: true, on_create: true, kinds: ALL, min: None, enum_: &[], derived: false,
         description: "世界坐标 Y。" },
     Field { name: "w", ty: "number", mutable: true, on_create: true, kinds: ALL, min: Some(MIN_BLOCK_W as f64), enum_: &[], derived: false,
@@ -209,7 +209,7 @@ pub fn tool_list() -> Vec<(&'static str, &'static str, &'static str, Value)> {
         ("get_block", "读一个 block", "按 id 读一个 block 的全部字段。", object_schema(json!({"id": {"type": "string", "description": "block ID"}}), &["id"])),
         ("read_selection", "读选择集", "读人当前选中的 block——「选择即上下文」。", object_schema(json!({}), &[])),
         ("current_terminal", "当前终端", "告诉你两个终端：self 是你自己运行在其中的终端 block（你从 BoundlessDeck 的终端里启动时才有，按启动你的那个终端识别）；focused 是人此刻正在操作的终端 block。想在自己旁边放东西、改自己的标题，或知道人在看哪个终端时用。不是终端时为 null，并在 selfReason / focusedReason 里说明原因。", object_schema(json!({}), &[])),
-        ("create_block", "新建 block", "在画布上建一个 block 并写初始字段；kind 必填。file 需要 path。省略 x/y 时落在视口中央附近的空位。", object_schema(Value::Object(create), &["kind"])),
+        ("create_block", "新建 block", "在画布上建一个 block 并写初始字段；kind 必填。file 需要 path。省略 x/y 时以视野中心为中心（可能盖住已有的 block）。", object_schema(Value::Object(create), &["kind"])),
         ("update_block", "改一个 block", "按 id 写一个或多个可写字段；字段按 block 的 kind 校验，写入是原子的（有一个不合法就一个都不写）。也可以用 fields 对象一次传多个字段。", object_schema(Value::Object(update), &["id"])),
         ("update_blocks", "批量改 block", "把同一组字段写到多个 block；任何一个不合法就整批失败。", object_schema(json!({"ids": ids_prop("要改的 block ID"), "fields": {"type": "object", "additionalProperties": true, "description": "要写的字段"}}), &["ids", "fields"])),
         ("delete_blocks", "删除 block", "删除一个或多个 block；有任何一个 id 不存在就一个都不删。可撤销。", object_schema(json!({"ids": ids_prop("要删的 block ID")}), &["ids"])),
@@ -788,7 +788,7 @@ impl Ctx<'_> {
         }
         if !patch.contains_key("x") || !patch.contains_key("y") {
             let (cx, cy) = if self.view.0 > 0. { self.m.cam.to_world(self.view.0 / 2., self.view.1 / 2.) } else { (0., 0.) };
-            let (x, y) = self.m.free_spot(cx - b.w / 2., cy - b.h / 2., b.w, b.h);
+            let (x, y) = (cx - b.w / 2., cy - b.h / 2.);
             if !patch.contains_key("x") {
                 b.x = x;
             }
@@ -1426,6 +1426,19 @@ mod tests {
         assert!(m.blocks.is_empty());
         call(&mut m, "undo", json!({})).unwrap();
         assert_eq!(m.blocks.len(), 1);
+    }
+
+    #[test]
+    fn a_new_block_centers_on_the_view() {
+        let (_d, mut m) = ctx_model();
+        // The window is 1000 × 800; moved so its middle is at (2000, -300).
+        call(&mut m, "set_view", json!({"x": 2000, "y": -300, "scale": 1})).unwrap();
+        for _ in 0..2 {
+            let b = call(&mut m, "create_block", json!({"kind": "chart", "w": 400, "h": 200})).unwrap();
+            assert_eq!((b["x"].as_f64(), b["y"].as_f64()), (Some(1800.), Some(-400.)), "the same spot, even taken");
+        }
+        let b = call(&mut m, "create_block", json!({"kind": "chart", "w": 400, "h": 200, "x": 5})).unwrap();
+        assert_eq!((b["x"].as_f64(), b["y"].as_f64()), (Some(5.), Some(-400.)));
     }
 
     #[test]
