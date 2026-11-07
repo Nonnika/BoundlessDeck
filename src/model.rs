@@ -389,8 +389,8 @@ pub fn wheel_zoom(dy: f32) -> f32 {
     1.0016f64.powf(-f64::from(dy)) as f32
 }
 
-/// What of a block shows outside its box at 100%: its tape above, its shadow around.
-pub const BLOCK_REACH_TOP: f32 = 28.0;
+/// What of a block shows outside its box at 100%: its shadow around.
+pub const BLOCK_REACH_TOP: f32 = 12.0;
 pub const BLOCK_REACH_SIDE: f32 = 10.0;
 
 /// The least a block can be resized to, in world units.

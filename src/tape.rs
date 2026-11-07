@@ -1,5 +1,5 @@
-//! A strip of washi tape on a block's back, sticking out above its top edge
-//! as if it held the block to the canvas. Dragging it moves the block.
+//! A strip of washi tape sticking out above a card's top edge, as if it held
+//! the card down: the home scene's cards wear it (deck blocks no longer do).
 
 use gpui::{Bounds, Hsla, PathBuilder, Pixels, Window, point, px};
 
@@ -44,6 +44,7 @@ impl Tape {
     }
 
     /// Its bounds: x, y, w, h.
+    #[cfg(test)]
     pub fn bounds(&self) -> (f32, f32, f32, f32) {
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for (a, b) in [(-1., -1.), (1., -1.), (1., 1.), (-1., 1.)] {

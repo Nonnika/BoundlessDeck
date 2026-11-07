@@ -4,7 +4,7 @@
 //! font sizes are multiplied by its scale, so text stays crisp at any zoom.
 //! Only blocks the window shows some of are built.
 //!
-//! Input: each card, tape and resize handle takes its own presses and
+//! Input: each card and resize handle takes its own presses and
 //! occludes what is under it; a press nowhere else reaches the canvas.
 //! Moves, releases and the wheel go through window-wide listeners the grid
 //! registers as it paints, so a drag carries on over anything, and a wheel
@@ -220,8 +220,6 @@ pub struct DeckView {
     editing: Option<Editing>,
     /// The block worked in: its body takes presses and the wheel.
     active: Option<String>,
-    /// The block whose title bar the last press was on: a click without a drag edits its title.
-    pressed_title: Option<String>,
     /// The 块堆 a click opened: hovering it pushes its cards out.
     stack_open: Option<String>,
     /// The 块堆 whose long preview shows.
@@ -318,7 +316,6 @@ impl DeckView {
             drag: None,
             editing: None,
             active: None,
-            pressed_title: None,
             stack_open: None,
             preview: None,
             preview_leaving: None,
@@ -1260,7 +1257,7 @@ impl DeckView {
         cx.notify();
     }
 
-    fn on_up(&mut self, ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_up(&mut self, ev: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
         let Some(drag) = self.drag.take() else { return };
         match drag {
@@ -1294,9 +1291,6 @@ impl DeckView {
                         }
                     }
                     self.after_edit(cx);
-                } else if self.title_click_edits(&id) {
-                    // A click on a title, without a drag, edits it.
-                    self.start_editing(&id, EditPart::Title, window, cx);
                 }
             }
             Drag::Resize { id, before, .. } => {
@@ -1307,11 +1301,6 @@ impl DeckView {
             }
         }
         cx.notify();
-    }
-
-    /// Whether a click on the block's title edits it: not when it was the tape.
-    fn title_click_edits(&self, id: &str) -> bool {
-        self.m.cam.s >= LOD_SCALE && self.m.block(id).is_some() && self.pressed_title.as_deref() == Some(id)
     }
 
     fn on_wheel(&mut self, ev: &ScrollWheelEvent, cx: &mut Context<Self>) {
@@ -1371,9 +1360,9 @@ impl DeckView {
         });
     }
 
-    /// A press on a card: the title bar drags it, a click on a title edits
-    /// it, a click on a QuickLook's body edits it, on a 笔记's focuses it
-    /// (a double click edits it).
+    /// A press on a card: the title bar selects and drags it, a double click
+    /// on it edits the title; a click on a QuickLook's body edits it, on a
+    /// 笔记's focuses it (a double click edits it).
     fn on_card_down(&mut self, id: &str, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         self.popup = None;
@@ -1396,13 +1385,20 @@ impl DeckView {
             cx.notify();
             return;
         }
-        self.m.sel.clear();
-        self.pressed_title = None;
         if in_title {
-            self.pressed_title = (!far).then(|| id.to_string());
+            if ev.click_count >= 2 && !far {
+                self.start_editing(id, EditPart::Title, window, cx);
+                return;
+            }
+            self.m.raise(id);
+            if !self.m.sel.contains(id) {
+                self.m.sel = HashSet::from([id.to_string()]);
+            }
             self.begin_move(id, x, y);
             window.focus(&self.focus);
+            cx.notify();
         } else {
+            self.m.sel.clear();
             match kind {
                 BlockKind::Note => self.start_editing(id, EditPart::Body, window, cx),
                 // 笔记: a click focuses it, a double click edits it.
@@ -1458,24 +1454,6 @@ impl DeckView {
             Some(Drag::Marquee { from, to }) => marquee_over(self.m.cam, *from, *to, r),
             _ => false,
         }
-    }
-
-    fn on_tape_down(&mut self, id: &str, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        cx.stop_propagation();
-        self.popup = None;
-        self.stop_editing(cx);
-        window.focus(&self.focus);
-        self.m.raise(id);
-        if ev.modifiers.shift {
-            if !self.m.sel.remove(id) {
-                self.m.sel.insert(id.to_string());
-            }
-        } else if !self.m.sel.contains(id) {
-            self.m.sel = HashSet::from([id.to_string()]);
-        }
-        self.pressed_title = None;
-        self.begin_move(id, f32::from(ev.position.x), f32::from(ev.position.y));
-        cx.notify();
     }
 
     fn on_resize_down(&mut self, id: &str, ev: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -1593,43 +1571,6 @@ impl DeckView {
         let selected = self.m.sel.contains(id);
         let opacity = if b.kind == BlockKind::Note { lifespan::note_opacity(b.expires, self.m.now_ms()) } else { 1.0 };
         let mut out = Vec::new();
-
-        // The tape, behind the card: what sticks out above it shows.
-        let tp = tape::tape_of(&b.id, sx, sy, w, s);
-        if tp.l >= 24.0 {
-            let bx = tp.bounds();
-            let held = matches!(&self.drag, Some(Drag::Move { id: d, .. }) if d == id) && self.pressed_title.is_none();
-            let eid = id.to_string();
-            let dark = t.dark;
-            let accent = t.accent;
-            out.push(
-                div()
-                    .id(SharedString::from(format!("tape:{id}")))
-                    .absolute()
-                    .left(px(bx.0))
-                    .top(px(bx.1))
-                    .w(px(bx.2))
-                    .h(px(bx.3))
-                    .opacity(opacity)
-                    .occlude()
-                    .cursor(if held { gpui::CursorStyle::ClosedHand } else { gpui::CursorStyle::OpenHand })
-                    .child(
-                        canvas(|_, _, _| (), move |bounds, _, window, _| {
-                            let hovered = bounds.contains(&window.mouse_position());
-                            tape::paint(
-                                window,
-                                &tp,
-                                f32::from(bounds.origin.x) - bx.0,
-                                f32::from(bounds.origin.y) - bx.1,
-                                tape::Look { hovered: hovered || held, held, selected, dark, accent },
-                            );
-                        })
-                        .size_full(),
-                    )
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |d, ev, window, cx| d.on_tape_down(&eid, ev, window, cx)))
-                    .into_any_element(),
-            );
-        }
 
         let note = b.kind == BlockKind::Note;
         let paper = Paper::of(t);
