@@ -8,6 +8,8 @@ cargo run -- <文件夹>          # 直接打开该文件夹的 deck
 cargo test                     # 模型、持久化、编辑器外的纯逻辑测试
 ```
 
+试运行时可用 `BOUNDLESSDECK_DATA_DIR`（recents、settings）与 `BOUNDLESSDECK_ACTIVE_FILE`（MCP active-deck 注册表）指到临时目录，避免改动真实数据。
+
 本机没有 Xcode 的 `metal` 编译器，所以 gpui 开启了 `runtime_shaders` 特性（运行时编译着色器）。
 
 ## 与 Go 版的兼容
@@ -26,8 +28,9 @@ cargo test                     # 模型、持久化、编辑器外的纯逻辑�
 - MCP：打开 deck 即在 `.boundlessdeck/` 起 Unix socket 端点（带 token），写 `mcp.json`、`block-schema.json` 并登记为 active deck；17 个工具（读写 block、批量改、删除、移动、对齐/分布/排列、选择集、撤销重做、保存）与 3 个资源；`boundlessdeck mcp-stdio [--workspace DIR]` 为 stdio 桥，无 deck 时也能握手并说明原因。文件格式与 Go 版一致，两版的桥可以互通
 - 设置窗口（⌘,）：为 Claude Code / Claude 桌面版 / Cursor / VS Code 安装或卸载全局 MCP（只改我们这一项，保留其他 server 与键顺序，读不懂的配置不碰）、当前图版、项目级配置开关与移除
 - 键盘快捷键窗口（⌘/）：菜单、按键绑定与此窗口出自同一张命令表，外加画布手势
+- 主页：透视倾斜的点阵画布与其上的卡片（手工投影，近处淡出代替模糊）、应用图标里的机器人标志、「创意/创造/创作」轮换文字、最近列表的 deck 标记
 - 主页：最近的 deck、打开文件夹、拖入文件夹、移除记录；菜单栏与快捷键
 
 ## 尚未移植
 
-块堆卡片的弹簧动画、设置窗口（为 Claude Code / Claude 桌面版 / Cursor / VS Code 安装全局 MCP、项目级配置开关）、主页 3D 场景、键盘快捷键窗口、触控板捏合缩放（gpui 0.2.2 没有捏合事件，用 ⌘+滚轮）。
+块堆卡片的弹簧动画、设置窗口（为 Claude Code / Claude 桌面版 / Cursor / VS Code 安装全局 MCP、项目级配置开关）、键盘快捷键窗口、触控板捏合缩放（gpui 0.2.2 没有捏合事件，用 ⌘+滚轮）。

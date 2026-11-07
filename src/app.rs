@@ -27,6 +27,10 @@ pub struct Root {
     err: Option<String>,
     focus_deck: bool,
     pub settings: crate::mcp::config::Settings,
+    /// When the app started: the home screen's turning words go by it.
+    started: std::time::Instant,
+    /// The frames those words take, while the home screen shows.
+    ticking: bool,
 }
 
 impl Root {
@@ -39,6 +43,8 @@ impl Root {
             err: None,
             focus_deck: false,
             settings: crate::mcp::config::Settings::load(),
+            started: std::time::Instant::now(),
+            ticking: false,
         };
         if let Some(p) = open {
             r.open_folder(&p, cx);
@@ -140,6 +146,36 @@ impl Root {
         }
     }
 
+    /// Redraws the home screen when its turning words move: each frame of a
+    /// slide, then not again until the next one starts.
+    fn tick(&mut self, cx: &mut Context<Self>) {
+        if self.ticking {
+            return;
+        }
+        self.ticking = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                let wait = this
+                    .update(cx, |r, cx| {
+                        if r.deck.is_some() {
+                            r.ticking = false;
+                            return None;
+                        }
+                        cx.notify();
+                        let ms = r.started.elapsed().as_millis() as u64;
+                        let period = crate::homescene::ENDLESS_HOLD_MS + crate::homescene::ENDLESS_SLIDE_MS;
+                        let into = ms % period;
+                        Some(if into < crate::homescene::ENDLESS_HOLD_MS { crate::homescene::ENDLESS_HOLD_MS - into } else { 16 })
+                    })
+                    .ok()
+                    .flatten();
+                let Some(ms) = wait else { break };
+                cx.background_executor().timer(std::time::Duration::from_millis(ms)).await;
+            }
+        })
+        .detach();
+    }
+
     fn dropped(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         if let Some(p) = paths.iter().find(|p| p.is_dir()) {
             self.open_folder(p, cx);
@@ -153,8 +189,7 @@ impl Root {
         let t = Theme::of(window);
         let paper = Paper::of(&t);
         let now = chrono::Local::now().fixed_offset();
-        let dot = t.muted.opacity(0.35);
-        div()
+                div()
             .id("home")
             .size_full()
             .relative()
@@ -170,22 +205,8 @@ impl Root {
                 }),
             )
             .child(
-                // The canvas's dots, under it all.
-                canvas(|_, _, _| (), move |b, _, window, _| {
-                    let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
-                    let mut y = 12.;
-                    while y < h {
-                        let mut x = 12.;
-                        while x < w {
-                            window.paint_quad(
-                                gpui::fill(gpui::Bounds::new(point(px(x), px(y)), gpui::size(px(2.5), px(2.5))), dot)
-                                    .corner_radii(px(1.25)),
-                            );
-                            x += 24.;
-                        }
-                        y += 24.;
-                    }
-                })
+                // The canvas seen in 3D, running off into the distance.
+                canvas(|_, _, _| (), move |b, _, window, _| crate::homescene::paint(window, b, &t, &paper))
                 .absolute()
                 .size_full(),
             )
@@ -197,7 +218,7 @@ impl Root {
                             .flex()
                             .flex_col()
                             .gap(px(32.))
-                            .child(head(&t))
+                            .child(head(&t, self.started.elapsed().as_millis() as u64))
                             .child(self.recents_block(&t, &paper, now, cx)),
                     ),
                 ),
@@ -229,6 +250,7 @@ impl Root {
             );
         }
         for (i, r) in self.recents.list.iter().enumerate() {
+            let (t2, paper2) = (*t, Paper::of(t));
             let path = r.path.clone();
             let p2 = path.clone();
             let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(path.clone());
@@ -253,8 +275,12 @@ impl Root {
                             .items_center()
                             .justify_center()
                             .rounded(px(7.))
-                            .bg(accent.opacity(if missing { 0.06 } else { 0.12 }))
-                            .child(svg().path(icons::path("folder")).size(px(16.)).text_color(accent.opacity(if missing { 0.4 } else { 1. }))),
+                            .child(
+                                canvas(|_, _, _| (), move |b, _, window, _| {
+                                    crate::homescene::paint_deck_mark(window, b, &t2, &paper2, missing)
+                                })
+                                .size_full(),
+                            ),
                     )
                     .child(
                         div()
@@ -378,7 +404,7 @@ impl Root {
 }
 
 /// The title: "Boundless" rushing on, its trail fading to the left, then "Deck".
-fn head(t: &Theme) -> impl IntoElement {
+fn head(t: &Theme, ms: u64) -> impl IntoElement {
     let word = |c: gpui::Hsla| {
         div().text_size(px(38.)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().text_color(c).child("Boundless")
     };
@@ -390,27 +416,59 @@ fn head(t: &Theme) -> impl IntoElement {
             .child(word(t.text.opacity(0.09 * (1. - f) * (1. - f))).absolute().left(px(-f * 90.)).top_0());
     }
     boundless = boundless.child(word(t.text).absolute().left_0().top_0());
+    let t2 = *t;
+    // "创意无止境": its first word takes turns with the others, each sliding
+    // up out of the way of the next.
+    use crate::homescene::{ENDLESS_WORDS, endless_at};
+    let (w, slide) = endless_at(ms);
+    let e = 1. - (1. - slide).powi(3);
+    let line_h = 30.;
+    let word_at = |text: &'static str, dy: f32, a: f32| {
+        div().absolute().left_0().top(px(dy)).h(px(line_h)).text_color(t.accent.opacity(a)).child(text)
+    };
+    let mut turning = div().relative().w(px(44.)).h(px(line_h)).overflow_hidden();
+    turning = if slide == 0. {
+        turning.child(word_at(ENDLESS_WORDS[w], 0., 1.))
+    } else {
+        turning
+            .child(word_at(ENDLESS_WORDS[w], -e * line_h, 1. - e))
+            .child(word_at(ENDLESS_WORDS[(w + 1) % ENDLESS_WORDS.len()], (1. - e) * line_h, e))
+    };
     div()
         .flex()
         .flex_col()
         .gap(px(12.))
         .child(
-            div().flex().flex_col().child(boundless).child(
-                div()
-                    .text_size(px(96.))
-                    .line_height(px(86.))
-                    .font_weight(FontWeight::EXTRA_BOLD)
-                    .text_color(t.text)
-                    .child("Deck"),
-            ),
+            div()
+                .flex()
+                .flex_row()
+                .items_end()
+                .gap(px(20.))
+                .child(
+                    div().flex().flex_col().child(boundless).child(
+                        div()
+                            .text_size(px(96.))
+                            .line_height(px(86.))
+                            .font_weight(FontWeight::EXTRA_BOLD)
+                            .text_color(t.text)
+                            .child("Deck"),
+                    ),
+                )
+                .child(
+                    canvas(|_, _, _| (), move |b, _, window, _| crate::homescene::paint_robot(window, b, &t2))
+                        .size(px(88.))
+                        .mb(px(4.)),
+                ),
         )
         .child(
             div()
                 .flex()
                 .flex_row()
+                .items_center()
                 .text_size(px(22.))
+                .line_height(px(line_h))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(div().text_color(t.accent).child("创意"))
+                .child(turning)
                 .child(div().text_color(t.text).child("无止境")),
         )
 }
@@ -430,7 +488,10 @@ impl Render for Root {
                 }
                 d.into_any_element()
             }
-            None => self.home(window, cx).into_any_element(),
+            None => {
+                self.tick(cx);
+                self.home(window, cx).into_any_element()
+            }
         };
         div()
             .size_full()

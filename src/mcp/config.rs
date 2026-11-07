@@ -249,7 +249,7 @@ pub struct Settings {
 }
 
 fn settings_file() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("BoundlessDeck").join("settings.json"))
+    crate::model::data_dir().map(|d| d.join("settings.json"))
 }
 
 impl Settings {

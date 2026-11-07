@@ -8,6 +8,7 @@ mod chartview;
 mod commands;
 mod deck;
 mod editor;
+mod homescene;
 mod icons;
 mod lifespan;
 mod markdown;

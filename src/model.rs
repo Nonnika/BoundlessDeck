@@ -913,6 +913,15 @@ struct WorkspaceRef<'a> {
     blocks: &'a [Block],
 }
 
+/// The app's own data folder (recents, settings), unless
+/// `BOUNDLESSDECK_DATA_DIR` puts it elsewhere, as tests and trial runs do.
+pub fn data_dir() -> Option<PathBuf> {
+    match std::env::var_os("BOUNDLESSDECK_DATA_DIR") {
+        Some(d) => Some(PathBuf::from(d)),
+        None => dirs::data_dir().map(|d| d.join("BoundlessDeck")),
+    }
+}
+
 /// Writes data through a temporary file and a rename: a reader never sees half a file.
 pub fn write_file_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {

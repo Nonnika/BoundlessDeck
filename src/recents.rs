@@ -33,7 +33,7 @@ pub struct Recents {
 impl Recents {
     /// The recents kept in the app's data folder.
     pub fn open() -> Recents {
-        let file = dirs::data_dir().map(|d| d.join("BoundlessDeck").join("recents.json"));
+        let file = crate::model::data_dir().map(|d| d.join("recents.json"));
         let mut r = Recents { list: Vec::new(), file };
         r.load();
         r
