@@ -196,11 +196,15 @@ pub fn show_settings(cx: &mut App) {
     }
 }
 
-/// Tells an open settings window that the deck changed.
+/// Tells an open settings window that the deck changed. The root calls this
+/// while it is being updated, and the refresh reads the root, so it waits
+/// until that update is over.
 pub fn refresh_settings(cx: &mut App) {
-    if let Some(w) = cx.try_global::<OpenWindows>().and_then(|o| o.settings) {
-        let _ = w.update(cx, |v, _, cx| v.refresh(cx));
-    }
+    cx.defer(|cx| {
+        if let Some(w) = cx.try_global::<OpenWindows>().and_then(|o| o.settings) {
+            let _ = w.update(cx, |v, _, cx| v.refresh(cx));
+        }
+    });
 }
 
 pub(crate) fn root(cx: &App) -> Option<gpui::Entity<Root>> {
