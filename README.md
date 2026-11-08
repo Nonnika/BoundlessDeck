@@ -39,7 +39,7 @@ When trying things out, point `BOUNDLESSDECK_DATA_DIR` and `BOUNDLESSDECK_ACTIVE
 
 ## For agents
 
-Opening a deck starts an MCP endpoint, and `boundlessdeck mcp-stdio` is the stdio bridge to it. There are 19 tools for reading, writing and arranging blocks. In Settings (⌘,) you can install the global config for Claude Code, Claude Desktop, Cursor, VS Code, Codex, OpenCode and oh-my-pi with one click.
+Opening a deck starts an MCP endpoint, and `boundlessdeck mcp-stdio` is the stdio bridge to it. There are 20 tools for reading, writing and arranging blocks, and for looking at the canvas: `screenshot` returns the deck window as a PNG image. In Settings (⌘,) you can install the global config for Claude Code, Claude Desktop, Cursor, VS Code, Codex, OpenCode and oh-my-pi with one click.
 
 ## Windows
 

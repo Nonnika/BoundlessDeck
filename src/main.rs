@@ -23,6 +23,7 @@ mod pinch;
 mod pdf;
 mod preview;
 mod recents;
+mod screenshot;
 mod stage;
 mod tape;
 mod terminal;

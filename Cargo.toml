@@ -15,6 +15,7 @@ minimum_system_version = "13.0"
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
 anyhow = "1"
 rand = "0.8"
 dirs = "5"
@@ -34,8 +35,10 @@ wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSThread", "NSString", "NSArray", "NSValue", "NSKeyValueCoding", "NSFileManager", "NSURL"] }
-objc2-app-kit = { version = "0.3.2", features = ["objc2-core-image", "NSApplication", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSEvent", "NSResponder", "NSWindow", "NSView", "NSGraphics", "NSAccessibility", "NSWorkspace", "block2"] }
+objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSError", "NSGeometry", "NSProcessInfo", "NSThread", "NSString", "NSArray", "NSValue", "NSKeyValueCoding", "NSFileManager", "NSURL"] }
+objc2-app-kit = { version = "0.3.2", features = ["objc2-core-graphics", "objc2-core-image", "NSApplication", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSEvent", "NSResponder", "NSWindow", "NSView", "NSGraphics", "NSAccessibility", "NSWorkspace", "block2"] }
+objc2-core-graphics = "0.3.2"
 objc2-core-image = { version = "0.3.2", features = ["CIFilter"] }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "SCScreenshotManager", "SCShareableContent", "SCStream", "block2", "objc2-core-foundation", "objc2-core-graphics"] }
 raw-window-handle = "0.6"
 objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "WKSnapshotConfiguration", "WKNavigation", "block2", "objc2-app-kit"] }

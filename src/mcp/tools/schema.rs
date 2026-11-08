@@ -206,6 +206,7 @@ pub fn tool_list() -> Vec<(&'static str, &'static str, &'static str, Value)> {
         ("get_block", "读一个 block", "按 id 读一个 block 的全部字段。", object_schema(json!({"id": {"type": "string", "description": "block ID"}}), &["id"])),
         ("read_selection", "读选择集", "读人当前选中的 block——「选择即上下文」。", object_schema(json!({}), &[])),
         ("current_terminal", "当前终端", "告诉你两个终端：self 是你自己运行在其中的终端 block（你从 BoundlessDeck 的终端里启动时才有，按启动你的那个终端识别）；focused 是人此刻正在操作的终端 block。想在自己旁边放东西、改自己的标题，或知道人在看哪个终端时用。不是终端时为 null，并在 selfReason / focusedReason 里说明原因。", object_schema(json!({}), &[])),
+        ("screenshot", "截取画面", "截取窗口里画布现在的样子（相机看到的内容），作为 PNG 图片返回。想确认自己的改动在画布上看起来如何时用；图片随 MCP 图像内容返回，文字部分带相机、视野中心与像素尺寸。", object_schema(json!({}), &[])),
         ("create_block", "新建 block", "在画布上建一个 block 并写初始字段；kind 必填。file 需要 path。省略 x/y 时以视野中心为中心（可能盖住已有的 block）。", object_schema(Value::Object(create), &["kind"])),
         ("update_block", "改一个 block", "按 id 写一个或多个可写字段；字段按 block 的 kind 校验，写入是原子的（有一个不合法就一个都不写）。也可以用 fields 对象一次传多个字段。", object_schema(Value::Object(update), &["id"])),
         ("update_blocks", "批量改 block", "把同一组字段写到多个 block；任何一个不合法就整批失败。", object_schema(json!({"ids": ids_prop("要改的 block ID"), "fields": {"type": "object", "additionalProperties": true, "description": "要写的字段"}}), &["ids", "fields"])),

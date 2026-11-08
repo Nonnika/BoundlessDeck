@@ -6,6 +6,8 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{Map, Value, json};
 
 use crate::lifespan::NOTE_LIFE_MS;
@@ -106,6 +108,8 @@ pub struct Ctx<'a> {
     pub reload: Vec<String>,
     /// The view moved (`set_view`): from where, and whether to glide there.
     pub view_from: Option<(Camera, bool)>,
+    /// The window's picture, taken before the call (`screenshot`): PNG or why not.
+    pub shot: Option<Result<crate::screenshot::Shot, String>>,
 }
 
 impl Ctx<'_> {
@@ -237,6 +241,27 @@ impl Ctx<'_> {
         self.view_from = Some((from, arg_bool(a, "animate")?.unwrap_or(true)));
         self.dirty = true;
         Ok(json!({"center": {"x": round(cx), "y": round(cy)}, "scale": round(s), "camera": {"x": round(self.m.cam.x), "y": round(self.m.cam.y), "s": round(s)}}))
+    }
+
+    /// The window as the camera shows it, as the picture itself: the MCP
+    /// answer carries the PNG as image content (`rpc::tool_result`).
+    fn screenshot(&self) -> Result<Value, String> {
+        let Some(shot) = &self.shot else {
+            return Err("截图要在窗口里调用".into());
+        };
+        let shot = shot.as_ref().map_err(Clone::clone)?;
+        Ok(json!({
+            "camera": {"x": round(self.m.cam.x), "y": round(self.m.cam.y), "s": round(self.m.cam.s)},
+            "center": self.view_center(),
+            "view": {"w": round(self.view.0), "h": round(self.view.1)},
+            "pngBytes": shot.png.len(),
+            "image": {
+                "mimeType": "image/png",
+                "width": shot.width,
+                "height": shot.height,
+                "data": BASE64.encode(&shot.png),
+            },
+        }))
     }
 
     pub fn deck_info(&self) -> Value {
@@ -514,6 +539,7 @@ impl Ctx<'_> {
                 Ok(self.fields_json(self.block(&id)?))
             }
             "current_terminal" => Ok(self.current_terminal()),
+            "screenshot" => self.screenshot(),
             "read_selection" => {
                 let blocks: Vec<Value> =
                     self.m.blocks.iter().filter(|b| self.m.sel.contains(&b.id)).map(|b| self.fields_json(b)).collect();
@@ -581,7 +607,7 @@ mod tests {
     }
 
     fn call_from(m: &mut Model, here: Here, name: &str, args: Value) -> Result<Value, String> {
-        let mut c = Ctx { m, view: (1000., 800.), mcp: Value::Null, here, dirty: false, memos: vec![], reload: vec![], view_from: None };
+        let mut c = Ctx { m, view: (1000., 800.), mcp: Value::Null, here, dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None };
         c.call(name, args.as_object().unwrap())
     }
 
@@ -764,11 +790,27 @@ mod tests {
     }
 
     #[test]
+    fn a_screenshot_hands_back_the_picture_and_its_camera() {
+        let (_d, mut m) = ctx_model();
+        let mut c = Ctx { m: &mut m, view: (1000., 800.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None };
+        assert!(c.call("screenshot", &Args::new()).is_err(), "no window, no picture");
+        let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3];
+        c.shot = Some(Ok(crate::screenshot::Shot { png: png.clone(), width: 2000, height: 1600 }));
+        let out = c.call("screenshot", &Args::new()).unwrap();
+        assert_eq!(out["image"]["mimeType"], "image/png");
+        assert_eq!((out["image"]["width"].as_u64(), out["image"]["height"].as_u64()), (Some(2000), Some(1600)));
+        assert_eq!(out["pngBytes"], png.len());
+        assert_eq!(BASE64.decode(out["image"]["data"].as_str().unwrap()).unwrap(), png);
+        assert_eq!(out["view"], json!({"w": 1000.0, "h": 800.0}));
+        assert_eq!(out["camera"]["s"], 1.0);
+    }
+
+    #[test]
     fn urls_are_normalized_and_resources_read() {
         assert_eq!(normalize_url("example.com").unwrap(), "https://example.com");
         assert!(normalize_url("javascript:alert(1)").is_err());
         let (_d, mut m) = ctx_model();
-        let c = Ctx { m: &mut m, view: (0., 0.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None };
+        let c = Ctx { m: &mut m, view: (0., 0.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None };
         assert_eq!(c.read_resource("boundlessdeck://schema").unwrap()["kinds"].as_array().unwrap().len(), BlockKind::ALL.len());
         assert!(c.read_resource("other://x").is_err());
     }

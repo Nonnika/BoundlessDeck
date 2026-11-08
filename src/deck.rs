@@ -244,6 +244,8 @@ pub struct DeckView {
     color_slot: inspector::Slot,
     /// The style panel showed this frame: web pages under it give way.
     insp: inspector::Inspector,
+    /// The window this deck is drawn in: what `screenshot` captures.
+    win: Option<gpui::AnyWindowHandle>,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
     glide: Option<(Camera, Camera, Instant)>,
     focus: FocusHandle,
@@ -358,6 +360,7 @@ impl DeckView {
             lod_wake: LOD_WAKE_PER_FRAME,
             animating: false,
             covered: false,
+            win: None,
             glide: None,
             focus: cx.focus_handle(),
             rts: HashMap::new(),
@@ -599,6 +602,7 @@ impl Render for DeckView {
         let t = Theme::of(window);
         let vs = window.viewport_size();
         self.view = (f32::from(vs.width), f32::from(vs.height));
+        self.win = Some(window.window_handle());
         self.tick_glide(cx);
         self.settle_layer(Some(window));
         zoomlayer::framestat::begin(self.zooming());

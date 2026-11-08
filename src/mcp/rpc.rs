@@ -22,9 +22,21 @@ pub fn tool_failure(message: &str) -> Value {
     json!({"content": [{"type": "text", "text": message}], "isError": true})
 }
 
-pub fn tool_result(out: Value) -> Value {
+pub fn tool_result(mut out: Value) -> Value {
+    // A picture a tool took (`screenshot`): MCP carries images as their own
+    // content, so the base64 leaves the JSON; only its size stays there.
+    let mut image = None;
+    if let Value::Object(o) = &mut out
+        && let Some(Value::Object(pic)) = o.get_mut("image")
+        && let Some(data) = pic.remove("data").and_then(|d| d.as_str().map(str::to_string))
+    {
+        let mime = pic.get("mimeType").and_then(Value::as_str).unwrap_or("image/png").to_string();
+        image = Some(json!({"type": "image", "data": data, "mimeType": mime}));
+    }
     let text = serde_json::to_string_pretty(&out).unwrap_or_default();
-    let mut res = json!({"content": [{"type": "text", "text": text}], "isError": false});
+    let mut content = vec![json!({"type": "text", "text": text})];
+    content.extend(image);
+    let mut res = json!({"content": content, "isError": false});
     match out {
         Value::Object(_) => res["structuredContent"] = out,
         Value::Array(_) => res["structuredContent"] = json!({"blocks": out}),
@@ -55,7 +67,7 @@ fn initialize(params: &Value) -> Value {
             "prompts": {"listChanged": false},
         },
         "serverInfo": {"name": SERVER_NAME, "title": "BoundlessDeck 画布", "version": SERVER_VERSION},
-        "instructions": "这是 BoundlessDeck 的无限画布。「block」是画布上的卡片，kind 有 note（笔记：Markdown 文件）、quicklook（QuickLook 便签，会自动消失）、file（本地文件预览）、terminal（终端）、browser（浏览器）、chart（图表）、stack（块堆：用 items 收纳其他 block）。先用 deck_info 和 block_schema 了解现场，用 list_blocks / read_selection 读，用 create_block / update_block / move_blocks / delete_blocks 写；排版用 align_blocks（对齐边或中线）、distribute_blocks（等间距）、arrange_blocks（行/列/网格）。加、删、移动、堆的收放与排版都进撤销栈，并保存到工作区。",
+        "instructions": "这是 BoundlessDeck 的无限画布。「block」是画布上的卡片，kind 有 note（笔记：Markdown 文件）、quicklook（QuickLook 便签，会自动消失）、file（本地文件预览）、terminal（终端）、browser（浏览器）、chart（图表）、stack（块堆：用 items 收纳其他 block）。先用 deck_info 和 block_schema 了解现场，用 list_blocks / read_selection 读，用 create_block / update_block / move_blocks / delete_blocks 写；排版用 align_blocks（对齐边或中线）、distribute_blocks（等间距）、arrange_blocks（行/列/网格）；想看一眼画布现在的样子就用 screenshot。加、删、移动、堆的收放与排版都进撤销栈，并保存到工作区。",
     })
 }
 
@@ -160,6 +172,20 @@ mod tests {
         assert_eq!(call["result"]["isError"], true);
         let bad = handle(&json!({"jsonrpc": "2.0", "id": 4, "method": "nope"}), &no_deck).unwrap();
         assert_eq!(bad["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn a_picture_leaves_the_text_for_image_content() {
+        let out = tool_result(json!({
+            "camera": {"x": 0.0},
+            "image": {"mimeType": "image/png", "width": 2, "height": 1, "data": "AAEC"},
+        }));
+        let content = out["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[1], json!({"type": "image", "data": "AAEC", "mimeType": "image/png"}));
+        assert!(!content[0]["text"].as_str().unwrap().contains("AAEC"), "the base64 is not repeated in the text");
+        assert_eq!(out["structuredContent"]["image"]["width"], 2);
+        assert!(out["structuredContent"]["image"].get("data").is_none());
     }
 
     #[test]

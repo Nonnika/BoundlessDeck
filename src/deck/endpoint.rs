@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::Context;
+use gpui::{AppContext, Context};
 
 use super::{DeckView, MemoRt};
 
@@ -82,6 +82,15 @@ impl DeckView {
         }
     }
 
+    /// The window as it shows, for the `screenshot` tool.
+    fn photograph(&self, cx: &mut Context<Self>) -> Result<crate::screenshot::Shot, String> {
+        let Some(win) = self.win else {
+            return Err("这个窗口还没有画出来".into());
+        };
+        cx.update_window(win, |_, window, _| crate::screenshot::capture(window))
+            .map_err(|e| format!("这个窗口已经关了：{e}"))?
+    }
+
     pub(super) fn run_job(
         &mut self,
         job: crate::mcp::rpc::Job,
@@ -102,7 +111,12 @@ impl DeckView {
         };
         // Mid-glide, tools see the camera where it is going.
         let shown = self.glide.map(|(_, to, _)| std::mem::replace(&mut self.m.cam, to));
-        let mut ctx = Ctx { m: &mut self.m, view: self.view, mcp: info, here, dirty: false, memos: vec![], reload: vec![], view_from: None };
+        // The picture is taken from the window as it shows, before the call changes anything.
+        let shot = match &job {
+            Job::Tool(name, _) if name == "screenshot" => Some(self.photograph(cx)),
+            _ => None,
+        };
+        let mut ctx = Ctx { m: &mut self.m, view: self.view, mcp: info, here, dirty: false, memos: vec![], reload: vec![], view_from: None, shot };
         let out = match job {
             Job::Tool(name, args) => ctx.call(&name, &args),
             Job::Resource(uri) => ctx.read_resource(&uri),

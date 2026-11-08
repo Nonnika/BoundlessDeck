@@ -39,7 +39,7 @@ cargo bundle --release       # 打包 .app（需 cargo-bundle）
 
 ## 给 agent 用
 
-打开 deck 即启动 MCP 端点，`boundlessdeck mcp-stdio` 是它的 stdio 桥。19 个工具可读写、排版 block。在设置（⌘,）里可以为 Claude Code、Claude 桌面版、Cursor、VS Code、Codex、OpenCode、oh-my-pi 一键安装全局配置。
+打开 deck 即启动 MCP 端点，`boundlessdeck mcp-stdio` 是它的 stdio 桥。20 个工具可读写、排版 block，也可以看一眼画布：`screenshot` 把窗口里的样子截成 PNG 图片返回。在设置（⌘,）里可以为 Claude Code、Claude 桌面版、Cursor、VS Code、Codex、OpenCode、oh-my-pi 一键安装全局配置。
 
 ## Windows
 
