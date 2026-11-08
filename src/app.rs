@@ -77,6 +77,7 @@ impl Root {
             welcome_blur: crate::backdrop::Backdrop::default(),
             turn_blur: crate::backdrop::Backdrop::default(),
         };
+        crate::theme::set_accent(r.settings.accent.as_deref());
         if let Some(p) = open {
             r.open_folder(&p, cx);
         }
@@ -139,6 +140,15 @@ impl Root {
         self.focus_deck = true;
         crate::windows::refresh_settings(cx);
         cx.notify();
+    }
+
+    /// Draws with the accent of this id (`theme::ACCENTS`) from now on, in every window.
+    pub fn set_accent(&mut self, id: &str, cx: &mut Context<Self>) {
+        let default = crate::theme::ACCENTS[0].id;
+        self.settings.accent = (id != default).then(|| id.to_string());
+        let _ = self.settings.save();
+        crate::theme::set_accent(Some(id));
+        cx.refresh_windows();
     }
 
     /// Shows the welcome over the window on its first page, or brings it back there.

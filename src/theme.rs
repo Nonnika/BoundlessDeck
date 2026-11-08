@@ -1,6 +1,49 @@
 //! The app's colors, light and dark, as the window's appearance says.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use gpui::{Hsla, Rgba, Window, WindowAppearance, rgb, rgba};
+
+/// An accent the user can pick in 设置: its id (kept in settings.json), its
+/// name, its color in light and in dark mode, and the color of text on it.
+pub struct Accent {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub light: u32,
+    pub dark: u32,
+    pub text: u32,
+}
+
+/// The accents to pick from, the classic ones of macOS; the first is the default.
+pub const ACCENTS: &[Accent] = &[
+    Accent { id: "blue", name: "蓝色", light: 0x3b6cf6, dark: 0x5a86fa, text: 0xffffff },
+    Accent { id: "purple", name: "紫色", light: 0x8a4fd8, dark: 0xa275ec, text: 0xffffff },
+    Accent { id: "pink", name: "粉色", light: 0xd9407f, dark: 0xeb659d, text: 0xffffff },
+    Accent { id: "red", name: "红色", light: 0xd9363e, dark: 0xef5a60, text: 0xffffff },
+    Accent { id: "orange", name: "橙色", light: 0xe0731c, dark: 0xe77210, text: 0xffffff },
+    Accent { id: "yellow", name: "黄色", light: 0xd9a400, dark: 0xf2c230, text: 0x1d1f24 },
+    Accent { id: "green", name: "绿色", light: 0x2f9e4f, dark: 0x3aa658, text: 0xffffff },
+    Accent { id: "teal", name: "青色", light: 0x1b93a4, dark: 0x34a1b0, text: 0xffffff },
+    Accent { id: "graphite", name: "石墨", light: 0x6b7080, dark: 0x8c93a3, text: 0xffffff },
+];
+
+/// Which of `ACCENTS` the app draws with.
+static ACCENT: AtomicUsize = AtomicUsize::new(0);
+
+/// Draws with the accent of this id from now on; an unknown id or none is the default.
+pub fn set_accent(id: Option<&str>) {
+    ACCENT.store(accent_index(id), Ordering::Relaxed);
+}
+
+/// Where the accent of this id is in `ACCENTS`; the default for none or one unknown.
+fn accent_index(id: Option<&str>) -> usize {
+    id.and_then(|id| ACCENTS.iter().position(|a| a.id == id)).unwrap_or(0)
+}
+
+/// The accent the app draws with.
+pub fn accent() -> &'static Accent {
+    &ACCENTS[ACCENT.load(Ordering::Relaxed).min(ACCENTS.len() - 1)]
+}
 
 #[derive(Clone, Copy)]
 pub struct Theme {
@@ -41,8 +84,8 @@ impl Theme {
             border: c(0xdcdfe5),
             text: c(0x1d1f24),
             muted: c(0x6b7080),
-            accent: c(0x3b6cf6),
-            accent_text: c(0xffffff),
+            accent: c(accent().light),
+            accent_text: c(accent().text),
             danger: c(0xd9363e),
             shade: ca(0x00000014),
         }
@@ -57,8 +100,8 @@ impl Theme {
             border: c(0x2f323b),
             text: c(0xe8e9ed),
             muted: c(0x8b90a0),
-            accent: c(0x5a86fa),
-            accent_text: c(0xffffff),
+            accent: c(accent().dark),
+            accent_text: c(accent().text),
             danger: c(0xf0565e),
             shade: ca(0x00000066),
         }
@@ -130,4 +173,40 @@ impl MdColors {
 
 pub fn rgba_u8(r: u8, g: u8, b: u8, a: f32) -> Hsla {
     Hsla::from(Rgba { r: r as f32 / 255., g: g as f32 / 255., b: b as f32 / 255., a })
+}
+
+#[cfg(test)]
+mod accent_tests {
+    use super::*;
+
+    #[test]
+    fn accents_are_found_by_id_and_default_to_blue() {
+        assert_eq!(accent_index(None), 0);
+        assert_eq!(accent_index(Some("nope")), 0);
+        assert_eq!(ACCENTS[accent_index(Some("orange"))].id, "orange");
+        let mut ids: Vec<_> = ACCENTS.iter().map(|a| a.id).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), ACCENTS.len());
+    }
+
+    #[test]
+    fn text_on_each_accent_reads() {
+        // WCAG relative luminance and contrast; buttons want at least 3:1.
+        let lum = |v: u32| {
+            let ch = |s: u32| {
+                let c = ((v >> s) & 0xff) as f64 / 255.;
+                if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+        };
+        let contrast = |a: u32, b: u32| {
+            let (x, y) = (lum(a), lum(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        };
+        for a in ACCENTS {
+            for bg in [a.light, a.dark] {
+                assert!(contrast(bg, a.text) >= 3., "{} {bg:06x}: {:.2}", a.id, contrast(bg, a.text));
+            }
+        }
+    }
 }

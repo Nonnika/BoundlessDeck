@@ -469,6 +469,9 @@ pub struct Settings {
     /// Whether the welcome window has been shown: it opens by itself only once.
     #[serde(default)]
     pub welcomed: bool,
+    /// The accent picked in 设置 (`theme::ACCENTS`); none is the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
 }
 
 fn settings_file() -> Option<PathBuf> {

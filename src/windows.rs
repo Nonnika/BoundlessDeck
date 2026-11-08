@@ -1,5 +1,6 @@
 //! The app's small windows: 键盘快捷键 (read from the commands table) and
-//! 设置 (the global MCP per agent, the project-level config switch).
+//! 设置 (the accent, the welcome again, the global MCP per agent, the
+//! project-level config switch).
 
 use std::path::PathBuf;
 
@@ -415,6 +416,63 @@ impl Render for SettingsView {
                     .child(button("project-remove".into(), "移除", true, &t).on_click(cx.listener(|v, _, _, cx| v.remove_project(cx)))),
             );
         }
+        // The accents, each a dot in its color for this appearance; the one in use ringed.
+        let current = crate::theme::accent().id;
+        let swatches = div().flex().flex_row().flex_wrap().items_center().gap(px(6.)).children(
+            crate::theme::ACCENTS.iter().enumerate().map(|(i, a)| {
+                let on = a.id == current;
+                let color: Hsla = gpui::rgb(if t.dark { a.dark } else { a.light }).into();
+                let id = a.id;
+                div()
+                    .id(("accent", i))
+                    .size(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .border_2()
+                    .border_color(if on { color } else { gpui::transparent_black() })
+                    .cursor_pointer()
+                    .child(div().size(px(18.)).rounded_full().bg(color))
+                    .on_click(|_, _, cx| {
+                        if let Some(r) = root(cx) {
+                            r.update(cx, |r, cx| r.set_accent(id, cx));
+                        }
+                    })
+            }),
+        );
+        let appearance = card(&t).child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(12.))
+                .px(px(14.))
+                .py(px(10.))
+                .child(div().flex_1().text_size(px(13.)).text_color(t.text).child("强调色"))
+                .child(div().text_size(px(12.)).text_color(t.muted).child(crate::theme::accent().name))
+                .child(swatches),
+        );
+        let welcome = card(&t).child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(12.))
+                .px(px(14.))
+                .py(px(10.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(div().text_size(px(13.)).text_color(t.text).child("欢迎引导"))
+                        .child(div().text_size(px(11.)).text_color(t.muted).child("在主窗口里再看一遍主要功能的介绍。")),
+                )
+                .child(button("welcome-again".into(), "重新打开", true, &t).on_click(|_, _, cx| crate::welcome::show(cx))),
+        );
         div()
             .id("settings")
             .track_focus(&self.focus)
@@ -431,6 +489,8 @@ impl Render for SettingsView {
                     .px(px(24.))
                     .pt(px(20.))
                     .pb(px(28.))
+                    .child(section("外观", "", &t).child(appearance))
+                    .child(section("欢迎使用", "", &t).child(welcome))
                     .child(
                         section(
                             "全局 MCP",
