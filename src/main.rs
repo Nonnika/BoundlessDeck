@@ -25,6 +25,7 @@ mod tape;
 mod terminal;
 mod theme;
 mod webfocus;
+mod welcome;
 mod windows;
 mod word;
 
@@ -51,6 +52,7 @@ fn main() {
         cx.on_action(|_: &app::About, _| {});
         cx.on_action(|_: &app::OpenSettings, cx| windows::show_settings(cx));
         cx.on_action(|_: &app::ShowShortcuts, cx| windows::show_shortcuts(cx));
+        cx.on_action(|_: &app::ShowWelcome, cx| welcome::show(cx));
 
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
         let window = cx
@@ -97,6 +99,10 @@ fn main() {
         .detach();
         set_dock_icon();
         cx.activate(true);
+        // The first time the app starts, the welcome window tells what it does.
+        if welcome::due(cx) {
+            welcome::show(cx);
+        }
     });
 }
 

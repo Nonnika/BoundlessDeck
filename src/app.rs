@@ -17,7 +17,7 @@ use crate::recents::{Recents, ago, short_path};
 use crate::theme::{Paper, Theme};
 use crate::{icons, tape};
 
-actions!(app, [OpenFolder, Quit, About, OpenSettings, ShowShortcuts]);
+actions!(app, [OpenFolder, Quit, About, OpenSettings, ShowShortcuts, ShowWelcome]);
 
 /// What changes the screen: opening a folder, going home.
 type Switch = Box<dyn FnOnce(&mut Root, &mut Context<Root>)>;

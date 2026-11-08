@@ -466,6 +466,9 @@ pub fn remove_project_configs(root: &Path) -> Result<(), String> {
 pub struct Settings {
     #[serde(default, rename = "projectMCPConfigs")]
     pub project_mcp: bool,
+    /// Whether the welcome window has been shown: it opens by itself only once.
+    #[serde(default)]
+    pub welcomed: bool,
 }
 
 fn settings_file() -> Option<PathBuf> {

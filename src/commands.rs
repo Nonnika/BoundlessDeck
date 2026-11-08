@@ -4,7 +4,7 @@
 
 use gpui::{Action, App, KeyBinding, Menu, MenuItem, SharedString};
 
-use crate::app::{About, OpenFolder, OpenSettings, Quit, ShowShortcuts};
+use crate::app::{About, OpenFolder, OpenSettings, Quit, ShowShortcuts, ShowWelcome};
 use crate::deck::*;
 use crate::editor;
 
@@ -55,6 +55,7 @@ pub fn entries() -> Vec<Entry> {
         e("视图", "显示全部 block", Some("cmd-0"), DECK, FitAll),
         e("视图", "放大", Some("cmd-="), DECK, ZoomIn),
         e("视图", "缩小", Some("cmd--"), DECK, ZoomOut),
+        e("帮助", "欢迎使用 BoundlessDeck", None, None, ShowWelcome),
         e("帮助", "键盘快捷键", Some("cmd-/"), None, ShowShortcuts),
     ]
 }

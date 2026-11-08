@@ -26,7 +26,7 @@ struct OpenWindows {
 }
 impl Global for OpenWindows {}
 
-fn options(title: &str, w: f32, h: f32, cx: &mut App) -> WindowOptions {
+pub(crate) fn options(title: &str, w: f32, h: f32, cx: &mut App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(w), px(h)), cx))),
         titlebar: Some(TitlebarOptions { title: Some(title.to_string().into()), appears_transparent: false, traffic_light_position: None }),
@@ -202,7 +202,7 @@ pub fn refresh_settings(cx: &mut App) {
     }
 }
 
-fn root(cx: &App) -> Option<gpui::Entity<Root>> {
+pub(crate) fn root(cx: &App) -> Option<gpui::Entity<Root>> {
     cx.try_global::<RootHandle>().and_then(|h| h.0.upgrade())
 }
 
