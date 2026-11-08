@@ -308,23 +308,6 @@ pub fn file_name(p: &str) -> String {
         .unwrap_or_else(|| p.to_string())
 }
 
-/// What deck.json holds.
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct Workspace {
-    #[serde(default)]
-    pub version: i32,
-    #[serde(default)]
-    pub root: String,
-    #[serde(default, rename = "camX")]
-    pub cam_x: f32,
-    #[serde(default, rename = "camY")]
-    pub cam_y: f32,
-    #[serde(default, rename = "camS")]
-    pub cam_s: f32,
-    #[serde(default)]
-    pub blocks: Vec<Block>,
-}
-
 /// Shows the world point (x, y) at the window's top-left corner, s times as large.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
@@ -455,6 +438,9 @@ pub struct Model {
     pub file: Option<PathBuf>,
     pub cam: Camera,
     pub blocks: Vec<Block>,
+    /// Blocks deck.json holds that this build cannot read (a newer kind, say),
+    /// kept as they were and saved back after the others.
+    pub foreign: Vec<serde_json::Value>,
     pub sel: HashSet<String>,
     pub undo: Vec<Change>,
     pub redo: Vec<Change>,
@@ -538,7 +524,8 @@ impl Model {
     pub fn new_id(&self) -> String {
         loop {
             let id = format!("b{:06x}", rand::random::<u32>() & 0xff_ffff);
-            if self.index_of(&id).is_none() {
+            let foreign = self.foreign.iter().any(|v| v.get("id").and_then(|i| i.as_str()) == Some(id.as_str()));
+            if self.index_of(&id).is_none() && !foreign {
                 return id;
             }
         }
@@ -963,19 +950,34 @@ impl Model {
     }
 
     /// Reads the deck saved in its folder; a folder with none gets a new deck.
-    pub fn load(&mut self) {
-        let ws = self
-            .deck_file()
-            .and_then(|f| fs::read(f).ok())
-            .and_then(|data| serde_json::from_slice::<Workspace>(&data).ok());
-        let Some(ws) = ws else {
+    /// A deck.json there that cannot be read is an error, and nothing is
+    /// loaded, so saving does not write over it. Blocks in it this build does
+    /// not know are kept aside (`foreign`) and saved back.
+    pub fn load(&mut self) -> Result<(), String> {
+        let Some(file) = self.deck_file() else {
             self.seed();
-            return;
+            return Ok(());
         };
+        let data = match fs::read(&file) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.seed();
+                return Ok(());
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        let ws: RawWorkspace = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
         if self.root.as_os_str().is_empty() {
             self.root = PathBuf::from(ws.root);
         }
-        self.blocks = ws.blocks;
+        let mut blocks = Vec::new();
+        for v in ws.blocks {
+            match serde_json::from_value::<Block>(v.clone()) {
+                Ok(b) => blocks.push(b),
+                Err(_) => self.foreign.push(v),
+            }
+        }
+        self.blocks = blocks;
         // The Go build may have changed a browser's url alone: its open tab follows.
         for b in self.blocks.iter_mut().filter(|b| b.kind == BlockKind::Browser) {
             b.ensure_tabs();
@@ -983,6 +985,7 @@ impl Model {
         self.cam = Camera { x: ws.cam_x, y: ws.cam_y, s: if ws.cam_s == 0.0 { 1.0 } else { ws.cam_s } };
         self.drop_expired();
         self.prune_stacks();
+        Ok(())
     }
 
     pub fn snapshot(&self) -> Vec<u8> {
@@ -992,7 +995,7 @@ impl Model {
             cam_x: self.cam.x,
             cam_y: self.cam.y,
             cam_s: self.cam.s,
-            blocks: &self.blocks,
+            blocks: (&self.blocks, &self.foreign),
         };
         serde_json::to_vec_pretty(&ws).unwrap_or_default()
     }
@@ -1031,7 +1034,36 @@ struct WorkspaceRef<'a> {
     cam_y: f32,
     #[serde(rename = "camS")]
     cam_s: f32,
-    blocks: &'a [Block],
+    #[serde(serialize_with = "blocks_then_foreign")]
+    blocks: (&'a [Block], &'a [serde_json::Value]),
+}
+
+/// deck.json's blocks: those read, then those kept aside as they were.
+fn blocks_then_foreign<S: Serializer>(b: &(&[Block], &[serde_json::Value]), s: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeSeq;
+    let mut seq = s.serialize_seq(Some(b.0.len() + b.1.len()))?;
+    for x in b.0 {
+        seq.serialize_element(x)?;
+    }
+    for x in b.1 {
+        seq.serialize_element(x)?;
+    }
+    seq.end()
+}
+
+/// deck.json as read: its blocks still JSON, each read on its own.
+#[derive(Deserialize)]
+struct RawWorkspace {
+    #[serde(default)]
+    root: String,
+    #[serde(default, rename = "camX")]
+    cam_x: f32,
+    #[serde(default, rename = "camY")]
+    cam_y: f32,
+    #[serde(default, rename = "camS")]
+    cam_s: f32,
+    #[serde(default)]
+    blocks: Vec<serde_json::Value>,
 }
 
 /// The app's own data folder (recents, settings), unless
@@ -1285,7 +1317,7 @@ mod tests {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, go).unwrap();
         let mut m = Model::new(dir.path());
-        m.load();
+        m.load().unwrap();
         assert_eq!(m.root, dir.path(), "the folder is the root, wherever it moved");
         assert_eq!(m.cam, Camera { x: -12.5, y: 40.0, s: 0.75 });
         assert_eq!(m.blocks[0].kind, BlockKind::Note);
@@ -1299,15 +1331,50 @@ mod tests {
         assert!(v["blocks"][1].get("term").is_none(), "a terminal's old state is not kept");
         assert_eq!(v["blocks"][3]["chart"], "pie");
         let mut again = Model::new(dir.path());
-        again.load();
+        again.load().unwrap();
         assert_eq!(again.blocks, m.blocks);
+    }
+
+    #[test]
+    fn blocks_of_unknown_kinds_are_kept_as_they_were() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(DECK_DIR).join("deck.json");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let later = r#"{"version": 1, "blocks": [
+            {"id": "b000001", "kind": "note", "title": "便签", "x": 0, "y": 0, "w": 200, "h": 80, "text": "你好"},
+            {"id": "b000002", "kind": "hologram", "x": 5, "y": 5, "w": 10, "h": 10, "glow": [1, 2, 3]}
+        ]}"#;
+        fs::write(&file, later).unwrap();
+        let mut m = Model::new(dir.path());
+        m.load().unwrap();
+        assert_eq!(m.blocks.len(), 1);
+        assert_eq!((m.blocks[0].kind, m.blocks[0].text.as_str()), (BlockKind::Note, "你好"));
+        assert_eq!(m.foreign.len(), 1);
+        m.save().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(v["blocks"][1]["kind"], "hologram");
+        assert_eq!(v["blocks"][1]["glow"], serde_json::json!([1, 2, 3]), "kept as it was");
+        assert_eq!(v["blocks"][0]["text"], "你好");
+        assert_ne!(m.new_id(), "b000002");
+    }
+
+    #[test]
+    fn a_deck_that_cannot_be_read_is_not_written_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(DECK_DIR).join("deck.json");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "{ not json").unwrap();
+        let mut m = Model::new(dir.path());
+        assert!(m.load().is_err());
+        assert!(m.blocks.is_empty(), "nothing seeded over it");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "{ not json");
     }
 
     #[test]
     fn a_folder_without_a_deck_is_seeded() {
         let dir = tempfile::tempdir().unwrap();
         let mut m = Model::new(dir.path());
-        m.load();
+        m.load().unwrap();
         assert_eq!(m.blocks.len(), 1);
         assert!(m.sel.is_empty());
     }

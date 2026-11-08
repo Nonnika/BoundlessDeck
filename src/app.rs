@@ -119,7 +119,12 @@ impl Root {
         let root = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let mut m = Model::new(root.clone());
         m.file = Some(root.join(DECK_DIR).join("deck.json"));
-        m.load();
+        // A deck.json that cannot be read stays as it is: the deck does not open over it.
+        if let Err(e) = m.load() {
+            self.err = Some(format!("「{name}」的 {DECK_DIR}/deck.json 读不了（{e}），为免覆盖它，没有打开。"));
+            cx.notify();
+            return;
+        }
         let blocks = m.blocks.len();
         let workspaces = self.recents.paths();
         let project_mcp = self.settings.project_mcp;
