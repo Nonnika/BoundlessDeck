@@ -4,9 +4,11 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use std::rc::Rc;
+
 use gpui::{
-    AnyElement, FontStyle, FontWeight, HighlightStyle, IntoElement, ParentElement, SharedString, Styled,
-    StyledText, UnderlineStyle, div, px,
+    AnyElement, App, FontStyle, FontWeight, HighlightStyle, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, SharedString, Styled, StyledText, UnderlineStyle, Window, div, px,
 };
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -46,12 +48,40 @@ impl From<Inline> for Text {
     }
 }
 
+/// A task item's checkbox: whether it is ticked, and the byte of the source
+/// between its brackets (` ` or `x`), which a click flips.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Task {
+    pub done: bool,
+    pub at: usize,
+}
+
+/// What a click on a checkbox does, given its `Task::at`.
+pub type OnToggle = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
+/// The source with the checkbox whose bracketed byte is at `at` flipped, or
+/// none when `at` is not one (the text changed meanwhile).
+pub fn toggle_task(src: &str, at: usize) -> Option<String> {
+    let b = src.as_bytes();
+    if at == 0 || b.get(at - 1) != Some(&b'[') || b.get(at + 1) != Some(&b']') {
+        return None;
+    }
+    let next = match b[at] {
+        b' ' => "x",
+        b'x' | b'X' => " ",
+        _ => return None,
+    };
+    let mut s = src.to_string();
+    s.replace_range(at..at + 1, next);
+    Some(s)
+}
+
 /// A block of the document as parsed, before it becomes an element; its runs
 /// are `Inline` while gathered and `Text` once kept.
 enum Node<I = Text> {
     Heading(u8, I),
     Para(I),
-    Item { depth: usize, marker: SharedString, body: I, quote: usize },
+    Item { depth: usize, marker: SharedString, body: I, quote: usize, task: Option<Task> },
     Code(SharedString),
     Rule,
     Table(Vec<Vec<I>>),
@@ -64,7 +94,7 @@ impl Node<Inline> {
         match self {
             Node::Heading(l, i) => Node::Heading(l, i.into()),
             Node::Para(i) => Node::Para(i.into()),
-            Node::Item { depth, marker, body, quote } => Node::Item { depth, marker, body: body.into(), quote },
+            Node::Item { depth, marker, body, quote, task } => Node::Item { depth, marker, body: body.into(), quote, task },
             Node::Code(c) => Node::Code(c),
             Node::Rule => Node::Rule,
             Node::Table(rows) => Node::Table(rows.into_iter().map(|r| r.into_iter().map(Text::from).collect()).collect()),
@@ -96,6 +126,7 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node<Inline>> {
     let mut code: Option<String> = None;
     let mut table: Option<Vec<Vec<Inline>>> = None;
     let mut item_marker: Option<String> = None;
+    let mut item_task: Option<Task> = None;
     let mut image: Option<String> = None;
 
     let push_text = |cur: &mut Option<Inline>, t: &str, style: HighlightStyle| {
@@ -108,7 +139,7 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node<Inline>> {
     };
 
     let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    for ev in Parser::new_ext(src, opts) {
+    for (ev, range) in Parser::new_ext(src, opts).into_offset_iter() {
         let style = HighlightStyle {
             font_weight: (bold > 0).then_some(FontWeight::BOLD),
             font_style: (italic > 0).then_some(FontStyle::Italic),
@@ -144,7 +175,7 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node<Inline>> {
                 Tag::List(start) => {
                     // The text of the item the list is nested in comes first.
                     if let Some(inl) = cur.take() {
-                        flush_item(&mut nodes, &mut item_marker, depth, quotes, inl);
+                        flush_item(&mut nodes, &mut item_marker, &mut item_task, depth, quotes, inl);
                     }
                     stack.push(Container::List { ordered: start })
                 }
@@ -152,7 +183,7 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node<Inline>> {
                 Tag::Item => {
                     // A paragraph left open in the parent item ends here.
                     if let Some(inl) = cur.take() {
-                        flush_item(&mut nodes, &mut item_marker, depth, quotes, inl);
+                        flush_item(&mut nodes, &mut item_marker, &mut item_task, depth, quotes, inl);
                     }
                     let marker = match stack.iter_mut().rev().find(|s| matches!(s, Container::List { .. })) {
                         Some(Container::List { ordered: Some(n) }) => {
@@ -163,6 +194,7 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node<Inline>> {
                         _ => "•".to_string(),
                     };
                     item_marker = Some(marker);
+                    item_task = None;
                 }
                 Tag::Table(_) => table = Some(Vec::new()),
                 Tag::TableHead | Tag::TableRow => {
@@ -179,7 +211,7 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node<Inline>> {
                 TagEnd::Paragraph => {
                     if let Some(inl) = cur.take() {
                         if depth > 0 {
-                            flush_item(&mut nodes, &mut item_marker, depth, quotes, inl);
+                            flush_item(&mut nodes, &mut item_marker, &mut item_task, depth, quotes, inl);
                         } else if quotes > 0 {
                             nodes.push(Node::QuotePara(quotes, inl));
                         } else {
@@ -189,9 +221,10 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node<Inline>> {
                 }
                 TagEnd::Item => {
                     if let Some(inl) = cur.take() {
-                        flush_item(&mut nodes, &mut item_marker, depth, quotes, inl);
+                        flush_item(&mut nodes, &mut item_marker, &mut item_task, depth, quotes, inl);
                     } else if let Some(m) = item_marker.take() {
-                        nodes.push(Node::Item { depth, marker: m.into(), body: Inline::default(), quote: quotes });
+                        let task = item_task.take();
+                        nodes.push(Node::Item { depth, marker: m.into(), body: Inline::default(), quote: quotes, task });
                     }
                 }
                 TagEnd::Strong => bold -= 1,
@@ -233,7 +266,12 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node<Inline>> {
             Event::SoftBreak => push_text(&mut cur, " ", HighlightStyle::default()),
             Event::HardBreak => push_text(&mut cur, "\n", HighlightStyle::default()),
             Event::TaskListMarker(done) => {
-                push_text(&mut cur, if done { "☑ " } else { "☐ " }, HighlightStyle::default())
+                // The event spans `[ ]`; inside a quote the source may differ, so look.
+                let at = src[range.clone()].find('[').map(|i| range.start + i + 1);
+                match at {
+                    Some(at) if toggle_task(src, at).is_some() => item_task = Some(Task { done, at }),
+                    _ => push_text(&mut cur, if done { "☑ " } else { "☐ " }, HighlightStyle::default()),
+                }
             }
             Event::Rule => nodes.push(Node::Rule),
             Event::Html(t) | Event::InlineHtml(t) => push_text(&mut cur, &t, HighlightStyle::default()),
@@ -246,9 +284,16 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node<Inline>> {
     nodes
 }
 
-fn flush_item(nodes: &mut Vec<Node<Inline>>, marker: &mut Option<String>, depth: usize, quote: usize, body: Inline) {
+fn flush_item(
+    nodes: &mut Vec<Node<Inline>>,
+    marker: &mut Option<String>,
+    task: &mut Option<Task>,
+    depth: usize,
+    quote: usize,
+    body: Inline,
+) {
     let m = marker.take().unwrap_or_default();
-    nodes.push(Node::Item { depth, marker: m.into(), body, quote });
+    nodes.push(Node::Item { depth, marker: m.into(), body, quote, task: task.take() });
 }
 
 fn styled(t: &Text) -> StyledText {
@@ -262,7 +307,7 @@ pub fn parse_doc(src: &str, c: &MdColors, dark: bool) -> Parsed {
 
 /// Renders a pre-parsed document at font size `size`, in colors `c`.
 pub fn render_parsed(doc: &Parsed, size: f32, c: &MdColors) -> AnyElement {
-    render_nodes(&doc.nodes, size, c, &local_image)
+    render_nodes(&doc.nodes, size, c, &local_image, None)
 }
 
 /// A picture named by an absolute path; others are not shown.
@@ -276,9 +321,10 @@ fn render_nodes(
     size: f32,
     c: &MdColors,
     images: &dyn Fn(&str) -> Option<gpui::ImageSource>,
+    toggle: Option<&OnToggle>,
 ) -> AnyElement {
     let gap = size * 0.6;
-    let children: Vec<AnyElement> = nodes.iter().map(|n| node_element(n, size, c, images)).collect();
+    let children: Vec<AnyElement> = nodes.iter().map(|n| node_element(n, size, c, images, toggle)).collect();
     root(div().flex().flex_col().gap(px(gap)), size, c).children(children).into_any_element()
 }
 
@@ -299,21 +345,29 @@ impl Parsed {
     }
 
     /// The document's block `ix` alone, styled as in `render_parsed_with`, with
-    /// the gap after it, for a list that lays out only what shows.
+    /// the gap after it, for a list that lays out only what shows. With
+    /// `toggle`, its checkboxes can be clicked.
     pub fn render_item(
         &self,
         ix: usize,
         size: f32,
         c: &MdColors,
         images: &dyn Fn(&str) -> Option<gpui::ImageSource>,
+        toggle: Option<&OnToggle>,
     ) -> AnyElement {
         let Some(n) = self.nodes.get(ix) else { return div().into_any_element() };
         let last = ix + 1 == self.nodes.len();
-        root(div(), size, c).when(!last, |d| d.pb(px(size * 0.6))).child(node_element(n, size, c, images)).into_any_element()
+        root(div(), size, c).when(!last, |d| d.pb(px(size * 0.6))).child(node_element(n, size, c, images, toggle)).into_any_element()
     }
 }
 
-fn node_element(n: &Node, size: f32, c: &MdColors, images: &dyn Fn(&str) -> Option<gpui::ImageSource>) -> AnyElement {
+fn node_element(
+    n: &Node,
+    size: f32,
+    c: &MdColors,
+    images: &dyn Fn(&str) -> Option<gpui::ImageSource>,
+    toggle: Option<&OnToggle>,
+) -> AnyElement {
     match n {
         Node::Heading(level, inl) => {
             let k = match *level {
@@ -338,14 +392,21 @@ fn node_element(n: &Node, size: f32, c: &MdColors, images: &dyn Fn(&str) -> Opti
             .text_color(c.muted)
             .child(styled(inl))
             .into_any_element(),
-        Node::Item { depth, marker, body, quote } => div()
-            .flex()
-            .flex_row()
-            .pl(px(size * 1.2 * (depth.saturating_sub(1)) as f32 + size * 0.8 * *quote as f32))
-            .gap(px(size * 0.4))
-            .child(div().flex_none().min_w(px(size * 0.9)).text_color(c.muted).child(marker.clone()))
-            .child(div().flex_1().min_w_0().child(styled(body)))
-            .into_any_element(),
+        Node::Item { depth, marker, body, quote, task } => {
+            let lead = match task {
+                Some(task) => checkbox(*task, size, c, toggle),
+                None => div().text_color(c.muted).child(marker.clone()).into_any_element(),
+            };
+            let done = task.is_some_and(|t| t.done);
+            div()
+                .flex()
+                .flex_row()
+                .pl(px(size * 1.2 * (depth.saturating_sub(1)) as f32 + size * 0.8 * *quote as f32))
+                .gap(px(size * 0.4))
+                .child(div().flex_none().min_w(px(size * 0.9)).child(lead))
+                .child(div().flex_1().min_w_0().when(done, |d| d.text_color(c.muted)).child(styled(body)))
+                .into_any_element()
+        }
         Node::Code(code) => div()
             .bg(c.code_bg)
             .rounded(px(size * 0.35))
@@ -377,6 +438,36 @@ fn node_element(n: &Node, size: f32, c: &MdColors, images: &dyn Fn(&str) -> Opti
             }))
             .into_any_element(),
     }
+}
+
+/// A task's box, on the first line of its item; ticked, it is filled with a check.
+/// Clicking it (with `toggle`) flips the task and does nothing else.
+fn checkbox(task: Task, size: f32, c: &MdColors, toggle: Option<&OnToggle>) -> AnyElement {
+    let side = (size * 0.85).round().max(6.);
+    let check = || {
+        gpui::svg()
+            .path("icons/check.svg")
+            .size(px(side * 0.8))
+            .text_color(gpui::white())
+    };
+    let mut b = div()
+        .size(px(side))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(side * 0.22))
+        .border(px((size / 12.).max(1.)))
+        .when(task.done, |d| d.bg(c.link).border_color(c.link).child(check()))
+        .when(!task.done, |d| d.border_color(c.muted));
+    if let Some(f) = toggle {
+        let f = f.clone();
+        b = b.cursor_pointer().on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            cx.stop_propagation();
+            f(task.at, window, cx);
+        });
+    }
+    // Centered on the first line, whose height is the root's line height.
+    div().h(px(size * 1.5)).flex().items_center().child(b).into_any_element()
 }
 
 use gpui::prelude::FluentBuilder as _;
@@ -420,6 +511,32 @@ mod tests {
                 "table:2x2"
             ]
         );
+    }
+
+    #[test]
+    fn task_boxes_point_at_their_source() {
+        let c = MdColors::of_theme(&Theme::light());
+        let src = "- [ ] 买菜\n- [x] 洗衣\n  - [ ] 嵌套\n\n> - [X] 引用里\n";
+        let tasks: Vec<(String, Task)> = parse(src, &c)
+            .into_iter()
+            .filter_map(|n| match n {
+                Node::Item { body, task: Some(t), .. } => Some((body.text, t)),
+                _ => None,
+            })
+            .collect();
+        let names: Vec<&str> = tasks.iter().map(|(b, _)| b.as_str()).collect();
+        assert_eq!(names, ["买菜", "洗衣", "嵌套", "引用里"]);
+        assert_eq!(tasks.iter().map(|(_, t)| t.done).collect::<Vec<_>>(), [false, true, false, true]);
+        for (_, t) in &tasks {
+            assert_eq!(&src[t.at - 1..t.at + 2].to_ascii_lowercase(), if t.done { "[x]" } else { "[ ]" });
+        }
+        let ticked = toggle_task(src, tasks[0].1.at).unwrap();
+        assert!(ticked.starts_with("- [x] 买菜\n- [x] 洗衣"));
+        let unticked = toggle_task(src, tasks[3].1.at).unwrap();
+        assert!(unticked.ends_with("> - [ ] 引用里\n"));
+        // Not a checkbox: nothing happens.
+        assert_eq!(toggle_task(src, 0), None);
+        assert_eq!(toggle_task(src, src.len()), None);
     }
 
     #[test]

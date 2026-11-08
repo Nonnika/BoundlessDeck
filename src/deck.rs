@@ -1640,6 +1640,7 @@ impl DeckView {
         images: Rc<ImageFinder>,
         pad: [f32; 4],
         outer_w: f32,
+        toggle: Option<markdown::OnToggle>,
     ) -> AnyElement {
         let rt = self.rts.entry(id.to_string()).or_default();
         let state = match &mut rt.md_list {
@@ -1664,7 +1665,7 @@ impl DeckView {
             .size_full()
             .child(
                 gpui::list(state, move |ix, _, _| {
-                    div().pl(pl).pr(pr).child(parsed.render_item(ix, size, &colors, &*images)).into_any_element()
+                    div().pl(pl).pr(pr).child(parsed.render_item(ix, size, &colors, &*images, toggle.as_ref())).into_any_element()
                 })
                 .w(px(outer_w.max(40.)))
                 .h_full()
@@ -1672,6 +1673,36 @@ impl DeckView {
                 .pb(px(pad[2])),
             )
             .into_any_element()
+    }
+
+    /// What a click on a checkbox of block `id`'s Markdown does: flips that task.
+    fn task_toggle(&self, id: &str, cx: &mut Context<Self>) -> markdown::OnToggle {
+        let this = cx.entity().downgrade();
+        let id = id.to_string();
+        Rc::new(move |at, _, cx| {
+            let _ = this.update(cx, |d, cx| d.toggle_task(&id, at, cx));
+        })
+    }
+
+    /// Ticks or unticks the task whose bracketed byte is at `at` in a 笔记's
+    /// text (written to its file) or a QuickLook's (saved with the deck).
+    fn toggle_task(&mut self, id: &str, at: usize, cx: &mut Context<Self>) {
+        let Some(b) = self.m.block_mut(id) else { return };
+        match b.kind {
+            BlockKind::Memo => {
+                let Some(rt) = self.rts.get_mut(id).filter(|r| r.memo.loaded) else { return };
+                let Some(next) = markdown::toggle_task(&rt.memo.text, at) else { return };
+                rt.memo.text = next;
+                self.save_memo(id, cx);
+            }
+            BlockKind::Note => {
+                let Some(next) = markdown::toggle_task(&b.text, at) else { return };
+                b.text = next;
+                self.request_save(cx);
+            }
+            _ => return,
+        }
+        cx.notify();
     }
 
     pub(super) fn chart_data(&mut self, b: &Block) -> Arc<crate::chart::Data> {
@@ -2066,7 +2097,8 @@ impl DeckView {
                 }
                 let colors = MdColors::of_paper(paper);
                 let parsed = self.parsed_markdown(&b.id, &b.text, &colors, t.dark);
-                self.markdown_list(&b.id, parsed, 14. * s, colors, Rc::new(markdown::local_image), pad, b.w * s)
+                let toggle = self.task_toggle(&b.id, cx);
+                self.markdown_list(&b.id, parsed, 14. * s, colors, Rc::new(markdown::local_image), pad, b.w * s, Some(toggle))
             }
             BlockKind::Memo => self.memo_body(b, t, cx),
             BlockKind::File => self.file_body(b, t, window, cx),
@@ -2160,7 +2192,8 @@ impl DeckView {
         let pad = [12. * s, 16. * s, 12. * s, 16. * s];
         if save_err.is_none() && !text.trim().is_empty() {
             let parsed = self.parsed_markdown(&b.id, &text, &colors, t.dark);
-            return self.markdown_list(&b.id, parsed, size, colors, Rc::new(markdown::local_image), pad, b.w * s);
+            let toggle = self.task_toggle(&b.id, cx);
+            return self.markdown_list(&b.id, parsed, size, colors, Rc::new(markdown::local_image), pad, b.w * s, Some(toggle));
         }
         let content = div()
             .flex()
@@ -2201,7 +2234,7 @@ impl DeckView {
                             let p = std::path::Path::new(url);
                             Some(gpui::ImageSource::from(if p.is_absolute() { p.to_path_buf() } else { base.join(p) }))
                         });
-                        self.markdown_list(&b.id, parsed, DOC_FONT * s, colors, images, [12. * s, 16. * s, 12. * s, 16. * s], b.w * s)
+                        self.markdown_list(&b.id, parsed, DOC_FONT * s, colors, images, [12. * s, 16. * s, 12. * s, 16. * s], b.w * s, None)
                     }
                 }
             }
@@ -2219,7 +2252,7 @@ impl DeckView {
                             let name = url.strip_prefix(crate::word::MEDIA_SCHEME)?;
                             d2.media.get(name).map(|im| gpui::ImageSource::Image(im.clone()))
                         });
-                        self.markdown_list(&b.id, parsed, DOC_FONT * s, colors, images, [12. * s, 16. * s, 16. * s, 16. * s], b.w * s)
+                        self.markdown_list(&b.id, parsed, DOC_FONT * s, colors, images, [12. * s, 16. * s, 16. * s, 16. * s], b.w * s, None)
                     }
                 }
             }

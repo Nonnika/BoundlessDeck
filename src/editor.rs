@@ -134,6 +134,9 @@ struct Lines {
     heights: Vec<Pixels>,
     lefts: Vec<Pixels>,
     maps: Vec<Option<mdlive::Map>>,
+    /// A rendered task line's checkbox: where its ☐ shows, and the byte of the
+    /// line between its brackets.
+    tasks: Vec<Option<(usize, usize)>>,
 }
 
 impl Lines {
@@ -166,6 +169,20 @@ impl Lines {
         };
         let o = self.maps[i].as_ref().map_or(d, |m| m.to_src(d));
         (self.starts[i] + o).min(len)
+    }
+
+    /// The offset of the bracketed byte of the checkbox under a point relative
+    /// to the text's top-left (unscrolled), if one is.
+    fn task_at(&self, p: Point<Pixels>) -> Option<usize> {
+        if self.lines.is_empty() || p.y < px(0.) {
+            return None;
+        }
+        let i = self.tops.partition_point(|&t| t <= p.y).saturating_sub(1);
+        let (shown, at) = self.tasks.get(i).copied().flatten()?;
+        let local = point(p.x - self.lefts[i], p.y - self.tops[i]);
+        let d = self.lines[i].index_for_position(local, self.heights[i]).ok()?;
+        // The box, or the space after it.
+        (shown..shown + "☐ ".len()).contains(&d).then_some(self.starts[i] + at)
     }
 }
 
@@ -456,7 +473,26 @@ impl Editor {
         }
     }
 
+    /// The text offset of the checkbox under the mouse, if one is.
+    fn task_for_mouse(&self, pos: Point<Pixels>) -> Option<usize> {
+        let l = self.layout.as_ref()?;
+        let local = pos - l.bounds.origin;
+        l.lines.task_at(point(local.x, local.y + px(l.scroll_y)))
+    }
+
     fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // A click on a rendered checkbox ticks it, leaving the cursor where it was.
+        if !ev.modifiers.shift
+            && let Some(at) = self.task_for_mouse(ev.position)
+            && let Some(next) = crate::markdown::toggle_task(&self.text, at)
+        {
+            window.focus(&self.focus);
+            self.text = next;
+            cx.emit(EditorEvent::Changed);
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
         window.focus(&self.focus);
         self.selecting = true;
         self.goal_x = None;
@@ -742,15 +778,19 @@ impl Element for TextElement {
         let mut start = 0;
         for (k, piece) in text.split('\n').enumerate() {
             let end = start + piece.len();
-            let (shown, mut runs, map, block) = match parsed.get(k) {
+            let (shown, mut runs, map, block, task) = match parsed.get(k) {
                 Some(line) => {
                     // The lines the cursor or selection touch show their source.
                     let reveal = focused && selected.start <= end && selected.end >= start;
                     let sh = mdlive::show(piece, line, reveal);
                     let runs = sh.spans.iter().map(|(r, sty)| styled_run(r.len(), *sty, line.block, &font, e)).collect();
-                    (sh.text, runs, sh.map, line.block)
+                    let task = sh.map.as_ref().and_then(|m| {
+                        let p = line.pieces.iter().find(|p| matches!(p.show, mdlive::Show::As("☐ " | "☑ ")))?;
+                        Some((m.to_disp(p.src.start), p.src.start + "- [".len()))
+                    });
+                    (sh.text, runs, sh.map, line.block, task)
                 }
-                None => (piece.to_string(), vec![TextRun { len: piece.len(), ..base.clone() }], None, Block::Para),
+                None => (piece.to_string(), vec![TextRun { len: piece.len(), ..base.clone() }], None, Block::Para, None),
             };
             if let Some(m) = e.marked.as_ref().filter(|_| has_text && map.is_none())
                 && m.start < end
@@ -789,6 +829,7 @@ impl Element for TextElement {
             ls.heights.push(lh);
             ls.lefts.push(left);
             ls.maps.push(map);
+            ls.tasks.push(task);
             y += h;
             start = end + 1;
         }
