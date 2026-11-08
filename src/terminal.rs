@@ -70,6 +70,9 @@ pub struct Terminal {
     marked: Option<String>,
     /// Where the cursor was last painted, in window coordinates: where candidates appear.
     ime_cursor: Option<Bounds<Pixels>>,
+    /// The appearance it was last painted in: color queries (OSC 10/11) answer with it, so
+    /// programs that pick their theme from the background see the right one.
+    dark: bool,
     _events: gpui::Task<()>,
 }
 
@@ -135,6 +138,7 @@ impl Terminal {
                 exited: false,
                 marked: None,
                 ime_cursor: None,
+                dark: false,
                 _events: events,
             }
         })
@@ -151,7 +155,7 @@ impl Terminal {
                 self.write(f(&text).into_bytes());
             }
             TermEvent::ColorRequest(i, f) => {
-                let rgb = palette(i, false);
+                let rgb = palette(i, self.dark);
                 self.write(f(rgb).into_bytes());
             }
             TermEvent::TextAreaSizeRequest(f) => self.write(f(window_size(self.cols, self.rows)).into_bytes()),
@@ -394,12 +398,20 @@ fn to_hsla(c: Rgb) -> Hsla {
     Hsla::from(gpui::Rgba { r: c.r as f32 / 255., g: c.g as f32 / 255., b: c.b as f32 / 255., a: 1. })
 }
 
-fn resolve(c: Color, colors: &alacritty_terminal::term::color::Colors, dark: bool, bold: bool) -> Rgb {
+/// `fg`: the color is for text. In dark mode black text follows the theme like Terminal.app does,
+/// turning into the default foreground, unless the program redefined black itself (OSC 4);
+/// a black background stays dark.
+fn resolve(c: Color, colors: &alacritty_terminal::term::color::Colors, dark: bool, bold: bool, fg: bool) -> Rgb {
+    let pick = |i: usize| match colors[i] {
+        Some(rgb) => rgb,
+        None if i == 0 && fg && dark => palette(256, dark),
+        None => palette(i, dark),
+    };
     match c {
         Color::Spec(rgb) => rgb,
         Color::Indexed(i) => {
             let i = if bold && i < 8 { i + 8 } else { i };
-            colors[i as usize].unwrap_or_else(|| palette(i as usize, dark))
+            pick(i as usize)
         }
         Color::Named(n) => {
             let i = n as usize;
@@ -419,7 +431,7 @@ fn resolve(c: Color, colors: &alacritty_terminal::term::color::Colors, dark: boo
                     }
                 }
             };
-            if i < 256 { colors[i].unwrap_or_else(|| palette(i, dark)) } else { palette(i, dark) }
+            if i < 256 { pick(i) } else { palette(i, dark) }
         }
     }
 }
@@ -632,8 +644,8 @@ impl Element for GridElement {
                 }
                 let col = cell.point.column.0;
                 let bold = flags.contains(Flags::BOLD);
-                let mut fg = resolve(cell.fg, colors, dark, bold);
-                let mut bg = resolve(cell.bg, colors, dark, false);
+                let mut fg = resolve(cell.fg, colors, dark, bold, true);
+                let mut bg = resolve(cell.bg, colors, dark, false, false);
                 if flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
                 }
@@ -723,8 +735,12 @@ impl Element for GridElement {
                 }
             }
         });
-        if self.term.read(cx).ime_cursor != ime_cursor {
-            self.term.update(cx, |t, _| t.ime_cursor = ime_cursor);
+        let t = self.term.read(cx);
+        if t.ime_cursor != ime_cursor || t.dark != dark {
+            self.term.update(cx, |t, _| {
+                t.ime_cursor = ime_cursor;
+                t.dark = dark;
+            });
         }
     }
 }
@@ -762,6 +778,22 @@ mod tests {
     fn grid_fits_the_body() {
         let (c, r) = grid_for(560.0, 340.0 - 26.0);
         assert!(c > 60 && r > 15);
+    }
+
+    #[test]
+    fn black_text_follows_dark_mode() {
+        let colors = alacritty_terminal::term::color::Colors::default();
+        let black = Color::Named(NamedColor::Black);
+        let fg = |dark| palette(256, dark);
+        assert_eq!(resolve(black, &colors, true, false, true), fg(true));
+        assert_eq!(resolve(Color::Indexed(0), &colors, true, false, true), fg(true));
+        assert_eq!(resolve(black, &colors, false, false, true), palette(0, false));
+        // A black background stays dark.
+        assert_eq!(resolve(black, &colors, true, false, false), palette(0, true));
+        // Black the program set itself is kept.
+        let mut set = colors;
+        set[0] = Some(Rgb { r: 1, g: 2, b: 3 });
+        assert_eq!(resolve(black, &set, true, false, true), Rgb { r: 1, g: 2, b: 3 });
     }
 
 }
