@@ -210,3 +210,98 @@ mod accent_tests {
         }
     }
 }
+
+/// A color of the 文字 and 图形 palette: its name (kept in deck.json), and
+/// its color in light and in dark mode.
+pub struct Ink {
+    pub name: &'static str,
+    pub light: u32,
+    pub dark: u32,
+}
+
+/// The palette for 文字 and 图形. `ink` is the theme's own text color.
+pub const INKS: &[Ink] = &[
+    Ink { name: "ink", light: 0x1d1f24, dark: 0xe8e9ed },
+    Ink { name: "gray", light: 0x8b8d98, dark: 0x9a9caa },
+    Ink { name: "red", light: 0xe5484d, dark: 0xf2555a },
+    Ink { name: "orange", light: 0xf76b15, dark: 0xff8b3e },
+    Ink { name: "yellow", light: 0xe2a400, dark: 0xffd23f },
+    Ink { name: "green", light: 0x30a46c, dark: 0x3dd68c },
+    Ink { name: "teal", light: 0x12a594, dark: 0x0bd8b6 },
+    Ink { name: "blue", light: 0x3e63dd, dark: 0x7b9cff },
+    Ink { name: "purple", light: 0x8e4ec6, dark: 0xbf7af0 },
+    Ink { name: "pink", light: 0xd6409f, dark: 0xf26ab8 },
+];
+
+/// What a style color asks for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Paint {
+    /// Left out: the kind's default.
+    Default,
+    /// `none`: nothing drawn.
+    None,
+    Color(Hsla),
+}
+
+/// Reads a style color: a palette name, `#rrggbb` or `none`. As a fill
+/// (`soft`), a palette color is a pale tint of itself over the background,
+/// so words on it read; a `#rrggbb` is used as it is.
+pub fn paint(spec: &str, soft: bool, t: &Theme) -> Paint {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return Paint::Default;
+    }
+    if spec == "none" {
+        return Paint::None;
+    }
+    if let Some(hex) = spec.strip_prefix('#') {
+        return match u32::from_str_radix(hex, 16) {
+            Ok(v) if hex.len() == 6 => Paint::Color(c(v)),
+            _ => Paint::Default,
+        };
+    }
+    match INKS.iter().find(|i| i.name == spec) {
+        Some(i) => {
+            let v = if t.dark { i.dark } else { i.light };
+            Paint::Color(if soft { mix(t.surface, c(v), if t.dark { 0.3 } else { 0.18 }) } else { c(v) })
+        }
+        None => Paint::Default,
+    }
+}
+
+/// `a` with `k` of `b` in it, opaque.
+pub fn mix(a: Hsla, b: Hsla, k: f32) -> Hsla {
+    let (a, b) = (Rgba::from(a), Rgba::from(b));
+    Hsla::from(Rgba { r: a.r + (b.r - a.r) * k, g: a.g + (b.g - a.g) * k, b: a.b + (b.b - a.b) * k, a: 1. })
+}
+
+/// A color as `#rrggbb`.
+pub fn hex(color: Hsla) -> String {
+    let c = Rgba::from(color);
+    let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", byte(c.r), byte(c.g), byte(c.b))
+}
+
+#[cfg(test)]
+mod paint_tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn style_colors_are_read() {
+        let t = Theme::light();
+        assert_eq!(paint("", false, &t), Paint::Default);
+        assert_eq!(paint("none", true, &t), Paint::None);
+        assert_eq!(paint("#zz0000", false, &t), Paint::Default);
+        assert_eq!(paint("nope", false, &t), Paint::Default);
+        let Paint::Color(red) = paint("#ff0000", true, &t) else { panic!() };
+        assert_eq!(hex(red), "#ff0000", "a color given as it is stays so, even as a fill");
+        let Paint::Color(blue) = paint("blue", false, &t) else { panic!() };
+        assert_eq!(hex(blue), "#3e63dd");
+        let Paint::Color(tint) = paint("blue", true, &t) else { panic!() };
+        assert_ne!(hex(tint), "#3e63dd", "a palette fill is a tint");
+        let names: HashSet<_> = INKS.iter().map(|i| i.name).collect();
+        assert_eq!(names.len(), INKS.len());
+    }
+}

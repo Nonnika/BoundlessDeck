@@ -392,6 +392,7 @@ impl DeckView {
             BlockKind::Browser => if n.url.is_empty() { "空白页面".into() } else { n.url.clone() },
             BlockKind::Chart => crate::chart::parse(&n.text).summary(crate::chart::of(&n.chart)),
             BlockKind::Stack => String::new(),
+            BlockKind::Text | BlockKind::Shape => cut(n.text.trim(), 360),
         }
     }
 

@@ -45,6 +45,8 @@ pub fn entries() -> Vec<Entry> {
         e("新建", "新建浏览器", Some("cmd-shift-b"), DECK, NewBrowser),
         e("新建", "新建图表", Some("cmd-shift-g"), DECK, NewChart),
         e("新建", "新建块堆", Some("cmd-shift-k"), DECK, NewStack),
+        e("新建", "新建文字", Some("cmd-shift-x"), DECK, NewText),
+        e("新建", "新建图形", Some("cmd-shift-j"), DECK, NewShape),
         e("编辑", "撤销", Some("cmd-z"), DECK, Undo),
         e("编辑", "重做", Some("cmd-shift-z"), DECK, Redo),
         sep(e("编辑", "剪切", Some("cmd-x"), Some("Editor"), editor::Cut)),
@@ -196,6 +198,6 @@ mod tests {
                 assert!(seen.insert((k, e.context)), "{k} bound twice");
             }
         }
-        assert_eq!(es.iter().filter(|e| e.menu == "新建").count(), 7);
+        assert_eq!(es.iter().filter(|e| e.menu == "新建").count(), crate::model::BlockKind::ALL.len());
     }
 }

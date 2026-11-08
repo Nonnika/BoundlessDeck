@@ -31,11 +31,15 @@ pub enum BlockKind {
     Browser,
     Chart,
     Stack,
+    /// Words on the canvas, styled; no title shows until it is selected.
+    Text,
+    /// A rectangle, ellipse, diamond or triangle, styled, maybe with words in it.
+    Shape,
 }
 
 impl BlockKind {
     /// Every kind, in the order the toolbar lists them.
-    pub const ALL: [BlockKind; 7] = [
+    pub const ALL: [BlockKind; 9] = [
         BlockKind::Note,
         BlockKind::Memo,
         BlockKind::File,
@@ -43,7 +47,14 @@ impl BlockKind {
         BlockKind::Browser,
         BlockKind::Chart,
         BlockKind::Stack,
+        BlockKind::Text,
+        BlockKind::Shape,
     ];
+
+    /// Kinds drawn as they are, without a card: their title shows only while selected.
+    pub fn bare(self) -> bool {
+        matches!(self, BlockKind::Text | BlockKind::Shape)
+    }
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -54,6 +65,8 @@ impl BlockKind {
             BlockKind::Browser => "browser",
             BlockKind::Chart => "chart",
             BlockKind::Stack => "stack",
+            BlockKind::Text => "text",
+            BlockKind::Shape => "shape",
         }
     }
 
@@ -89,6 +102,8 @@ impl BlockKind {
             BlockKind::Browser => "浏览器",
             BlockKind::Chart => "图表",
             BlockKind::Stack => "块堆",
+            BlockKind::Text => "文字",
+            BlockKind::Shape => "图形",
         }
     }
 }
@@ -212,6 +227,62 @@ pub struct Block {
     /// The blocks a 块堆 holds, by ID, the top card first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<String>,
+    /// A 图形's outline: `rect` (the default), `ellipse`, `diamond` or `triangle`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shape: String,
+    /// How a 文字 or 图形 looks; each part left out takes its kind's default.
+    #[serde(default, skip_serializing_if = "Style::is_default")]
+    pub style: Style,
+}
+
+/// The shapes a 图形 can be.
+pub const SHAPES: &[&str] = &["rect", "ellipse", "diamond", "triangle"];
+
+/// How a 文字 or 图形 looks. Colors are a palette name (`theme::INKS`, which
+/// follow light and dark), `#rrggbb`, or `none`; empty takes the default.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Style {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fill: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stroke: String,
+    /// The words' color.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
+    /// A font family installed on the system; empty is the system font.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub font: String,
+    /// Font size in points at 100%; 0 is the kind's default.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub size: f32,
+    /// CSS weight, 100–900; 0 is regular.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub weight: u16,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub italic: bool,
+    /// Corner radius in points; none is the kind's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f32>,
+    /// `left`, `center` or `right`; empty is the kind's default.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub align: String,
+    /// `top`, `middle` or `bottom`; empty is the kind's default.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub valign: String,
+}
+
+impl Style {
+    pub fn is_default(&self) -> bool {
+        *self == Style::default()
+    }
+}
+
+fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
+}
+
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
 }
 
 impl Block {
@@ -1126,6 +1197,14 @@ pub fn new_block_of(kind: BlockKind, now_ms: i64) -> Block {
             b.chart = "bar".into();
             b.text = crate::chart::SAMPLE.into();
             (480.0, 320.0)
+        }
+        BlockKind::Text => {
+            b.text = "双击编辑文字".into();
+            (280.0, 90.0)
+        }
+        BlockKind::Shape => {
+            b.shape = "rect".into();
+            (220.0, 160.0)
         }
     };
     b.w = w;

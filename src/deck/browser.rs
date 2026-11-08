@@ -500,10 +500,14 @@ impl DeckView {
         }
         // The chrome: the workspace pill, the toolbar, the status bar.
         let (vw, vh) = self.view;
-        for chrome in [(80., 0., 300., 56.), (vw - 560., 0., 560., 56.), (0., vh - 48., 520., 48.)] {
+        for chrome in [(80., 0., 300., 56.), (vw - 700., 0., 700., 56.), (0., vh - 48., 520., 48.)] {
             if over(chrome) {
                 return Some("被工具栏遮住 · 平移画布让它露出来");
             }
+        }
+        let panel = (vw - super::inspector::PANEL_W - 12., super::inspector::PANEL_TOP, super::inspector::PANEL_W, vh - super::inspector::PANEL_TOP - 48.);
+        if self.inspector_shown && over(panel) {
+            return Some("被样式面板遮住 · 取消选择文字或图形让它露出来");
         }
         None
     }

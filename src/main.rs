@@ -18,6 +18,7 @@ mod mdlive;
 mod mcp;
 mod memo;
 mod model;
+mod nativepanel;
 mod pinch;
 mod pdf;
 mod preview;

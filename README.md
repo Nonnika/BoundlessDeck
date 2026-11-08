@@ -33,6 +33,7 @@ When trying things out, point `BOUNDLESSDECK_DATA_DIR` and `BOUNDLESSDECK_ACTIVE
 
 - **QuickLook** sticky notes (they expire), **notes** (Markdown files with live rendering and clickable checkboxes), and **file** previews (text, Markdown, images, PDF, Word, video)
 - **Terminals** (alacritty_terminal, with input method support), **browsers** (WKWebView, with tabs), **charts**, and **stacks**
+- **Text** and **shapes** (rectangle, ellipse, diamond, triangle) drawn right on the canvas, styled from a panel on the right: colors, any installed font through the system Fonts panel, corners and alignment
 - Pan, pinch or ⌘-scroll to zoom, marquee select, undo and redo; text is re-laid out at every zoom level, so it stays sharp
 - A first-run welcome that introduces the main features (open it again from Settings), and a choice of accent colors
 

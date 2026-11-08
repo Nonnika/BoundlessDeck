@@ -2,7 +2,7 @@
 
 面向 AI 助手的操作手册。产品功能与 Go 版差异见 `README.md`；这里只讲代码结构、不变量与验证方法。
 
-**术语**：画布上的每个元素都叫 **block**，代码、注释与 JSON 字段（`"blocks"`）都不出现 `node` / `card`。block 种类：`note`（QuickLook 便签）、`memo`（笔记，Markdown 文件）、`file`、`terminal`、`browser`、`chart`、`stack`（块堆）。
+**术语**：画布上的每个元素都叫 **block**，代码、注释与 JSON 字段（`"blocks"`）都不出现 `node` / `card`。block 种类：`note`（QuickLook 便签）、`memo`（笔记，Markdown 文件）、`file`、`terminal`、`browser`、`chart`、`stack`（块堆）、`text`（文字）、`shape`（图形）。
 
 ## Project Overview
 
@@ -220,7 +220,8 @@ cx.spawn(async move |this, cx| {
 
 - **浏览器标签页**：`Block.tabs`（`WebTab`，`key` 只在运行时区分标签、不落盘）与 `Block.tab`；`url` 始终等于打开的标签的地址。只写 `url` 的地方（Go 版、MCP、地址栏）之后调用 `Block::ensure_tabs` 让打开的标签跟上。每个标签的 WKWebView 存在 `Runtime.webs`（按 key），`WebEvent` 都带 block id 与标签 key。
 - **新增 block 字段**：在 `Block` 上加 serde 字段（`skip_serializing_if` 保持与 Go 版一致）→ 登记到 `mcp::tools::FIELDS` → 在 `tools.rs` 中实现读写校验。
-- **新增 block 种类**：`BlockKind`（含 `ALL`、`as_str`、`parse`、`label`）、`new_block_of` 与 `kind_defaults` 的默认尺寸、`deck.rs` 中的 body 渲染分支、`FIELDS` 中的 `kinds`。
+- **新增 block 种类**：`BlockKind`（含 `ALL`、`as_str`、`parse`、`label`）、`new_block_of` 与 `kind_defaults` 的默认尺寸、`deck.rs` 中的 body 渲染分支、`FIELDS` 中的 `kinds`。旧版本读到不认识的种类时把它原样留在 `Model.foreign` 并写回，所以新种类不会让旧版本打不开 deck；deck.json 整体读不了时 `Model::load` 返回错误，不会新建一张覆盖它。
+- **文字与图形**（`BlockKind::bare()`）：没有卡片，由 `deck/styled.rs` 画（`look` 把 `Block.style` 解析成颜色、字体、对齐，缺省按种类）；选中时标题栏浮在上方，单击拖动、双击编辑文字。样式在右侧面板（`deck/inspector.rs`）里改，字体与自定义颜色走系统面板（`src/nativepanel.rs`，选择经 `DeckView.panel_tx` 回到 UI 线程）。
 - **新增命令**：`commands.rs` 的命令表，并在对应的 key context 上挂 `.on_action` 处理。
 - **新增交互**：在最内层元素上 `.occlude()` 或 `stop_propagation()`；拖动状态放在 `Drag` 中，结束时用 `record_moves` 与 `after_edit`。
 

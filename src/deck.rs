@@ -26,10 +26,12 @@ use gpui::{
 };
 
 mod browser;
+mod inspector;
 mod lifecycle;
 mod popin;
 mod sharpen;
 mod stack;
+mod styled;
 mod zoomlayer;
 
 use crate::editor::{Editor, EditorEvent};
@@ -62,6 +64,8 @@ actions!(
         NewBrowser,
         NewChart,
         NewStack,
+        NewText,
+        NewShape,
         GoHome,
     ]
 );
@@ -235,6 +239,12 @@ pub struct DeckView {
     animating: bool,
     /// A panel of the window's (the welcome) lies over the deck: web pages give way to their pictures.
     pub covered: bool,
+    /// Where the system's Fonts and Colors panels send their picks (`nativepanel`).
+    panel_tx: smol::channel::Sender<crate::nativepanel::Pick>,
+    /// Which color of the styled blocks a custom pick goes to.
+    color_slot: inspector::Slot,
+    /// The style panel showed this frame: web pages under it give way.
+    inspector_shown: bool,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
     glide: Option<(Camera, Camera, Instant)>,
     focus: FocusHandle,
@@ -326,8 +336,20 @@ impl DeckView {
             }
         })
         .detach();
+        let (panel_tx, panel_rx) = smol::channel::unbounded();
+        cx.spawn(async move |this, cx| {
+            while let Ok(pick) = panel_rx.recv().await {
+                if this.update(cx, |d, cx| d.on_pick(pick, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         let lay = m.cam;
         DeckView {
+            panel_tx,
+            color_slot: inspector::Slot::Fill,
+            inspector_shown: false,
             m,
             lay,
             zoom_settle: None,
@@ -669,6 +691,13 @@ impl DeckView {
                 let id = self.add_at(kind, sx, sy);
                 match kind {
                     BlockKind::Note => self.start_editing(&id, EditPart::Body, window, cx),
+                    // New words are there to be typed over.
+                    BlockKind::Text => {
+                        self.start_editing(&id, EditPart::Body, window, cx);
+                        if let Some(ed) = self.editing(&id, EditPart::Body).cloned() {
+                            ed.update(cx, |e, _| e.select_all_text());
+                        }
+                    }
                     // A new browser is there to type an address in.
                     BlockKind::Browser => self.start_editing(&id, EditPart::Address, window, cx),
                     _ => {}
@@ -1449,8 +1478,14 @@ impl DeckView {
         let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
         let (_, sy) = self.m.cam.to_screen(b.x, b.y);
         let far = self.m.cam.s < LOD_SCALE;
-        let in_title = y - sy <= TITLE_H * self.m.cam.s || far;
         let kind = b.kind;
+        // A 文字 or 图形 has no title bar: a press on it moves it like one,
+        // and a double click edits its words. Its title floats above it.
+        let in_title = if kind.bare() {
+            y < sy || far || ev.click_count < 2
+        } else {
+            y - sy <= TITLE_H * self.m.cam.s || far
+        };
         if self.active.as_deref() != Some(id) {
             self.active = None;
         }
@@ -1497,6 +1532,10 @@ impl DeckView {
                 BlockKind::Stack => {
                     window.focus(&self.focus);
                     self.stack_press(id, x, y);
+                }
+                BlockKind::Text | BlockKind::Shape => {
+                    self.m.sel.insert(id.to_string());
+                    self.start_editing(id, EditPart::Body, window, cx);
                 }
                 _ => self.focus_block(Some(id), window, cx),
             }
@@ -1736,6 +1775,9 @@ impl DeckView {
             ((w - cw) / 2., (h - ch) / 2., cw, ch)
         });
         self.animating |= pop.is_some();
+        if b.kind.bare() {
+            return self.bare_view(&b, t, (sx, sy, w, h), selected, window, cx);
+        }
 
         let note = b.kind == BlockKind::Note;
         let paper = Paper::of(t);
@@ -1890,14 +1932,107 @@ impl DeckView {
         }
         out.push(card.into_any_element());
 
-        // The resize handle, in the bottom-right corner.
+        out.extend(self.resize_handle(id, (sx, sy, w, h), note, t, cx));
+        out
+    }
+
+    /// A 文字 or 图形, at sx, sy, w by h: drawn as it is, without a card.
+    /// Selected, worked in or edited, an outline goes round it and its title
+    /// shows above it, where a press moves it and a double click renames it.
+    fn bare_view(
+        &mut self,
+        b: &Block,
+        t: &Theme,
+        (sx, sy, w, h): (f32, f32, f32, f32),
+        selected: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let s = self.m.cam.s;
+        let cs = self.content_scale();
+        let lod = s < LOD_SCALE;
+        let look = styled::look(b, t);
+        let editor = if lod { None } else { self.editing(&b.id, EditPart::Body).cloned() };
+        if let Some(ed) = &editor {
+            ed.update(cx, |e, _| {
+                styled::dress(e, &look, cs);
+                e.muted = look.color.opacity(0.45);
+                e.accent = t.accent;
+                e.placeholder = "输入文字".into();
+            });
+        }
+        let eid = b.id.clone();
+        let card = div()
+            .id(SharedString::from(format!("block:{}", b.id)))
+            .absolute()
+            .left(px(sx))
+            .top(px(sy))
+            .w(px(w))
+            .h(px(h))
+            .occlude()
+            .on_mouse_down(MouseButton::Left, cx.listener(move |d, ev, window, cx| d.on_card_down(&eid, ev, window, cx)))
+            .child(styled::view(b, &look, w, h, cs, editor, lod));
+        let mut out = vec![card.into_any_element()];
+        let shown = selected
+            || self.active.as_deref() == Some(b.id.as_str())
+            || self.editing.as_ref().is_some_and(|e| e.id == b.id);
+        if !shown || lod {
+            return out;
+        }
+        // The outline: drawn only, it takes no clicks.
+        out.push(
+            div()
+                .absolute()
+                .left(px(sx - 3.))
+                .top(px(sy - 3.))
+                .w(px(w + 6.))
+                .h(px(h + 6.))
+                .border(px(1.5))
+                .border_color(t.accent)
+                .rounded(px(4.))
+                .into_any_element(),
+        );
+        let paper = Paper::of(t);
+        let bar_h = TITLE_H * s;
+        let eid = b.id.clone();
+        out.push(
+            div()
+                .id(SharedString::from(format!("title:{}", b.id)))
+                .absolute()
+                .left(px(sx - 3.))
+                .top(px(sy - bar_h - 8.))
+                .w(px((w + 6.).max(160.)))
+                .h(px(bar_h))
+                .bg(t.surface)
+                .border_1()
+                .border_color(t.border)
+                .rounded(px(6.))
+                .shadow(vec![gpui::BoxShadow {
+                    color: t.shade,
+                    offset: point(px(0.), px(2.)),
+                    blur_radius: px(8.),
+                    spread_radius: px(0.),
+                }])
+                .overflow_hidden()
+                .occlude()
+                .on_mouse_down(MouseButton::Left, cx.listener(move |d, ev, window, cx| d.on_card_down(&eid, ev, window, cx)))
+                .child(self.title_bar(b, t, &paper, window, cx))
+                .into_any_element(),
+        );
+        out.extend(self.resize_handle(&b.id, (sx, sy, w, h), false, t, cx));
+        out
+    }
+
+    /// The resize handle, in the bottom-right corner of a block at sx, sy, w by h.
+    fn resize_handle(&mut self, id: &str, (sx, sy, w, h): (f32, f32, f32, f32), note: bool, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let s = self.m.cam.s;
         let hs = (22. * s).max(14.);
         if w >= hs * 3. && h >= hs * 3. {
             self.resize_corners.push([sx + w - hs, sy + h - hs, hs, hs]);
             let eid = id.to_string();
             let grip = t.muted;
             let resizing = matches!(&self.drag, Some(Drag::Resize { id: d, .. }) if d == id);
-            out.push(
+            return Some(
                 div()
                     .id(SharedString::from(format!("resize:{id}")))
                     .absolute()
@@ -1920,7 +2055,7 @@ impl DeckView {
                     .into_any_element(),
             );
         }
-        out
+        None
     }
 
     fn title_bar(&mut self, b: &Block, t: &Theme, paper: &Paper, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -1966,6 +2101,8 @@ impl DeckView {
             bar = bar.child(self.life_chip(b, paper, cx));
         } else if b.kind == BlockKind::Chart {
             bar = bar.child(self.chart_controls(b, t, cx));
+        } else if b.kind.bare() {
+            // Its title is all it shows; its style is in the panel on the right.
         } else {
             bar = bar.child(
                 div().text_size(px(10. * cs)).text_color(t.muted).whitespace_nowrap().child(b.kind.label()),
@@ -2159,6 +2296,8 @@ impl DeckView {
             }
             BlockKind::Stack => self.stack_body(b, t, window, cx),
             BlockKind::Browser => self.browser_body(b, t, window, cx),
+            // Drawn by `bare_view`, not in a card.
+            BlockKind::Text | BlockKind::Shape => div().into_any_element(),
         }
     }
 
@@ -2364,6 +2503,8 @@ impl DeckView {
             .child(item("new-browser", "globe", "浏览器", BlockKind::Browser, cx))
             .child(item("new-chart", "chart", "图表", BlockKind::Chart, cx))
             .child(item("new-stack", "stack", "块堆", BlockKind::Stack, cx))
+            .child(item("new-text", "type", "文字", BlockKind::Text, cx))
+            .child(item("new-shape", "shapes", "图形", BlockKind::Shape, cx))
             .into_any_element()
     }
 
@@ -2666,6 +2807,8 @@ fn kind_icon(k: BlockKind) -> &'static str {
         BlockKind::Browser => "globe",
         BlockKind::Chart => "chart",
         BlockKind::Stack => "stack",
+        BlockKind::Text => "type",
+        BlockKind::Shape => "shapes",
     }
 }
 
@@ -2749,6 +2892,8 @@ impl Render for DeckView {
         .top_0()
         .size_full();
 
+        // Known before the blocks are drawn: web pages under the style panel give way.
+        self.inspector_shown = !self.style_targets().is_empty();
         let visible: Vec<String> =
             self.m.visible(self.view.0, self.view.1).into_iter().map(|i| self.m.blocks[i].id.clone()).collect();
         self.frame_rects = visible
@@ -2774,6 +2919,7 @@ impl Render for DeckView {
         crate::webfocus::guard(window);
         crate::webfocus::set_corners(self.resize_corners.clone());
 
+        let inspector = self.inspector(&t, cx);
         let marquee = match &self.drag {
             Some(Drag::Marquee { from, to }) => {
                 let (x0, y0) = cam.to_screen(from.0.min(to.0), from.1.min(to.1));
@@ -2832,6 +2978,14 @@ impl Render for DeckView {
                 let (x, y) = d.pointer_or_middle(w);
                 d.add_kind_at(BlockKind::Stack, x, y, w, cx)
             }))
+            .on_action(cx.listener(|d, _: &NewText, w, cx| {
+                let (x, y) = d.pointer_or_middle(w);
+                d.add_kind_at(BlockKind::Text, x, y, w, cx)
+            }))
+            .on_action(cx.listener(|d, _: &NewShape, w, cx| {
+                let (x, y) = d.pointer_or_middle(w);
+                d.add_kind_at(BlockKind::Shape, x, y, w, cx)
+            }))
             .on_action(cx.listener(|d, _: &NewBrowser, w, cx| {
                 let (x, y) = d.pointer_or_middle(w);
                 d.add_kind_at(BlockKind::Browser, x, y, w, cx)
@@ -2851,6 +3005,7 @@ impl Render for DeckView {
             .children(marquee)
             .child(self.home_pill(&t, cx))
             .child(self.toolbar(&t, cx))
+            .children(inspector)
             .child(self.status_bar(&t))
             .children(self.stack_preview(&t, window, cx))
             .children(self.pluck_view(&t))

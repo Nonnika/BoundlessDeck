@@ -99,6 +99,14 @@ pub struct Editor {
     pub muted: Hsla,
     pub accent: Hsla,
     pub mono: bool,
+    /// The font, when not the window's: a family, a weight, italic.
+    pub family: Option<SharedString>,
+    pub weight: Option<FontWeight>,
+    pub italic: bool,
+    /// Where lines sit across, 0 left to 1 right, and the text up and down
+    /// when shorter than the box, 0 top to 1 bottom.
+    pub align: f32,
+    pub valign: f32,
     /// Show Markdown Typora-style.
     pub markdown: bool,
     selected: Range<usize>,
@@ -121,6 +129,8 @@ struct Layout {
     bounds: Bounds<Pixels>,
     line_height: Pixels,
     scroll_y: f32,
+    /// How far the text was moved down to sit lower in the box (`valign`).
+    top: f32,
 }
 
 /// The text laid out: each source line as shown, where it starts in the
@@ -137,6 +147,9 @@ struct Lines {
     /// A rendered task line's checkbox: where its ☐ shows, and the byte of the
     /// line between its brackets.
     tasks: Vec<Option<(usize, usize)>>,
+    /// Where lines sit across (`Editor::align`) in a box this wide.
+    align: f32,
+    width: Pixels,
 }
 
 impl Lines {
@@ -148,13 +161,29 @@ impl Lines {
         self.heights.get(self.index_of(offset)).copied()
     }
 
+    /// How far right row `row` of line `i` is moved to sit as `align` says;
+    /// as GPUI's `paint_line` works it out, so the two agree.
+    fn shift(&self, i: usize, row: usize) -> Pixels {
+        if self.align <= 0. {
+            return px(0.);
+        }
+        let line = &self.lines[i];
+        let layout = &line.unwrapped_layout;
+        let wraps = line.wrap_boundaries();
+        let x_at = |b: &gpui::WrapBoundary| layout.runs[b.run_ix].glyphs[b.glyph_ix].position.x;
+        let start = if row == 0 { px(0.) } else { wraps.get(row - 1).map_or(px(0.), x_at) };
+        let end = wraps.get(row).map_or(layout.width, x_at);
+        ((self.width - self.lefts[i]) - (end - start)).max(px(0.)) * self.align
+    }
+
     /// Where the offset is painted, relative to the text's top-left (unscrolled).
     fn point_for(&self, offset: usize) -> Option<Point<Pixels>> {
         let i = self.index_of(offset);
         let o = offset.checked_sub(*self.starts.get(i)?)?;
         let d = self.maps[i].as_ref().map_or(o, |m| m.to_disp(o));
         let p = self.lines[i].position_for_index(d, self.heights[i])?;
-        Some(point(p.x + self.lefts[i], p.y + self.tops[i]))
+        let row = (f32::from(p.y) / f32::from(self.heights[i]).max(1.)).round().max(0.) as usize;
+        Some(point(p.x + self.lefts[i] + self.shift(i, row), p.y + self.tops[i]))
     }
 
     /// The offset nearest a point relative to the text's top-left (unscrolled).
@@ -163,7 +192,8 @@ impl Lines {
             return 0;
         }
         let i = self.tops.partition_point(|&t| t <= p.y).saturating_sub(1);
-        let local = point((p.x - self.lefts[i]).max(px(0.)), p.y - self.tops[i]);
+        let row = (f32::from(p.y - self.tops[i]) / f32::from(self.heights[i]).max(1.)).floor().max(0.) as usize;
+        let local = point((p.x - self.lefts[i] - self.shift(i, row)).max(px(0.)), p.y - self.tops[i]);
         let d = match self.lines[i].closest_index_for_position(local, self.heights[i]) {
             Ok(v) | Err(v) => v,
         };
@@ -262,6 +292,11 @@ impl Editor {
             muted: gpui::black().opacity(0.4),
             accent: gpui::blue(),
             mono: false,
+            family: None,
+            weight: None,
+            italic: false,
+            align: 0.,
+            valign: 0.,
             markdown: false,
             selected: end..end,
             reversed: false,
@@ -359,7 +394,7 @@ impl Editor {
     fn offset_for_mouse(&self, pos: Point<Pixels>) -> usize {
         let Some(l) = self.layout.as_ref() else { return self.text.len() };
         let local = pos - l.bounds.origin;
-        self.offset_at(point(local.x, local.y + px(l.scroll_y)))
+        self.offset_at(point(local.x, local.y + px(l.scroll_y - l.top)))
     }
 
     fn vertical(&mut self, dir: f32, select: bool, cx: &mut Context<Self>) {
@@ -477,7 +512,7 @@ impl Editor {
     fn task_for_mouse(&self, pos: Point<Pixels>) -> Option<usize> {
         let l = self.layout.as_ref()?;
         let local = pos - l.bounds.origin;
-        l.lines.task_at(point(local.x, local.y + px(l.scroll_y)))
+        l.lines.task_at(point(local.x, local.y + px(l.scroll_y - l.top)))
     }
 
     fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -714,6 +749,7 @@ struct Prepaint {
     selection: Vec<PaintQuad>,
     cursor: Option<PaintQuad>,
     scroll_y: f32,
+    top: f32,
 }
 
 impl IntoElement for TextElement {
@@ -764,6 +800,15 @@ impl Element for TextElement {
         if e.mono {
             font.family = crate::font::mono();
         }
+        if let Some(f) = &e.family {
+            font.family = f.clone();
+        }
+        if let Some(w) = e.weight {
+            font.weight = w;
+        }
+        if e.italic {
+            font.style = FontStyle::Italic;
+        }
         let has_text = !e.text.is_empty();
         let (text, color) = if has_text { (e.text.clone(), e.color) } else { (e.placeholder.to_string(), e.muted) };
         let base = TextRun { len: 0, font: font.clone(), color, background_color: None, underline: None, strikethrough: None };
@@ -772,7 +817,7 @@ impl Element for TextElement {
         let parsed = if e.markdown && has_text { mdlive::lines(&text) } else { Vec::new() };
         let width = bounds.size.width;
 
-        let mut ls = Lines::default();
+        let mut ls = Lines { align: e.align, width: bounds.size.width, ..Default::default() };
         let mut decor = Vec::new();
         let mut y = px(0.);
         let mut start = 0;
@@ -860,7 +905,9 @@ impl Element for TextElement {
             }
         }
         scroll_y = scroll_y.min((content_h - view_h).max(0.)).max(0.);
-        let origin = bounds.origin - point(px(0.), px(scroll_y));
+        // Shorter than the box, the text sits as `valign` says.
+        let top = if content_h < view_h { (view_h - content_h) * e.valign } else { 0. };
+        let origin = bounds.origin - point(px(0.), px(scroll_y - top));
 
         let mut selection = Vec::new();
         if has_text && !selected.is_empty() {
@@ -882,7 +929,7 @@ impl Element for TextElement {
         }
         let cursor = (focused && selected.is_empty())
             .then(|| fill(Bounds::new(origin + cursor_pt, size(px((e.font_size / 10.).max(1.5)), cursor_h)), accent));
-        Prepaint { lines: ls, line_height, decor, selection, cursor, scroll_y }
+        Prepaint { lines: ls, line_height, decor, selection, cursor, scroll_y, top }
     }
 
     fn paint(
@@ -897,7 +944,7 @@ impl Element for TextElement {
     ) {
         let focus = self.editor.read(cx).focus.clone();
         window.handle_input(&focus, ElementInputHandler::new(bounds, self.editor.clone()), cx);
-        let origin = bounds.origin - point(px(0.), px(pp.scroll_y));
+        let origin = bounds.origin - point(px(0.), px(pp.scroll_y - pp.top));
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             for (b, color) in pp.decor.drain(..) {
                 window.paint_quad(fill(Bounds::new(origin + b.origin, b.size), color));
@@ -906,25 +953,33 @@ impl Element for TextElement {
                 window.paint_quad(q);
             }
             let ls = &pp.lines;
+            let align = if ls.align >= 0.75 {
+                gpui::TextAlign::Right
+            } else if ls.align >= 0.25 {
+                gpui::TextAlign::Center
+            } else {
+                gpui::TextAlign::Left
+            };
             for (i, line) in ls.lines.iter().enumerate() {
                 let at = origin + point(ls.lefts[i], ls.tops[i]);
                 if at.y > bounds.bottom() || at.y + line.size(ls.heights[i]).height < bounds.top() {
                     continue;
                 }
-                let _ = line.paint(at, ls.heights[i], gpui::TextAlign::Left, None, window, cx);
+                let room = Bounds::new(at, size(ls.width - ls.lefts[i], ls.heights[i]));
+                let _ = line.paint(at, ls.heights[i], align, Some(room), window, cx);
             }
             if let Some(c) = pp.cursor.take() {
                 window.paint_quad(c);
             }
         });
         let lines = std::mem::take(&mut pp.lines);
-        let (line_height, scroll_y) = (pp.line_height, pp.scroll_y);
+        let (line_height, scroll_y, top) = (pp.line_height, pp.scroll_y, pp.top);
         // Followed only once it could be: with the keyboard.
         let followed = self.editor.read(cx).focus.is_focused(window);
         self.editor.update(cx, |e, _| {
             e.scroll_y = scroll_y;
             e.follow &= !followed;
-            e.layout = Some(Layout { lines, bounds, line_height, scroll_y });
+            e.layout = Some(Layout { lines, bounds, line_height, scroll_y, top });
         });
     }
 }

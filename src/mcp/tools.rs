@@ -34,14 +34,16 @@ pub struct Field {
 }
 
 const ALL: &[BlockKind] = &[];
-const KIND_NAMES: &[&str] = &["quicklook", "note", "file", "terminal", "browser", "chart", "stack"];
+const KIND_NAMES: &[&str] = &["quicklook", "note", "file", "terminal", "browser", "chart", "stack", "text", "shape"];
+const BARE: &[BlockKind] = &[BlockKind::Text, BlockKind::Shape];
+const STYLE_KEYS: &[&str] = &["fill", "stroke", "color", "font", "size", "weight", "italic", "radius", "align", "valign"];
 const CHART_NAMES: &[&str] = &["bar", "hbar", "line", "area", "pie"];
 
 pub const FIELDS: &[Field] = &[
     Field { name: "id", ty: "string", mutable: false, on_create: false, kinds: ALL, min: None, enum_: &[], derived: false,
         description: "block 的稳定 ID（b 加 6 位十六进制），创建后不可改；所有写操作都用它指名 block。" },
     Field { name: "kind", ty: "string", mutable: false, on_create: true, kinds: ALL, min: None, enum_: KIND_NAMES, derived: false,
-        description: "block 类型：note（笔记：工作目录里的一个 Markdown 文件；旧名 memo 仍可用）、quicklook（QuickLook 便签，正文存在 deck 里，默认 1 小时后消失）、file（链接的本地文件）、terminal（终端）、browser（浏览器）、chart（图表：画它 text 里的表格）、stack（块堆：收纳其他 block 的钱包卡片，收进去的 block 不在画布上显示）。只在创建时给出，之后不可改。" },
+        description: "block 类型：note（笔记：工作目录里的一个 Markdown 文件；旧名 memo 仍可用）、quicklook（QuickLook 便签，正文存在 deck 里，默认 1 小时后消失）、file（链接的本地文件）、terminal（终端）、browser（浏览器）、chart（图表：画它 text 里的表格）、stack（块堆：收纳其他 block 的钱包卡片，收进去的 block 不在画布上显示）、text（文字：画布上的一段字，没有卡片，平时不显示标题）、shape（图形：矩形、椭圆、菱形或三角，里面可以写字）。只在创建时给出，之后不可改。" },
     Field { name: "title", ty: "string", mutable: true, on_create: true, kinds: ALL, min: None, enum_: &[], derived: false,
         description: "标题。写非空值会同时把它标记为用户命名（named=true）；写空串则回到 kind 或文件的默认标题。" },
     Field { name: "named", ty: "boolean", mutable: true, on_create: true, kinds: ALL, min: None, enum_: &[], derived: false,
@@ -56,7 +58,7 @@ pub const FIELDS: &[Field] = &[
         description: "世界坐标高度，最小 90。" },
     Field { name: "path", ty: "string", mutable: true, on_create: true, kinds: &[BlockKind::File, BlockKind::Memo], min: None, enum_: &[], derived: false,
         description: "文件路径。工作区内的相对路径（相对 deck 根），工作区外用绝对路径；写绝对路径会尽量转成相对路径。改路径会重新加载预览。note 创建时可省略：按标题在 deck 根下新建 <标题>.md（重名加序号）；给出的 .md 不存在时会新建空文件。" },
-    Field { name: "text", ty: "string", mutable: true, on_create: true, kinds: &[BlockKind::Note, BlockKind::Memo, BlockKind::Chart], min: None, enum_: &[], derived: false,
+    Field { name: "text", ty: "string", mutable: true, on_create: true, kinds: &[BlockKind::Note, BlockKind::Memo, BlockKind::Chart, BlockKind::Text, BlockKind::Shape], min: None, enum_: &[], derived: false,
         description: "正文（Markdown）。quicklook 存在 deck 里；note 直接写进它的文件（覆盖整个文件），读 note 的内容请读 absPath 指向的文件。chart 的 text 是它画的表格：每行一项，第一列是名称，其后每列一组数值，用逗号或 Tab 分隔（也可用 Markdown 表格）；第一行含非数字时作为列名（图例）。最多 8 组、200 行；饼图只画第一组。" },
     Field { name: "chart", ty: "string", mutable: true, on_create: true, kinds: &[BlockKind::Chart], min: None, enum_: CHART_NAMES, derived: false,
         description: "图表类型：bar 柱状图、hbar 条形图、line 折线图、area 面积图、pie 饼图。省略为 bar。" },
@@ -74,6 +76,10 @@ pub const FIELDS: &[Field] = &[
         description: "打开的是 tabs 中的第几个，从 0 开始；只读。" },
     Field { name: "items", ty: "array", mutable: true, on_create: true, kinds: &[BlockKind::Stack], min: None, enum_: &[], derived: false,
         description: "块堆里的 block ID，按从上到下的卡片顺序。收进堆的 block 仍留在 deck 里、可用 get_block 读写，但不再画在画布上；一个 block 只属于一个堆，块堆不能装块堆。" },
+    Field { name: "shape", ty: "string", mutable: true, on_create: true, kinds: &[BlockKind::Shape], min: None, enum_: model::SHAPES, derived: false,
+        description: "图形的形状：rect（矩形，默认）、ellipse（椭圆）、diamond（菱形）、triangle（三角）。" },
+    Field { name: "style", ty: "object", mutable: true, on_create: true, kinds: BARE, min: None, enum_: &[], derived: false,
+        description: "文字与图形的样式，按键合并（只改给出的键，值为 null 恢复默认）：fill（填充）、stroke（边框）、color（文字颜色）——颜色可写调色板名 ink/gray/red/orange/yellow/green/teal/blue/purple/pink（随浅色/深色变化，作填充时是柔和底色）、#rrggbb 或 none；font（系统已安装的字族名，空为系统字体）；size（字号，6–400）；weight（100–900 的整百）；italic（布尔）；radius（圆角，≥0，只对矩形和文字有效）；align（left/center/right）；valign（top/middle/bottom）。文字默认无填充无边框、24 号、左上对齐；图形默认蓝色柔和填充与蓝边、16 号、居中。" },
 ];
 
 fn field(name: &str) -> Option<&'static Field> {
@@ -102,6 +108,8 @@ pub fn kind_defaults(k: BlockKind) -> (&'static str, f32, f32) {
         BlockKind::Browser => ("浏览器", 760., 540.),
         BlockKind::Stack => ("块堆", 380., 300.),
         BlockKind::Chart => ("图表", 480., 320.),
+        BlockKind::Text => ("文字", 280., 90.),
+        BlockKind::Shape => ("图形", 220., 160.),
     }
 }
 
@@ -412,6 +420,13 @@ impl Ctx<'_> {
                 o.insert("text".into(), n.text.clone().into());
                 o.insert("chart".into(), if n.chart.is_empty() { "bar".into() } else { n.chart.clone().into() });
             }
+            BlockKind::Text | BlockKind::Shape => {
+                o.insert("text".into(), n.text.clone().into());
+                if n.kind == BlockKind::Shape {
+                    o.insert("shape".into(), if n.shape.is_empty() { "rect".into() } else { n.shape.clone().into() });
+                }
+                o.insert("style".into(), serde_json::to_value(&n.style).unwrap_or_else(|_| json!({})));
+            }
         }
         out
     }
@@ -601,6 +616,13 @@ impl Ctx<'_> {
                     return Err(format!("没有图表类型 {s:?}：可用 {}", CHART_NAMES.join("、")));
                 }
             }
+            "shape" => {
+                let s = val_str(v, name)?;
+                if !model::SHAPES.contains(&s.as_str()) {
+                    return Err(format!("没有形状 {s:?}：可用 {}", model::SHAPES.join("、")));
+                }
+            }
+            "style" => n.style = style_patch(&n.style, v)?,
             "items" => {
                 let ids: Vec<String> = v
                     .as_array()
@@ -720,6 +742,11 @@ impl Ctx<'_> {
                 self.reload.push(id.to_string());
             }
             "chart" => self.m.block_mut(id).unwrap().chart = val_str(v, name)?,
+            "shape" => self.m.block_mut(id).unwrap().shape = val_str(v, name)?,
+            "style" => {
+                let b = self.m.block_mut(id).unwrap();
+                b.style = style_patch(&b.style, v)?;
+            }
             "items" => {
                 let ids: Vec<String> = v.as_array().unwrap().iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
                 if self.m.index_of(id).is_some() {
@@ -1520,7 +1547,99 @@ mod tests {
         assert!(normalize_url("javascript:alert(1)").is_err());
         let (_d, mut m) = ctx_model();
         let c = Ctx { m: &mut m, view: (0., 0.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None };
-        assert!(c.read_resource("boundlessdeck://schema").unwrap()["kinds"].as_array().unwrap().len() == 7);
+        assert_eq!(c.read_resource("boundlessdeck://schema").unwrap()["kinds"].as_array().unwrap().len(), BlockKind::ALL.len());
         assert!(c.read_resource("other://x").is_err());
+    }
+}
+
+/// `base` with the keys of `v` (an object) set; null puts a key back to its default.
+pub fn style_patch(base: &model::Style, v: &Value) -> Result<model::Style, String> {
+    let obj = v.as_object().ok_or("style 要是对象")?;
+    let mut st = base.clone();
+    for (k, x) in obj {
+        if !STYLE_KEYS.contains(&k.as_str()) {
+            return Err(format!("style 没有 {k:?}：可用 {}", STYLE_KEYS.join("、")));
+        }
+        let reset = x.is_null();
+        let text = || x.as_str().map(str::trim).map(str::to_string).ok_or(format!("style.{k} 要是字符串"));
+        match k.as_str() {
+            "fill" | "stroke" | "color" => {
+                let c = if reset { String::new() } else { text()? };
+                let ok = c.is_empty()
+                    || c == "none"
+                    || crate::theme::INKS.iter().any(|i| i.name == c)
+                    || (c.len() == 7 && c.starts_with('#') && u32::from_str_radix(&c[1..], 16).is_ok());
+                if !ok {
+                    return Err(format!("style.{k} 不认识 {c:?}：写调色板名、#rrggbb 或 none"));
+                }
+                let c = c.to_ascii_lowercase();
+                match k.as_str() {
+                    "fill" => st.fill = c,
+                    "stroke" => st.stroke = c,
+                    _ => st.color = c,
+                }
+            }
+            "font" => st.font = if reset { String::new() } else { text()? },
+            "size" => {
+                st.size = if reset { 0. } else { x.as_f64().ok_or("style.size 要是数字")? as f32 };
+                if st.size != 0. && !(6. ..=400.).contains(&st.size) {
+                    return Err(format!("style.size 要在 6 到 400 之间，收到 {}", st.size));
+                }
+            }
+            "weight" => {
+                let w = if reset { 0 } else { x.as_u64().ok_or("style.weight 要是整数")? };
+                if w != 0 && (!(100..=900).contains(&w) || w % 100 != 0) {
+                    return Err(format!("style.weight 要是 100 到 900 的整百，收到 {w}"));
+                }
+                st.weight = if w == 400 { 0 } else { w as u16 };
+            }
+            "italic" => st.italic = !reset && x.as_bool().ok_or("style.italic 要是布尔值")?,
+            "radius" => {
+                st.radius = if reset { None } else { Some(x.as_f64().ok_or("style.radius 要是数字")? as f32) };
+                if st.radius.is_some_and(|r| r < 0.) {
+                    return Err("style.radius 不能为负".into());
+                }
+            }
+            "align" | "valign" => {
+                let a = if reset { String::new() } else { text()? };
+                let allowed: &[&str] = if k == "align" { &["left", "center", "right"] } else { &["top", "middle", "bottom"] };
+                if !a.is_empty() && !allowed.contains(&a.as_str()) {
+                    return Err(format!("style.{k} 要是 {}，收到 {a:?}", allowed.join("/")));
+                }
+                if k == "align" {
+                    st.align = a;
+                } else {
+                    st.valign = a;
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(st)
+}
+
+#[cfg(test)]
+mod style_tests {
+    use super::*;
+
+    #[test]
+    fn style_patches_merge_and_are_checked() {
+        let base = model::Style { fill: "red".into(), size: 30., ..Default::default() };
+        let st = style_patch(&base, &json!({"stroke": "#AABBCC", "weight": 700, "align": "center", "size": null})).unwrap();
+        assert_eq!(st.fill, "red", "keys not given stay");
+        assert_eq!((st.stroke.as_str(), st.weight, st.align.as_str(), st.size), ("#aabbcc", 700, "center", 0.));
+        assert_eq!(style_patch(&st, &json!({"weight": 400})).unwrap().weight, 0, "regular is the default");
+        for bad in [
+            json!({"fill": "rouge"}),
+            json!({"fill": "#12345"}),
+            json!({"size": 2}),
+            json!({"weight": 450}),
+            json!({"align": "middle"}),
+            json!({"radius": -1}),
+            json!({"shadow": 1}),
+            json!("red"),
+        ] {
+            assert!(style_patch(&base, &bad).is_err(), "{bad}");
+        }
     }
 }
