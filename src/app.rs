@@ -197,7 +197,7 @@ impl Root {
         let vs = window.viewport_size();
         let (x, y, pw, ph) = welcome::panel_rect(f32::from(vs.width), f32::from(vs.height));
         let y = y + 12. * (1. - f);
-        self.welcome_blur.around(window, 14. * f as f64, crate::backdrop::Hole { x, y, w: pw, h: ph });
+        self.welcome_blur.around(window, 14. * f as f64, crate::backdrop::Hole { x, y, w: pw, h: ph, r: welcome::RADIUS });
         // Turning a page, the page blurs and comes clear.
         let page = welcome::WelcomeView::page_rect((x, y, pw, ph));
         self.turn_blur.over(window, w.read(cx).turn_blur(now), &[page]);
