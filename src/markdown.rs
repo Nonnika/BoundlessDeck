@@ -351,7 +351,7 @@ fn node_element(n: &Node, size: f32, c: &MdColors, images: &dyn Fn(&str) -> Opti
             .rounded(px(size * 0.35))
             .px(px(size * 0.7))
             .py(px(size * 0.5))
-            .font_family("Menlo")
+            .font_family(crate::font::mono())
             .text_size(px(size * 0.88))
             .child(code.clone())
             .into_any_element(),

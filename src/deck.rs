@@ -2260,7 +2260,7 @@ impl DeckView {
                         .size_full()
                         .px(px(6. * s))
                         .py(px(4. * s))
-                        .font_family("Menlo")
+                        .font_family(crate::font::mono())
                         .text_size(px(size))
                         .into_any_element()
                     }

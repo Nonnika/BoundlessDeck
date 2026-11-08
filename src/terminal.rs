@@ -23,8 +23,8 @@ use gpui::{
 /// The size of the terminal's text at 100%: the canvas's zoom scales it.
 pub const FONT_SIZE: f32 = 13.0;
 pub const LINE_HEIGHT: f32 = 1.25;
-pub const FONT_FAMILY: &str = "Menlo";
-/// The cell width of Menlo at 1px, to size the grid before a window measures it.
+/// The cell width of the monospace fonts at 1px (Menlo 0.602, JetBrains Mono 0.6), to size the
+/// grid before a window measures it.
 pub const CELL_W_PER_PX: f32 = 0.602;
 
 #[derive(Clone)]
@@ -592,7 +592,7 @@ impl Element for GridElement {
         let marked = t.marked.clone();
         let font_px = px(t.font_size);
         let line_h = (t.font_size * LINE_HEIGHT).round().max(1.);
-        let font = Font { family: FONT_FAMILY.into(), ..window.text_style().font() };
+        let font = Font { family: crate::font::mono(), ..window.text_style().font() };
         let font_id = window.text_system().resolve_font(&font);
         let cell_w = window
             .text_system()

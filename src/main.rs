@@ -8,6 +8,7 @@ mod chartview;
 mod commands;
 mod deck;
 mod editor;
+mod font;
 mod homescene;
 mod icons;
 mod lifespan;
@@ -43,6 +44,7 @@ fn main() {
     // `boundlessdeck <folder>` opens the folder's deck at once.
     let open = args.first().map(std::path::PathBuf::from);
     Application::new().with_assets(icons::Assets).run(|cx| {
+        font::init(cx);
         editor::bind_keys(cx);
         pinch::install();
         webfocus::install();

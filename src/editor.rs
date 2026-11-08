@@ -182,7 +182,7 @@ fn styled_run(len: usize, sty: Sty, block: Block, font: &Font, e: &Editor) -> Te
         f.style = FontStyle::Italic;
     }
     if sty.code {
-        f.family = "Menlo".into();
+        f.family = crate::font::mono();
     }
     let color = if sty.dim || block == Block::Quote {
         e.muted
@@ -726,7 +726,7 @@ impl Element for TextElement {
         let line_height = px(e.font_size * if e.multiline { 1.5 } else { 1.35 });
         let mut font = window.text_style().font();
         if e.mono {
-            font.family = "Menlo".into();
+            font.family = crate::font::mono();
         }
         let has_text = !e.text.is_empty();
         let (text, color) = if has_text { (e.text.clone(), e.color) } else { (e.placeholder.to_string(), e.muted) };
