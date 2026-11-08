@@ -18,25 +18,25 @@ BoundlessDeck 的 Rust 重写：无限画布工作台，界面由 GPUI 原生绘
 
 | 层 | 文件 | 规则 |
 |---|---|---|
-| 模型 | `src/model.rs` | 纯状态：blocks、camera、selection、undo/redo、deck.json、持久化。不依赖 `Window`，可 headless 测试。 |
-| 视图 | `src/deck.rs` + `src/deck/{stack,browser,zoomlayer}.rs` | `DeckView` 持有 `Model` 与交互状态；输入、渲染、保存调度都在这里。 |
+| 模型 | `src/model.rs` + `src/model/{block,camera,persist}.rs` | 纯状态：blocks、camera、selection、undo/redo、deck.json、持久化。不依赖 `Window`，可 headless 测试。 |
+| 视图 | `src/deck.rs` + `src/deck/*.rs` | `DeckView` 持有 `Model` 与交互状态；输入、渲染、保存调度都在这里，按职责拆在 `deck/` 的子模块里（见 Key Directories）。 |
 | 外壳 | `src/app.rs` | `Root` 在主页（homescene）与 deck 之间二选一；管理 recents、设置、打开/关闭文件夹。 |
 | 窗口 | `src/main.rs`、`src/windows.rs`、`src/commands.rs` | 装配窗口与生命周期；设置窗口（⌘,）与快捷键窗口（⌘/）共用 `commands.rs` 的命令表。 |
 | Block 内容 | `editor.rs`、`terminal.rs`+`termstate.rs`、`markdown.rs`、`chart.rs`+`chartview.rs`、`pdf.rs`、`word.rs`、`preview.rs`、`memo.rs` | 每种内容的渲染与 I/O。 |
-| MCP | `src/mcp/` | `mod.rs` 端点与注册表，`server.rs` socket 服务，`rpc.rs` JSON-RPC，`tools.rs` 字段表与工具，`bridge.rs` stdio 桥，`config.rs` 各 agent 的全局/项目配置。 |
+| MCP | `src/mcp/` | `mod.rs` 端点与注册表，`server.rs` socket 服务，`rpc.rs` JSON-RPC，`tools.rs` + `tools/` 字段表与工具，`bridge.rs` stdio 桥，`config.rs` 各 agent 的全局/项目配置。 |
 
 ### 帧模型（最容易出错的地方）
 
 GPUI 每帧重建整棵元素树，所以：
-- **元素（`Div`、`AnyElement`）只在本帧有效，不能存进结构体。** 跨帧状态放在 `DeckView.rts: HashMap<String, Runtime>`（`deck.rs:195`，每个 block 的缓存，永不落盘），或放进 `Entity`。
+- **元素（`Div`、`AnyElement`）只在本帧有效，不能存进结构体。** 跨帧状态放在 `DeckView.rts: HashMap<String, Runtime>`（`deck.rs:250`，每个 block 的缓存，永不落盘），或放进 `Entity`。
 - 慢 I/O 不在 UI 线程做：`cx.background_spawn(...).detach()`，结果用 `this.update(cx, |d, cx| { …; cx.notify() })` 回到 UI 线程。
 - 延迟与轮询用 `cx.background_executor().timer(dur)` 自调度，而不是在每次输入时重启计时器。
 - LOD：`cam.s < LOD_SCALE` 时只画框和标题，不构建编辑器、终端、位图。
 
 ### 输入仲裁
 
-- 按下事件由最内层元素处理，处理后调用 `cx.stop_propagation()`（例如 `on_card_down`，`deck.rs:1357`）。需要挡住下层命中的元素用 `.occlude()`（GPUI 设为 `HitboxBehavior::BlockMouse`）。
-- 画布的 move/up/wheel 监听挂在 window 级（`deck.rs` 的 `Render` 里，约 2392–2510 行），拖动可以越过其他 block。
+- 按下事件由最内层元素处理，处理后调用 `cx.stop_propagation()`（例如 `on_card_down`，`deck/input.rs:187`）。需要挡住下层命中的元素用 `.occlude()`（GPUI 设为 `HitboxBehavior::BlockMouse`）。
+- 画布的 move/up/wheel 监听挂在 window 级（`deck.rs` 的 `Render` 里，约 650–675 行），拖动可以越过其他 block。
 - 滚轮/捏合在 block 内不被消费时冒泡到画布：⌘/⌃+滚轮缩放，否则平移。
 - 焦点：block 获得或失去焦点只走 `DeckView::focus_block`（结束别处的编辑、键盘交给终端或画布）。失焦不隐藏、不重载、不重绘内容，各种 block 不自己处理失焦。键盘不能落空：`webfocus::guard` 每帧（及每次按键前）在窗口自己或看不见的网页拿着键盘时交还给 GPUI 视图；deck 把焦点交给自己的东西（`focus_block`、`start_editing`）时调用 `webfocus::release()`，让之前点进的网页交出键盘。原生网页只在手势真的改变画面时隐藏（`gesture_covers`：选框拉开并盖住它，或画布确实平移了），单击画布不隐藏。
 
@@ -51,7 +51,7 @@ GPUI 每帧重建整棵元素树，所以：
 
 ### 撤销
 
-- `Change`（`model.rs:305`）：`Add`、`Remove`、`Moves`、`Stack`、`Group`。一次用户操作 = 一条 `Change`（复合操作用 `Group`）。
+- `Change`（`model.rs:69`）：`Add`、`Remove`、`Moves`、`Stack`、`Group`。一次用户操作 = 一条 `Change`（复合操作用 `Group`）。
 - 进入画布只走 `Model::add_block`，离开只走 `Model::remove_block`（或经由 `detach`）。移动与排版用 `record_moves` / `apply_placements`，不要直接改 `b.x` / `b.y`。
 - 块堆只改 `Block.items`，被收进的 block 仍在 `model.blocks` 中，由 `visible()` 与 `select_in` 跳过。
 
@@ -72,8 +72,8 @@ GPUI 每帧重建整棵元素树，所以：
 
 ### 保存
 
-- `Model::save` → `write_file_atomic`（`model.rs:933`）：临时文件、`sync_all`、rename。
-- `DeckView::request_save`（`deck.rs:440`）：在 UI 线程生成快照，后台线程写盘；`save_seq: Arc<Mutex<u64>>`（`deck.rs:224`）保证只有最新快照落地。
+- `Model::save` → `write_file_atomic`（`model/persist.rs:168`）：临时文件、`sync_all`、rename。
+- `DeckView::request_save`（`deck.rs:398`）：在 UI 线程生成快照，后台线程写盘；`save_seq: Arc<Mutex<u64>>`（`deck.rs:277`）保证只有最新快照落地。
 
 ### MCP 数据流
 
@@ -82,7 +82,7 @@ GPUI 每帧重建整棵元素树，所以：
                                                                          │ JSON-RPC
                                                     rpc.rs / tools.rs ◀──┘
                                                           │ 任务投递
-                                       DeckView::start_mcp（deck.rs:324）→ run_job（deck.rs:375）
+                                       DeckView::start_mcp（deck/endpoint.rs:13）→ run_job（:85）
                                           在 UI 线程执行，15 s 超时后返回错误
 ```
 
@@ -91,10 +91,10 @@ GPUI 每帧重建整棵元素树，所以：
 - 项目配置（`.boundlessdeck/mcp.json`、`.mcp.json`、`.cursor/mcp.json`、`.vscode/mcp.json`）以合并方式写入，保留用户已有的 server；坏 JSON 备份为 `.bak`。
 - 写入类工具先干跑校验整批，再统一落笔；所有写操作都经过撤销栈与保存。
 - **kind 名在 MCP 与 deck.json 中不同**：MCP 里笔记叫 `note`、QuickLook 叫 `quicklook`（`BlockKind::mcp_name` / `parse_mcp`，旧名 `memo` 仍当作笔记）；deck.json 仍存 `memo` / `note`（`as_str`），以便与 Go 版互开。
-- **字段唯一来源**：`src/mcp/tools.rs:40` 的 `pub const FIELDS: &[Field]`。`block_schema`、校验、工具描述都从这里生成。新增 `Block` 字段必须登记到这张表。
-- 工具（`tools.rs` 的分派，约 804–856 行）共 19 个：`deck_info`、`block_schema`、`list_blocks`、`get_block`、`read_selection`、`current_terminal`、`create_block`、`update_block`、`update_blocks`、`delete_blocks`、`move_blocks`、`align_blocks`、`distribute_blocks`、`arrange_blocks`、`select_blocks`、`set_view`（移动视野，窗口平滑滑过去）、`undo`、`redo`、`save_deck`。
+- **字段唯一来源**：`src/mcp/tools/schema.rs:31` 的 `pub const FIELDS: &[Field]`。`block_schema`、校验（`tools/patch.rs`）、工具描述都从这里生成。新增 `Block` 字段必须登记到这张表。
+- 工具（`tools.rs` 的 `Ctx::call` 分派，约 490–550 行；排版工具在 `tools/arrange.rs`）共 19 个：`deck_info`、`block_schema`、`list_blocks`、`get_block`、`read_selection`、`current_terminal`、`create_block`、`update_block`、`update_blocks`、`delete_blocks`、`move_blocks`、`align_blocks`、`distribute_blocks`、`arrange_blocks`、`select_blocks`、`set_view`（移动视野，窗口平滑滑过去）、`undo`、`redo`、`save_deck`。
 - 调用方的终端：终端 shell 的环境里有 `BOUNDLESSDECK_TERMINAL`（block ID）与 `BOUNDLESSDECK_DECK`（deck 文件夹），见 `mcp::TERMINAL_ENV`。从终端里启动的 agent 再启动 `mcp-stdio` 时继承它们，桥用 `X-BoundlessDeck-Terminal` / `X-BoundlessDeck-Deck` 请求头带给 `server.rs`，经 `DeckRunner` 的 `Caller` 进 `tools::Here`。`current_terminal` 返回 `self`（调用方所在终端）与 `focused`（人正在操作的终端，`focus_target`），`deck_info` 带 `callerTerminal`。
-- 资源：`boundlessdeck://deck`、`//blocks`、`//schema`，以及模板 `//blocks/{id}`（`rpc.rs:38–72`，读取见 `tools.rs:802`）。
+- 资源：`boundlessdeck://deck`、`//blocks`、`//schema`，以及模板 `//blocks/{id}`（`rpc.rs:38–72`，读取见 `tools.rs:477`）。
 
 ### 运行时状态位置
 
@@ -102,7 +102,7 @@ GPUI 每帧重建整棵元素树，所以：
 |---|---|
 | deck 数据 | `<folder>/.boundlessdeck/deck.json` |
 | MCP 配置 / schema 描述 | `<folder>/.boundlessdeck/{mcp.json,block-schema.json}` |
-| 最近列表、设置 | `BOUNDLESSDECK_DATA_DIR` 或平台数据目录（`model.rs:926`） |
+| 最近列表、设置 | `BOUNDLESSDECK_DATA_DIR` 或平台数据目录（`model/persist.rs:160`） |
 | 活动 deck 注册表 | `BOUNDLESSDECK_ACTIVE_FILE` 或 `dirs::config_dir()/BoundlessDeck/active-deck.json`（`mcp/mod.rs:103`） |
 | MCP 文件权限 | 写入后 `chmod 0600`（`mcp/mod.rs` 的 `write_private`） |
 
@@ -111,8 +111,9 @@ GPUI 每帧重建整棵元素树，所以：
 | 路径 | 内容 |
 |---|---|
 | `src/` | 唯一的 crate（`boundlessdeck`，single binary，无 `[lib]`），顶层约 30 个模块 |
-| `src/deck/` | `DeckView` 的子模块：`stack.rs`（块堆与弹簧动画）、`browser.rs`（WKWebView 嵌入与快照）、`zoomlayer.rs`（缩放状态机）、`sharpen.rs`（清晰度过渡） |
-| `src/mcp/` | MCP 端点，见上文 |
+| `src/deck/` | `DeckView` 的子模块：`input.rs`（按下、拖动、滚轮与焦点）、`card.rs`（block 卡片、标题栏、缩放手柄、出现动画）、`body.rs`（卡片内容与 Markdown/图表缓存）、`chrome.rs`（工具栏、主页按钮、弹层、状态栏）、`camera.rs`（缩放与相机滑动）、`editing.rs`（原地编辑）、`memofile.rs`（笔记文件读写）、`load.rs`（文件、文档、PDF、终端的加载）、`endpoint.rs`（MCP 端点与任务执行）、`stack.rs`（块堆与弹簧动画）、`browser.rs`（WKWebView 嵌入与快照）、`zoomlayer.rs`（缩放状态机）、`sharpen.rs`（清晰度过渡）、`lifecycle.rs`、`popin.rs`、`styled.rs`、`inspector.rs` |
+| `src/model/` | `block.rs`（`BlockKind`、`Block`、`Style`、默认尺寸）、`camera.rs`（相机与缩放档位）、`persist.rs`（路径与 deck.json 读写）；都由 `model.rs` 重新导出，外部仍写 `crate::model::X` |
+| `src/mcp/` | MCP 端点，见上文；`tools/` 下是 `schema.rs`（字段表与工具列表）、`patch.rs`（字段校验与写入）、`arrange.rs` + `layout.rs`（排版工具与算法）、`style.rs`（样式补丁） |
 | `target/` | 构建产物，已 gitignore |
 
 ## Development Commands
@@ -141,7 +142,7 @@ cargo run -- /tmp/test-deck
 
 | 变量 | 作用 | 位置 |
 |---|---|---|
-| `BOUNDLESSDECK_DATA_DIR` | 覆盖数据目录（recents、settings） | `model.rs:926` |
+| `BOUNDLESSDECK_DATA_DIR` | 覆盖数据目录（recents、settings） | `model/persist.rs:160` |
 | `BOUNDLESSDECK_ACTIVE_FILE` | 覆盖活动 deck 注册表路径 | `mcp/mod.rs:103` |
 | `BOUNDLESSDECK_WORKSPACE` | `mcp-stdio` 的默认工作区 | `mcp/bridge.rs:98` |
 | `BOUNDLESSDECK_TERMINAL` / `BOUNDLESSDECK_DECK` | 终端 shell 中由应用设置；`mcp-stdio` 读取后告诉 deck 调用方在哪个终端里 | `mcp/mod.rs`、`terminal.rs` 的 `spawn` |
@@ -206,11 +207,11 @@ cx.spawn(async move |this, cx| {
 | 文件 | 为什么重要 |
 |---|---|
 | `src/main.rs` | 入口：MCP 桥分派、窗口选项、关闭与退出钩子。 |
-| `src/model.rs` | block、camera、Change、持久化与路径规则的权威定义；行为修改从这里开始。 |
-| `src/deck.rs` | 画布视图（约 2600 行）：渲染、输入、保存调度、MCP 任务执行。 |
+| `src/model.rs` | Change、撤销、块堆、选择等模型操作；block、camera、持久化在 `model/` 子模块。行为修改从这里开始。 |
+| `src/deck.rs` | 画布视图：`DeckView` 与 `Runtime` 的定义、保存调度、增删 block、`Render`；输入、卡片、内容、MCP 任务执行在 `deck/` 子模块。 |
 | `src/deck/zoomlayer.rs` | 缩放冻结与吸附状态机。 |
 | `src/deck/browser.rs` | WKWebView 的生命周期、遮挡与快照回退。 |
-| `src/mcp/tools.rs` | `FIELDS` 字段表、19 个工具、校验与排版算法。 |
+| `src/mcp/tools.rs` | `Ctx` 与 19 个工具的分派；字段表、校验、排版在 `tools/` 子模块。 |
 | `src/mcp/mod.rs` | 端点注册、socket 路径、活动 deck 注册表。 |
 | `src/commands.rs` | 命令表：菜单、快捷键与快捷键窗口的单一来源。 |
 | `Cargo.toml` | 依赖；`gpui` 0.2.2 与 `runtime_shaders`；macOS 专属 objc2 系列。 |
@@ -219,8 +220,8 @@ cx.spawn(async move |this, cx| {
 ### 常见改动路径
 
 - **浏览器标签页**：`Block.tabs`（`WebTab`，`key` 只在运行时区分标签、不落盘）与 `Block.tab`；`url` 始终等于打开的标签的地址。只写 `url` 的地方（Go 版、MCP、地址栏）之后调用 `Block::ensure_tabs` 让打开的标签跟上。每个标签的 WKWebView 存在 `Runtime.webs`（按 key），`WebEvent` 都带 block id 与标签 key。
-- **新增 block 字段**：在 `Block` 上加 serde 字段（`skip_serializing_if` 保持与 Go 版一致）→ 登记到 `mcp::tools::FIELDS` → 在 `tools.rs` 中实现读写校验。
-- **新增 block 种类**：`BlockKind`（含 `ALL`、`as_str`、`parse`、`label`）、`new_block_of` 与 `kind_defaults` 的默认尺寸、`deck.rs` 中的 body 渲染分支、`FIELDS` 中的 `kinds`。旧版本读到不认识的种类时把它原样留在 `Model.foreign` 并写回，所以新种类不会让旧版本打不开 deck；deck.json 整体读不了时 `Model::load` 返回错误，不会新建一张覆盖它。
+- **新增 block 字段**：在 `Block` 上加 serde 字段（`skip_serializing_if` 保持与 Go 版一致）→ 登记到 `mcp::tools::FIELDS`（`tools/schema.rs`）→ 在 `tools/patch.rs` 中实现读写校验。
+- **新增 block 种类**：`BlockKind`（含 `ALL`、`as_str`、`parse`、`label`）、`new_block_of` 与 `kind_defaults` 的默认尺寸、`deck/body.rs` 中的 body 渲染分支、`FIELDS` 中的 `kinds`。旧版本读到不认识的种类时把它原样留在 `Model.foreign` 并写回，所以新种类不会让旧版本打不开 deck；deck.json 整体读不了时 `Model::load` 返回错误，不会新建一张覆盖它。
 - **文字与图形**（`BlockKind::bare()`）：没有卡片，由 `deck/styled.rs` 画（`look` 把 `Block.style` 解析成颜色、字体、对齐，缺省按种类）；选中时标题栏浮在上方，单击拖动、双击编辑文字。样式在右侧面板（`deck/inspector.rs`）里改，字体与自定义颜色走系统面板（`src/nativepanel.rs`，选择经 `DeckView.panel_tx` 回到 UI 线程）。
 - **新增命令**：`commands.rs` 的命令表，并在对应的 key context 上挂 `.on_action` 处理。
 - **新增交互**：在最内层元素上 `.occlude()` 或 `stop_propagation()`；拖动状态放在 `Drag` 中，结束时用 `record_moves` 与 `after_edit`。
