@@ -45,6 +45,13 @@ pub struct Root {
     stage_from: Option<std::time::Instant>,
     /// How blurred the window is, as the last frame left it.
     blur: f64,
+    /// The welcome over the window, while it shows or goes.
+    welcome: Option<Entity<crate::welcome::WelcomeView>>,
+    /// The welcome was just asked for: it takes the keyboard next frame.
+    focus_welcome: bool,
+    /// The blur behind the welcome, and over its page while it turns.
+    welcome_blur: crate::backdrop::Backdrop,
+    turn_blur: crate::backdrop::Backdrop,
 }
 
 impl Root {
@@ -65,6 +72,10 @@ impl Root {
             switching: None,
             stage_from: None,
             blur: 0.,
+            welcome: None,
+            focus_welcome: false,
+            welcome_blur: crate::backdrop::Backdrop::default(),
+            turn_blur: crate::backdrop::Backdrop::default(),
         };
         if let Some(p) = open {
             r.open_folder(&p, cx);
@@ -128,6 +139,85 @@ impl Root {
         self.focus_deck = true;
         crate::windows::refresh_settings(cx);
         cx.notify();
+    }
+
+    /// Shows the welcome over the window on its first page, or brings it back there.
+    pub fn show_welcome(&mut self, cx: &mut Context<Self>) {
+        match &self.welcome {
+            Some(w) => w.update(cx, |v, cx| v.reopen(cx)),
+            None => self.welcome = Some(cx.new(crate::welcome::WelcomeView::new)),
+        }
+        self.focus_welcome = true;
+        cx.notify();
+    }
+
+    /// The welcome over the window, faded by how far in it is, with the window
+    /// blurred behind it; none once it has gone, and the keyboard goes back.
+    fn welcome_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        use crate::welcome;
+        let now = std::time::Instant::now();
+        if self.welcome.as_ref().is_some_and(|w| w.read(cx).gone(now)) {
+            self.welcome = None;
+            match &self.deck {
+                Some(_) => self.focus_deck = true,
+                None => window.focus(&self.focus),
+            }
+        }
+        let covered = self.welcome.is_some();
+        if let Some(d) = &self.deck
+            && d.read(cx).covered != covered
+        {
+            d.update(cx, |d, cx| {
+                d.covered = covered;
+                cx.notify();
+            });
+        }
+        let Some(w) = self.welcome.clone() else {
+            self.welcome_blur.around(window, 0., crate::backdrop::Hole::default());
+            self.turn_blur.over(window, 0., &[]);
+            return None;
+        };
+        if std::mem::take(&mut self.focus_welcome) {
+            window.focus(&w.focus_handle(cx));
+        }
+        let f = w.read(cx).presence(now);
+        if f < 1. {
+            window.request_animation_frame();
+        }
+        let vs = window.viewport_size();
+        let (x, y, pw, ph) = welcome::panel_rect(f32::from(vs.width), f32::from(vs.height));
+        let y = y + 12. * (1. - f);
+        self.welcome_blur.around(window, 14. * f as f64, crate::backdrop::Hole { x, y, w: pw, h: ph });
+        // Turning a page, the page blurs and comes clear.
+        let page = welcome::WelcomeView::page_rect((x, y, pw, ph));
+        self.turn_blur.over(window, w.read(cx).turn_blur(now), &[page]);
+        let t = crate::theme::Theme::of(window);
+        let scrim = gpui::black().opacity(if t.dark { 0.36 } else { 0.14 } * f);
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .occlude()
+                .bg(scrim)
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(x))
+                        .top(px(y))
+                        .w(px(pw))
+                        .h(px(ph))
+                        .opacity(f)
+                        .rounded(px(welcome::RADIUS))
+                        .shadow(vec![gpui::BoxShadow {
+                            color: t.shade,
+                            offset: gpui::point(px(0.), px(12.)),
+                            blur_radius: px(40.),
+                            spread_radius: px(0.),
+                        }])
+                        .child(w),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The folder of the deck open, if one is.
@@ -767,6 +857,7 @@ impl Render for Root {
             None => "BoundlessDeck".into(),
         };
         window.set_window_title(&title);
+        let welcome = self.welcome_overlay(window, cx);
         let body = match self.deck.clone() {
             Some(d) => {
                 if self.focus_deck {
@@ -787,6 +878,7 @@ impl Render for Root {
             .on_action(cx.listener(|r, _: &OpenFolder, _, cx| r.pick_folder(cx)))
             .relative()
             .child(body)
+            .children(welcome)
             // Blurring out to another screen, nothing takes input.
             .when(self.switching.is_some(), |d| d.child(div().absolute().inset_0().occlude()))
     }

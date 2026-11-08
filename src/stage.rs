@@ -27,6 +27,17 @@ pub fn uneased(v: f64) -> f64 {
     (lo + hi) / 2.
 }
 
+/// Whether the system asks for less motion (辅助功能 › 减弱动态效果).
+#[cfg(target_os = "macos")]
+pub fn reduce_motion() -> bool {
+    objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn reduce_motion() -> bool {
+    false
+}
+
 /// Blurs the window's content by radius points; 0 takes the blur off.
 #[cfg(target_os = "macos")]
 pub fn set_blur(window: &Window, radius: f64) {

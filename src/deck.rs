@@ -233,6 +233,8 @@ pub struct DeckView {
     lod_wake: usize,
     /// Something drawn this frame is fading: the next frame is asked for.
     animating: bool,
+    /// A panel of the window's (the welcome) lies over the deck: web pages give way to their pictures.
+    pub covered: bool,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
     glide: Option<(Camera, Camera, Instant)>,
     focus: FocusHandle,
@@ -334,6 +336,7 @@ impl DeckView {
             text_s: None,
             lod_wake: LOD_WAKE_PER_FRAME,
             animating: false,
+            covered: false,
             glide: None,
             focus: cx.focus_handle(),
             rts: HashMap::new(),

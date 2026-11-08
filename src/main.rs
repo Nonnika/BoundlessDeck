@@ -3,6 +3,7 @@
 //! saved inside it, in the same deck.json the Go build reads.
 
 mod app;
+mod backdrop;
 mod chart;
 mod chartview;
 mod commands;

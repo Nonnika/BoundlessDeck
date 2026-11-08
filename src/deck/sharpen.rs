@@ -93,14 +93,8 @@ pub(super) fn crossfade(under: Option<AnyElement>, over: AnyElement, alpha: f32)
         .child(layer().opacity(alpha).child(over))
 }
 
-#[cfg(target_os = "macos")]
 pub(super) fn reduce_motion() -> bool {
-    objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(super) fn reduce_motion() -> bool {
-    false
+    crate::stage::reduce_motion()
 }
 
 #[cfg(test)]
