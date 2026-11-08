@@ -505,8 +505,7 @@ impl DeckView {
                 return Some("被工具栏遮住 · 平移画布让它露出来");
             }
         }
-        let panel = (vw - super::inspector::PANEL_W - 12., super::inspector::PANEL_TOP, super::inspector::PANEL_W, vh - super::inspector::PANEL_TOP - 48.);
-        if self.inspector_shown && over(panel) {
+        if self.insp.rects.iter().any(|r| over(*r)) {
             return Some("被样式面板遮住 · 取消选择文字或图形让它露出来");
         }
         None

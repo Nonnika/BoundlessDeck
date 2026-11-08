@@ -243,7 +243,7 @@ pub struct DeckView {
     /// Which color of the styled blocks a custom pick goes to.
     color_slot: inspector::Slot,
     /// The style panel showed this frame: web pages under it give way.
-    inspector_shown: bool,
+    insp: inspector::Inspector,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
     glide: Option<(Camera, Camera, Instant)>,
     focus: FocusHandle,
@@ -348,7 +348,7 @@ impl DeckView {
         DeckView {
             panel_tx,
             color_slot: inspector::Slot::Fill,
-            inspector_shown: false,
+            insp: inspector::Inspector::default(),
             m,
             lay,
             zoom_settle: None,
@@ -675,7 +675,7 @@ impl Render for DeckView {
         .size_full();
 
         // Known before the blocks are drawn: web pages under the style panel give way.
-        self.inspector_shown = !self.style_targets().is_empty();
+        self.inspector_tick();
         let visible: Vec<String> =
             self.m.visible(self.view.0, self.view.1).into_iter().map(|i| self.m.blocks[i].id.clone()).collect();
         self.frame_rects = visible

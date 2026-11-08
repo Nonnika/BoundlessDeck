@@ -707,6 +707,11 @@ impl Render for Editor {
             .track_focus(&self.focus)
             .cursor(CursorStyle::IBeam)
             .size_full()
+            // One line is only a line tall: placed in a taller box as `valign` says.
+            .when(!self.multiline && self.valign >= 0.25, |d| {
+                let d = d.flex().flex_col();
+                if self.valign >= 0.75 { d.justify_end() } else { d.justify_center() }
+            })
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))

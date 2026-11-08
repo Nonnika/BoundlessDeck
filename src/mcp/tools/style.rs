@@ -53,6 +53,21 @@ pub fn style_patch(base: &model::Style, v: &Value) -> Result<model::Style, Strin
                     return Err("style.radius 不能为负".into());
                 }
             }
+            "corners" => {
+                st.corners = if reset {
+                    None
+                } else {
+                    let a = x.as_array().filter(|a| a.len() == 4).ok_or("style.corners 要是四个数字 [左上, 右上, 右下, 左下]")?;
+                    let mut c = [0f32; 4];
+                    for (slot, v) in c.iter_mut().zip(a) {
+                        *slot = v.as_f64().ok_or("style.corners 要是四个数字 [左上, 右上, 右下, 左下]")? as f32;
+                        if *slot < 0. {
+                            return Err("style.corners 不能为负".into());
+                        }
+                    }
+                    Some(c)
+                };
+            }
             "align" | "valign" => {
                 let a = if reset { String::new() } else { text()? };
                 let allowed: &[&str] = if k == "align" { &["left", "center", "right"] } else { &["top", "middle", "bottom"] };
@@ -84,6 +99,9 @@ mod tests {
         assert_eq!(st.fill, "red", "keys not given stay");
         assert_eq!((st.stroke.as_str(), st.weight, st.align.as_str(), st.size), ("#aabbcc", 700, "center", 0.));
         assert_eq!(style_patch(&st, &json!({"weight": 400})).unwrap().weight, 0, "regular is the default");
+        let st = style_patch(&st, &json!({"corners": [0, 8, 16.5, 4]})).unwrap();
+        assert_eq!(st.corners, Some([0., 8., 16.5, 4.]));
+        assert_eq!(style_patch(&st, &json!({"corners": null})).unwrap().corners, None);
         for bad in [
             json!({"fill": "rouge"}),
             json!({"fill": "#12345"}),
@@ -91,6 +109,8 @@ mod tests {
             json!({"weight": 450}),
             json!({"align": "middle"}),
             json!({"radius": -1}),
+            json!({"corners": [1, 2, 3]}),
+            json!({"corners": [1, 2, 3, -4]}),
             json!({"shadow": 1}),
             json!("red"),
         ] {

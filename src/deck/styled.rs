@@ -24,7 +24,8 @@ pub(super) struct Look {
     pub size: f32,
     pub weight: FontWeight,
     pub italic: bool,
-    pub radius: f32,
+    /// Corner radii: top-left, top-right, bottom-right, bottom-left.
+    pub radii: [f32; 4],
     /// Across, 0 left to 1 right; up and down, 0 top to 1 bottom.
     pub align: f32,
     pub valign: f32,
@@ -68,9 +69,8 @@ pub(super) fn look(b: &Block, t: &Theme) -> Look {
     let fill = pick(&st.fill, true, fill_d);
     let stroke = pick(&st.stroke, false, stroke_d);
     let color = pick(&st.color, false, Some(t.text)).unwrap_or(t.text);
-    let size = if st.size > 0. { st.size.clamp(6., 400.) } else if shape_kind { 16. } else { 24. };
+    let size = font_size(b);
     let weight = if st.weight > 0 { FontWeight(st.weight.clamp(100, 900) as f32) } else { FontWeight::NORMAL };
-    let radius = st.radius.unwrap_or(if shape_kind { 12. } else { 8. }).max(0.);
     let along = |v: &str, default: f32| match v {
         "left" | "top" => 0.,
         "center" | "middle" => 0.5,
@@ -85,11 +85,33 @@ pub(super) fn look(b: &Block, t: &Theme) -> Look {
         size,
         weight,
         italic: st.italic,
-        radius,
+        radii: radii(b),
         align: along(&st.align, if shape_kind { 0.5 } else { 0. }),
         valign: along(&st.valign, if shape_kind { 0.5 } else { 0. }),
         shape: if shape_kind { Shape::of(&b.shape) } else { Shape::Rect },
     }
+}
+
+/// The words' size in points at 100%: the style's, else the kind's default.
+pub(super) fn font_size(b: &Block) -> f32 {
+    if b.style.size > 0. {
+        b.style.size.clamp(6., 400.)
+    } else if b.kind == BlockKind::Shape {
+        16.
+    } else {
+        24.
+    }
+}
+
+/// The radius on every corner unless they are set one by one: the kind's
+/// default, else what the style says.
+pub(super) fn radius(b: &Block) -> f32 {
+    b.style.radius.unwrap_or(if b.kind == BlockKind::Shape { 12. } else { 8. }).max(0.)
+}
+
+/// Each corner's radius: top-left, top-right, bottom-right, bottom-left.
+pub(super) fn radii(b: &Block) -> [f32; 4] {
+    b.style.corners.map(|c| c.map(|r| r.max(0.))).unwrap_or([radius(b); 4])
 }
 
 /// Sets an editor up to look as the block's words do.
@@ -118,9 +140,9 @@ fn text_inset(shape: Shape, w: f32, h: f32, pad: f32) -> [f32; 4] {
 /// only the shape is drawn.
 pub(super) fn view(b: &Block, l: &Look, w: f32, h: f32, scale: f32, editor: Option<Entity<Editor>>, lod: bool) -> AnyElement {
     let shape = l.shape;
-    let (fill_c, stroke_c, radius) = (l.fill, l.stroke, l.radius * scale);
+    let (fill_c, stroke_c, radii) = (l.fill, l.stroke, l.radii.map(|r| r * scale));
     let stroke_w = (if b.kind == BlockKind::Shape { 2. } else { 1.5 }) * scale;
-    let body = canvas(|_, _, _| (), move |bounds, _, window, _| paint_shape(window, bounds, shape, fill_c, stroke_c, stroke_w, radius))
+    let body = canvas(|_, _, _| (), move |bounds, _, window, _| paint_shape(window, bounds, shape, fill_c, stroke_c, stroke_w, radii))
         .absolute()
         .left_0()
         .top_0()
@@ -173,11 +195,17 @@ fn paint_shape(
     fill_c: Option<Hsla>,
     stroke_c: Option<Hsla>,
     stroke_w: f32,
-    radius: f32,
+    radii: [f32; 4],
 ) {
     let (x, y, w, h) = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height));
     if shape == Shape::Rect {
-        let r = px(radius.min(w / 2.).min(h / 2.));
+        let lim = (w / 2.).min(h / 2.);
+        let r = gpui::Corners {
+            top_left: px(radii[0].min(lim)),
+            top_right: px(radii[1].min(lim)),
+            bottom_right: px(radii[2].min(lim)),
+            bottom_left: px(radii[3].min(lim)),
+        };
         match (fill_c, stroke_c) {
             (f, Some(s)) => window.paint_quad(gpui::quad(
                 b,
@@ -236,7 +264,7 @@ pub(super) fn paint_icon(window: &mut Window, b: Bounds<Pixels>, shape: Shape, c
         point(b.origin.x + px(inset), b.origin.y + px(inset)),
         size(b.size.width - px(2. * inset), b.size.height - px(2. * inset)),
     );
-    paint_shape(window, inner, shape, None, Some(color), 1.5, 3.);
+    paint_shape(window, inner, shape, None, Some(color), 1.5, [3.; 4]);
 }
 
 #[cfg(test)]
@@ -254,7 +282,7 @@ mod tests {
         b.shape = "ellipse".into();
         let l = look(&b, &t);
         assert!(l.fill.is_some() && l.stroke.is_some());
-        assert_eq!((l.shape, l.align, l.valign, l.radius), (Shape::Ellipse, 0.5, 0.5, 12.));
+        assert_eq!((l.shape, l.align, l.valign, l.radii), (Shape::Ellipse, 0.5, 0.5, [12.; 4]));
         b.style = Style {
             fill: "none".into(),
             color: "#ff0000".into(),
@@ -269,7 +297,9 @@ mod tests {
         let l = look(&b, &t);
         assert_eq!(l.fill, None);
         assert_eq!(crate::theme::hex(l.color), "#ff0000");
-        assert_eq!((l.size, l.weight, l.radius, l.align, l.valign), (40., FontWeight(700.), 0., 1., 1.));
+        assert_eq!((l.size, l.weight, l.radii, l.align, l.valign), (40., FontWeight(700.), [0.; 4], 1., 1.));
+        b.style.corners = Some([0., 4., 16., -2.]);
+        assert_eq!(look(&b, &t).radii, [0., 4., 16., 0.], "corners one by one, never below 0");
         assert_eq!(l.family.as_ref().map(|f| f.as_ref()), Some("Kaiti SC"));
     }
 }

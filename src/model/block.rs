@@ -250,6 +250,10 @@ pub struct Style {
     /// Corner radius in points; none is the kind's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub radius: Option<f32>,
+    /// Each corner's radius in points: top-left, top-right, bottom-right,
+    /// bottom-left. None is `radius` on all four.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corners: Option<[f32; 4]>,
     /// `left`, `center` or `right`; empty is the kind's default.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub align: String,

@@ -25,7 +25,7 @@ pub struct Field {
 const ALL: &[BlockKind] = &[];
 pub(super) const KIND_NAMES: &[&str] = &["quicklook", "note", "file", "terminal", "browser", "chart", "stack", "text", "shape"];
 const BARE: &[BlockKind] = &[BlockKind::Text, BlockKind::Shape];
-pub(super) const STYLE_KEYS: &[&str] = &["fill", "stroke", "color", "font", "size", "weight", "italic", "radius", "align", "valign"];
+pub(super) const STYLE_KEYS: &[&str] = &["fill", "stroke", "color", "font", "size", "weight", "italic", "radius", "corners", "align", "valign"];
 pub(super) const CHART_NAMES: &[&str] = &["bar", "hbar", "line", "area", "pie"];
 
 pub const FIELDS: &[Field] = &[
@@ -68,7 +68,7 @@ pub const FIELDS: &[Field] = &[
     Field { name: "shape", ty: "string", mutable: true, on_create: true, kinds: &[BlockKind::Shape], min: None, enum_: model::SHAPES, derived: false,
         description: "图形的形状：rect（矩形，默认）、ellipse（椭圆）、diamond（菱形）、triangle（三角）。" },
     Field { name: "style", ty: "object", mutable: true, on_create: true, kinds: BARE, min: None, enum_: &[], derived: false,
-        description: "文字与图形的样式，按键合并（只改给出的键，值为 null 恢复默认）：fill（填充）、stroke（边框）、color（文字颜色）——颜色可写调色板名 ink/gray/red/orange/yellow/green/teal/blue/purple/pink（随浅色/深色变化，作填充时是柔和底色）、#rrggbb 或 none；font（系统已安装的字族名，空为系统字体）；size（字号，6–400）；weight（100–900 的整百）；italic（布尔）；radius（圆角，≥0，只对矩形和文字有效）；align（left/center/right）；valign（top/middle/bottom）。文字默认无填充无边框、24 号、左上对齐；图形默认蓝色柔和填充与蓝边、16 号、居中。" },
+        description: "文字与图形的样式，按键合并（只改给出的键，值为 null 恢复默认）：fill（填充）、stroke（边框）、color（文字颜色）——颜色可写调色板名 ink/gray/red/orange/yellow/green/teal/blue/purple/pink（随浅色/深色变化，作填充时是柔和底色）、#rrggbb 或 none；font（系统已安装的字族名，空为系统字体）；size（字号，6–400）；weight（100–900 的整百）；italic（布尔）；radius（圆角，≥0，只对矩形和文字有效）；corners（四个角各自的圆角 [左上, 右上, 右下, 左下]，≥0，设了就代替 radius）；align（left/center/right）；valign（top/middle/bottom）。文字默认无填充无边框、24 号、左上对齐；图形默认蓝色柔和填充与蓝边、16 号、居中。" },
 ];
 
 pub(super) fn field(name: &str) -> Option<&'static Field> {
