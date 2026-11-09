@@ -32,6 +32,8 @@ pub(crate) struct Scene {
     pub(crate) monochrome_sprites: Vec<MonochromeSprite>,
     pub(crate) polychrome_sprites: Vec<PolychromeSprite>,
     pub(crate) surfaces: Vec<PaintSurface>,
+    /// BoundlessDeck: what this frame asked to keep as pictures (`snapshot.rs`).
+    pub(crate) snapshot_requests: Vec<crate::snapshot::SnapshotRequest>,
 }
 
 impl Scene {
@@ -46,6 +48,51 @@ impl Scene {
         self.monochrome_sprites.clear();
         self.polychrome_sprites.clear();
         self.surfaces.clear();
+        self.snapshot_requests.clear();
+    }
+
+    /// BoundlessDeck: a scene of the primitives `ops` of this one painted,
+    /// moved by `offset` (to draw them into a texture of their own); none if
+    /// any of them cannot be drawn there (paths, which go through the
+    /// window's own intermediate texture, and surfaces).
+    pub(crate) fn extract(&self, ops: Range<usize>, offset: Point<ScaledPixels>) -> Option<Scene> {
+        let mut scene = Scene::default();
+        let shift = |b: Bounds<ScaledPixels>| Bounds { origin: b.origin + offset, size: b.size };
+        for operation in self.paint_operations.get(ops)? {
+            match operation {
+                PaintOperation::Primitive(primitive) => {
+                    let mut p = primitive.clone();
+                    match &mut p {
+                        Primitive::Shadow(x) => {
+                            x.bounds = shift(x.bounds);
+                            x.content_mask.bounds = shift(x.content_mask.bounds);
+                        }
+                        Primitive::Quad(x) => {
+                            x.bounds = shift(x.bounds);
+                            x.content_mask.bounds = shift(x.content_mask.bounds);
+                        }
+                        Primitive::Underline(x) => {
+                            x.bounds = shift(x.bounds);
+                            x.content_mask.bounds = shift(x.content_mask.bounds);
+                        }
+                        Primitive::MonochromeSprite(x) => {
+                            x.bounds = shift(x.bounds);
+                            x.content_mask.bounds = shift(x.content_mask.bounds);
+                        }
+                        Primitive::PolychromeSprite(x) => {
+                            x.bounds = shift(x.bounds);
+                            x.content_mask.bounds = shift(x.content_mask.bounds);
+                        }
+                        Primitive::Path(_) | Primitive::Surface(_) => return None,
+                    }
+                    scene.insert_primitive(p);
+                }
+                PaintOperation::StartLayer(bounds) => scene.push_layer(shift(*bounds)),
+                PaintOperation::EndLayer => scene.pop_layer(),
+            }
+        }
+        scene.finish();
+        Some(scene)
     }
 
     pub fn len(&self) -> usize {

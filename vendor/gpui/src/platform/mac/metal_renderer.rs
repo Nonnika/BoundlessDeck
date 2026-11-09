@@ -441,13 +441,117 @@ impl MetalRenderer {
         let alpha = if self.layer.is_opaque() { 1. } else { 0. };
         let mut instance_offset = 0;
 
+        // BoundlessDeck: the pictures this frame asked for, first (`snapshot.rs`).
+        self.draw_snapshots(scene, instance_buffer, &mut instance_offset, command_buffer);
+
+        self.encode_scene(
+            scene,
+            instance_buffer,
+            &mut instance_offset,
+            viewport_size,
+            command_buffer,
+            drawable.texture(),
+            metal::MTLClearColor::new(0., 0., 0., alpha),
+        )?;
+
+        instance_buffer.metal_buffer.did_modify_range(NSRange {
+            location: 0,
+            length: instance_offset as NSUInteger,
+        });
+        Ok(command_buffer.to_owned())
+    }
+
+    /// BoundlessDeck: draws the primitives each picture asked for this frame
+    /// into a texture of its own, kept in the registry (`snapshot.rs`). A
+    /// picture that cannot be made (paths in it, no room) is not kept.
+    fn draw_snapshots(
+        &mut self,
+        scene: &Scene,
+        instance_buffer: &mut InstanceBuffer,
+        instance_offset: &mut usize,
+        command_buffer: &metal::CommandBufferRef,
+    ) {
+        for request in &scene.snapshot_requests {
+            let offset = point(ScaledPixels(-request.visible.origin.x.0), ScaledPixels(-request.visible.origin.y.0));
+            let size = size(
+                DevicePixels(request.visible.size.width.0.ceil() as i32),
+                DevicePixels(request.visible.size.height.0.ceil() as i32),
+            );
+            let Some(sub) = scene.extract(request.ops.clone(), offset) else {
+                crate::snapshot::forget_snapshot(request.key);
+                continue;
+            };
+            // Reuse the texture kept for this key if it is the same size.
+            let reuse = crate::snapshot::REGISTRY.with(|r| {
+                r.borrow().snapshots.get(&request.key).filter(|s| s.size == size).map(|s| (s.texture.clone(), s.slot))
+            });
+            let (texture, slot) = match reuse {
+                Some(found) => found,
+                None => {
+                    let descriptor = metal::TextureDescriptor::new();
+                    descriptor.set_width(size.width.0 as u64);
+                    descriptor.set_height(size.height.0 as u64);
+                    descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
+                    descriptor.set_storage_mode(metal::MTLStorageMode::Private);
+                    descriptor.set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
+                    let texture = self.device.new_texture(&descriptor);
+                    let slot = crate::snapshot::REGISTRY.with(|r| r.borrow_mut().next_slot());
+                    (texture, slot)
+                }
+            };
+            let bg = crate::Rgba::from(request.background);
+            let drawn = self.encode_scene(
+                &sub,
+                instance_buffer,
+                instance_offset,
+                size,
+                command_buffer,
+                &texture,
+                metal::MTLClearColor::new(bg.r as f64, bg.g as f64, bg.b as f64, 1.),
+            );
+            crate::snapshot::REGISTRY.with(|r| {
+                let mut r = r.borrow_mut();
+                if drawn.is_err() {
+                    r.snapshots.remove(&request.key);
+                    return;
+                }
+                let now = r.tick();
+                r.snapshots.insert(
+                    request.key,
+                    crate::snapshot::Snapshot {
+                        version: request.version,
+                        bounds: request.bounds,
+                        visible: request.visible,
+                        slot,
+                        size,
+                        last_used: now,
+                        texture,
+                    },
+                );
+                r.trim();
+            });
+        }
+    }
+
+    /// Encodes a scene's batches into `target`, cleared to `clear` first.
+    #[allow(clippy::too_many_arguments)]
+    fn encode_scene(
+        &mut self,
+        scene: &Scene,
+        instance_buffer: &mut InstanceBuffer,
+        instance_offset: &mut usize,
+        viewport_size: Size<DevicePixels>,
+        command_buffer: &metal::CommandBufferRef,
+        target: &metal::TextureRef,
+        clear: metal::MTLClearColor,
+    ) -> Result<()> {
         let mut command_encoder = new_command_encoder(
             command_buffer,
-            drawable,
+            target,
             viewport_size,
             |color_attachment| {
                 color_attachment.set_load_action(metal::MTLLoadAction::Clear);
-                color_attachment.set_clear_color(metal::MTLClearColor::new(0., 0., 0., alpha));
+                color_attachment.set_clear_color(clear);
             },
         );
 
@@ -456,14 +560,14 @@ impl MetalRenderer {
                 PrimitiveBatch::Shadows(shadows) => self.draw_shadows(
                     shadows,
                     instance_buffer,
-                    &mut instance_offset,
+                    instance_offset,
                     viewport_size,
                     command_encoder,
                 ),
                 PrimitiveBatch::Quads(quads) => self.draw_quads(
                     quads,
                     instance_buffer,
-                    &mut instance_offset,
+                    instance_offset,
                     viewport_size,
                     command_encoder,
                 ),
@@ -473,14 +577,14 @@ impl MetalRenderer {
                     let did_draw = self.draw_paths_to_intermediate(
                         paths,
                         instance_buffer,
-                        &mut instance_offset,
+                        instance_offset,
                         viewport_size,
                         command_buffer,
                     );
 
                     command_encoder = new_command_encoder(
                         command_buffer,
-                        drawable,
+                        target,
                         viewport_size,
                         |color_attachment| {
                             color_attachment.set_load_action(metal::MTLLoadAction::Load);
@@ -491,7 +595,7 @@ impl MetalRenderer {
                         self.draw_paths_from_intermediate(
                             paths,
                             instance_buffer,
-                            &mut instance_offset,
+                            instance_offset,
                             viewport_size,
                             command_encoder,
                         )
@@ -502,7 +606,7 @@ impl MetalRenderer {
                 PrimitiveBatch::Underlines(underlines) => self.draw_underlines(
                     underlines,
                     instance_buffer,
-                    &mut instance_offset,
+                    instance_offset,
                     viewport_size,
                     command_encoder,
                 ),
@@ -513,7 +617,7 @@ impl MetalRenderer {
                     texture_id,
                     sprites,
                     instance_buffer,
-                    &mut instance_offset,
+                    instance_offset,
                     viewport_size,
                     command_encoder,
                 ),
@@ -524,14 +628,14 @@ impl MetalRenderer {
                     texture_id,
                     sprites,
                     instance_buffer,
-                    &mut instance_offset,
+                    instance_offset,
                     viewport_size,
                     command_encoder,
                 ),
                 PrimitiveBatch::Surfaces(surfaces) => self.draw_surfaces(
                     surfaces,
                     instance_buffer,
-                    &mut instance_offset,
+                    instance_offset,
                     viewport_size,
                     command_encoder,
                 ),
@@ -552,12 +656,7 @@ impl MetalRenderer {
         }
 
         command_encoder.end_encoding();
-
-        instance_buffer.metal_buffer.did_modify_range(NSRange {
-            location: 0,
-            length: instance_offset as NSUInteger,
-        });
-        Ok(command_buffer.to_owned())
+        Ok(())
     }
 
     fn draw_paths_to_intermediate(
@@ -1009,7 +1108,15 @@ impl MetalRenderer {
         }
         align_offset(instance_offset);
 
-        let texture = self.sprite_atlas.metal_texture(texture_id);
+        // BoundlessDeck: a picture (`snapshot.rs`) is drawn as a sprite of its own texture.
+        let texture = if texture_id.index >= crate::snapshot::SNAPSHOT_SLOT_BASE {
+            match crate::snapshot::REGISTRY.with(|r| r.borrow().texture_for_slot(texture_id.index)) {
+                Some(texture) => texture,
+                None => return true,
+            }
+        } else {
+            self.sprite_atlas.metal_texture(texture_id)
+        };
         let texture_size = size(
             DevicePixels(texture.width() as i32),
             DevicePixels(texture.height() as i32),
@@ -1171,7 +1278,7 @@ impl MetalRenderer {
 
 fn new_command_encoder<'a>(
     command_buffer: &'a metal::CommandBufferRef,
-    drawable: &'a metal::MetalDrawableRef,
+    target: &'a metal::TextureRef,
     viewport_size: Size<DevicePixels>,
     configure_color_attachment: impl Fn(&RenderPassColorAttachmentDescriptorRef),
 ) -> &'a metal::RenderCommandEncoderRef {
@@ -1180,7 +1287,7 @@ fn new_command_encoder<'a>(
         .color_attachments()
         .object_at(0)
         .unwrap();
-    color_attachment.set_texture(Some(drawable.texture()));
+    color_attachment.set_texture(Some(target));
     color_attachment.set_store_action(metal::MTLStoreAction::Store);
     configure_color_attachment(color_attachment);
 

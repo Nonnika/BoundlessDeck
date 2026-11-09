@@ -45,7 +45,7 @@ GPUI 每帧重建整棵元素树，所以：
 ### 缩放
 
 - 不用 transform 缩放：所有坐标乘 `cam.s` 后重新布局，文字保持清晰。
-- 缩放像放大照片（`deck/photozoom.rs` + `platform/layerzoom.rs`）：捏合或 ⌘+滚轮时不重新排版，而是由 Core Animation 在 GPU 上缩放、平移 GPUI 画好的那一帧（给窗口的 CAMetalLayer 设仿射变换，p' = k·p + t）；期间 GPUI 若要画帧，`render` 用画面拍下时的相机（`Photo::drawn`）画。工具栏、状态栏、面板与画布同在一个图层，缩放时隐藏，结束后淡入（`chrome_alpha`）。手势进行中不换图（每次换图都要在主线程按新比例排版所有看得见的文字，几十毫秒，会卡住手指）：放大时照片变软，缩小超出照片时露出画布底色；手势停下 150 ms 后才换成清晰重画的一帧，由缩放计时器直接触发（`photo_rest`）。缩小时第一张照片以鼠标为中心多画 4 倍的范围（`picture_for`，且不低于 `LOD_SCALE`），其中只有起始视野里的 block 画完整内容，其余按 LOD 样子画（`photo_far`），所以宽照片的代价约等于原视野；结束后它们经 `LodWake` 逐帧恢复并淡入。`layerzoom::present` 在同一个 CATransaction 里让图层立即重绘（GPUI 的 `displayLayer:` 以 presentsWithTransaction 同步提交）并撤掉变换，所以不闪；它会跑一帧 GPUI，只能在 task 里、任何 `update` 之外调用。窗口自己的背景在 GPUI 图层下显示为黑色，所以 `attach` 在它下面垫一层画布底色的 CALayer（`underlay`）。镜头滑动（`set_view`、焦点放映）仍逐帧排版。其余内容一律按 `content_scale()`（即 `cam.s`）排版；PDF 位图按 `DeckView.lay` 生成，缩放停下后才重做。照片显示期间不为淡入等动画请求帧。GPUI 按字号档位排版文字（我们的补丁，每二倍 4 档，档内只缩放位置），所以换图与镜头滑动都不会让 CoreText 逐字号重排，断行也不随缩放变。`BOUNDLESSDECK_FRAME_STATS=1` 可在每次手势结束后打印帧耗时、每次同步换图的耗时与视野超出照片的总时长。
+- 缩放像放大照片（`deck/photozoom.rs` + `platform/layerzoom.rs`）：捏合或 ⌘+滚轮时不重新排版，而是由 Core Animation 在 GPU 上缩放、平移 GPUI 画好的那一帧（给窗口的 CAMetalLayer 设仿射变换，p' = k·p + t）；期间 GPUI 若要画帧，`render` 用画面拍下时的相机（`Photo::drawn`）画。工具栏、状态栏、面板与画布同在一个图层，缩放时隐藏，结束后淡入（`chrome_alpha`）。手势进行中不换图（每次换图都要在主线程按新比例排版所有看得见的文字，几十毫秒，会卡住手指）：放大时照片变软，缩小超出照片时露出画布底色；手势停下 150 ms 后才换成清晰重画的一帧，由缩放计时器直接触发（`photo_rest`）。缩小时第一张照片以鼠标为中心多画 4 倍的范围（`picture_for`，且不低于 `LOD_SCALE`），其中只有起始视野里的 block 画完整内容，其余按 LOD 样子画（`photo_far`），所以宽照片的代价约等于原视野；结束后它们经 `LodWake` 逐帧恢复并淡入。`layerzoom::present` 在同一个 CATransaction 里让图层立即重绘（GPUI 的 `displayLayer:` 以 presentsWithTransaction 同步提交）并撤掉变换，所以不闪；它会跑一帧 GPUI，只能在 task 里、任何 `update` 之外调用。窗口自己的背景在 GPUI 图层下显示为黑色，所以 `attach` 在它下面垫一层画布底色的 CALayer（`underlay`）。镜头滑动（`set_view`、焦点放映）逐帧移动相机，但笔记、文件、图表的正文用位图（`deck/snapshot.rs`，GPUI 补丁的 `snapshot_capture` / `paint_snapshot`）：每次滑动开头照常画并截成位图，之后各帧拉伸位图，滑动结束再照常画；位图带内容版本（种类、尺寸、文字、解析结果与滚动位置、第几次滑动），版本不同不显示；正在编辑或激活的 block、终端、网页、QuickLook 不用位图。其余内容一律按 `content_scale()`（即 `cam.s`）排版；PDF 位图按 `DeckView.lay` 生成，缩放停下后才重做。照片显示期间不为淡入等动画请求帧。GPUI 按字号档位排版文字（我们的补丁，每二倍 4 档，档内只缩放位置），所以换图与镜头滑动都不会让 CoreText 逐字号重排，断行也不随缩放变。`BOUNDLESSDECK_FRAME_STATS=1` 可在每次手势结束后打印帧耗时、每次同步换图的耗时与视野超出照片的总时长。
 - 布局几何（位置、大小）仍用原始 `cam.s`。
 - 清晰度过渡（`src/deck/sharpen.rs`）：内容换成更清晰的版本时统一淡入（180 ms，ease-out；系统开启“减弱动态效果”时直接切换）。矢量内容只在从 LOD 回到完整内容时过渡：LOD 下 body 区是与 block 背景同色的遮罩，回来时内容立即完整画出、遮罩淡出（450 ms，ease-in-out，`REVEAL_TIME`；`Runtime::appear`，`block_view` 统一处理）；位图（PDF）新页在拉伸的旧页上淡入（`Runtime::sharpen` + `crossfade`）；原生视图（WKWebView）露出时快照留在下面，视图 alpha 从 0 到 1。新增 block 种类时归入这三类之一，不要自己写时长与曲线。任何过渡进行中要设 `DeckView.animating`，由 `Render` 统一请求下一帧。
 - 出现动画（`src/deck/popin.rs`）：只有 `on_create` 的 block（撤销恢复、打开 deck 不算）在第一次被画出时展开：亮线从中间横向拉开、上下打开、扫描线自上而下印出内容，约 560 ms；期间原生网页先不显示。系统开启“减弱动态效果”时直接出现。
@@ -113,7 +113,7 @@ GPUI 每帧重建整棵元素树，所以：
 | 路径 | 内容 |
 |---|---|
 | `src/` | 唯一的 crate（`boundlessdeck`，single binary，无 `[lib]`）。顶层只有 `main.rs` 与七个模块：`app`（外壳）、`ui`（界面部件）、`content`（block 内容）、`platform`（macOS 集成）、`deck`、`model`、`mcp`。分组模块是同名的 `x.rs` 加 `x/` 目录，子模块用 `pub(crate) mod` 声明，引用写全路径（`crate::ui::theme::Theme`）。 |
-| `src/deck/` | `DeckView` 的子模块：`input.rs`（按下、拖动、滚轮与焦点）、`card.rs`（block 卡片、标题栏、缩放手柄、出现动画）、`body.rs`（卡片内容与 Markdown/图表缓存）、`chrome.rs`（工具栏、主页按钮、弹层、状态栏）、`camera.rs`（缩放与相机滑动）、`editing.rs`（原地编辑）、`memofile.rs`（笔记文件读写）、`load.rs`（文件、文档、PDF、终端的加载）、`endpoint.rs`（MCP 端点与任务执行）、`stack.rs`（块堆与弹簧动画）、`browser.rs`（WKWebView 嵌入与快照）、`zoomlayer.rs`（缩放状态机）、`sharpen.rs`（清晰度过渡）、`lifecycle.rs`、`popin.rs`、`progress.rs`（agent 任务进度胶囊）、`photozoom.rs`（照片式缩放）、`focusview.rs`（焦点视图、焦点面板与放映）、`styled.rs`、`inspector.rs` |
+| `src/deck/` | `DeckView` 的子模块：`input.rs`（按下、拖动、滚轮与焦点）、`card.rs`（block 卡片、标题栏、缩放手柄、出现动画）、`body.rs`（卡片内容与 Markdown/图表缓存）、`chrome.rs`（工具栏、主页按钮、弹层、状态栏）、`camera.rs`（缩放与相机滑动）、`editing.rs`（原地编辑）、`memofile.rs`（笔记文件读写）、`load.rs`（文件、文档、PDF、终端的加载）、`endpoint.rs`（MCP 端点与任务执行）、`stack.rs`（块堆与弹簧动画）、`browser.rs`（WKWebView 嵌入与快照）、`zoomlayer.rs`（缩放状态机）、`snapshot.rs`（镜头滑动时正文位图化）、`sharpen.rs`（清晰度过渡）、`lifecycle.rs`、`popin.rs`、`progress.rs`（agent 任务进度胶囊）、`photozoom.rs`（照片式缩放）、`focusview.rs`（焦点视图、焦点面板与放映）、`styled.rs`、`inspector.rs` |
 | `src/model/` | `block.rs`（`BlockKind`、`Block`、`Style`、默认尺寸）、`camera.rs`（相机与缩放档位）、`focus.rs`（焦点与焦点线）、`persist.rs`（路径与 deck.json 读写）；都由 `model.rs` 重新导出，外部仍写 `crate::model::X` |
 | `src/mcp/` | MCP 端点，见上文；`tools/` 下是 `schema.rs`（字段表与工具列表）、`patch.rs`（字段校验与写入）、`arrange.rs` + `layout.rs`（排版工具与算法）、`style.rs`（样式补丁） |
 | `target/` | 构建产物，已 gitignore |
@@ -217,7 +217,7 @@ cx.spawn(async move |this, cx| {
 | `src/mcp/mod.rs` | 端点注册、socket 路径、活动 deck 注册表。 |
 | `src/app/commands.rs` | 命令表：菜单、快捷键与快捷键窗口的单一来源。 |
 | `Cargo.toml` | 依赖；`gpui` 0.2.2 与 `runtime_shaders`（经 `[patch.crates-io]` 换成 `vendor/gpui`）；macOS 专属 objc2 系列。 |
-| `vendor/gpui/` | 打了本仓库补丁的 gpui 0.2.2：按字号缓存 CTFont、同步提交前等上一帧（修 1 秒卡顿）、按字号档位排版文字。改动以 `BoundlessDeck:` 注释标出，说明见 `vendor/gpui/PATCHES.md`。不要整目录格式化；升级上游时重新打补丁。 |
+| `vendor/gpui/` | 打了本仓库补丁的 gpui 0.2.2：按字号缓存 CTFont、同步提交前等上一帧（修 1 秒卡顿）、按字号档位排版文字、元素位图化（`snapshot_capture` / `paint_snapshot`）。改动以 `BoundlessDeck:` 注释标出，说明见 `vendor/gpui/PATCHES.md`。不要整目录格式化；升级上游时重新打补丁。 |
 | `README.md` | 功能清单与 Go 版差异。 |
 
 ### 常见改动路径

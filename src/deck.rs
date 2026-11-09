@@ -36,6 +36,7 @@ mod lifecycle;
 mod load;
 mod memofile;
 mod photozoom;
+mod snapshot;
 mod popin;
 mod progress;
 mod sharpen;
@@ -297,6 +298,8 @@ pub struct DeckView {
     fv: focusview::FocusView,
     /// Zooming as a photo: the picture scaled on the GPU (`photozoom`).
     photo: photozoom::Photo,
+    /// How many glides have started: pictures of blocks are of one glide (`snapshot`).
+    glides: u64,
     /// Lists in block bodies lay out only what the window can show (`body_room`).
     clip_bodies: bool,
     /// The window this deck is drawn in: what `screenshot` captures.
@@ -408,6 +411,7 @@ impl DeckView {
             tasks: progress::Tasks::default(),
             fv: focusview::FocusView::default(),
             photo: photozoom::Photo::default(),
+            glides: 0,
             clip_bodies: true,
             m,
             lay,

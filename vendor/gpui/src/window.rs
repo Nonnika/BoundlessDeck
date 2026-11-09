@@ -18,6 +18,8 @@ use crate::{
     WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
     point, prelude::*, px, rems, size, transparent_black,
 };
+// BoundlessDeck: pictures painted as sprites (`paint_snapshot`).
+use crate::{AtlasTextureId, AtlasTextureKind, AtlasTile, TileId};
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
 #[cfg(target_os = "macos")]
@@ -3120,6 +3122,104 @@ impl Window {
         });
 
         Ok(())
+    }
+
+    /// BoundlessDeck: paints with `f`, and keeps what it painted inside
+    /// `bounds` as a picture under `key` (`snapshot.rs`), of the caller's
+    /// `version` of it, over `background`. Only the part in the window is
+    /// kept; the picture is made after the frame, by the renderer.
+    pub fn paint_snapshot_capture(
+        &mut self,
+        key: u64,
+        version: u64,
+        bounds: Bounds<Pixels>,
+        background: Hsla,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.invalidator.debug_assert_paint();
+        let start = self.next_frame.scene.paint_operations.len();
+        f(self);
+        let end = self.next_frame.scene.paint_operations.len();
+        let viewport = Bounds { origin: Point::default(), size: self.viewport_size() };
+        let visible = bounds.intersect(&viewport).intersect(&self.content_mask().bounds);
+        let scale_factor = self.scale_factor();
+        let bounds = bounds.scale(scale_factor);
+        // Whole device pixels, so the picture's pixels are the window's.
+        let visible = visible.scale(scale_factor).map_origin(|o| o.floor()).map_size(|s| s.ceil());
+        // Too small to be worth it, or too big a texture.
+        if visible.size.width.0 < 4. || visible.size.height.0 < 4. || visible.size.width.0 > 8192. || visible.size.height.0 > 8192. {
+            return;
+        }
+        self.next_frame.scene.snapshot_requests.push(crate::snapshot::SnapshotRequest {
+            key,
+            version,
+            ops: start..end,
+            bounds,
+            visible,
+            background,
+        });
+    }
+
+    /// BoundlessDeck: what the picture kept under `key` is of, if one is.
+    pub fn snapshot_info(&self, key: u64) -> Option<crate::SnapshotInfo> {
+        let scale_factor = self.scale_factor();
+        let unscale = |b: Bounds<ScaledPixels>| Bounds {
+            origin: point(px(b.origin.x.0 / scale_factor), px(b.origin.y.0 / scale_factor)),
+            size: size(px(b.size.width.0 / scale_factor), px(b.size.height.0 / scale_factor)),
+        };
+        crate::snapshot::REGISTRY.with(|r| {
+            r.borrow().snapshots.get(&key).map(|s| crate::SnapshotInfo {
+                version: s.version,
+                bounds: unscale(s.bounds),
+                visible: unscale(s.visible),
+            })
+        })
+    }
+
+    /// BoundlessDeck: paints the picture kept under `key`, of `version`,
+    /// stretched as the bounds it was taken in are to `bounds`. False, and
+    /// nothing painted, if no such picture is kept.
+    pub fn paint_snapshot(&mut self, key: u64, version: u64, bounds: Bounds<Pixels>, opacity: f32) -> bool {
+        self.invalidator.debug_assert_paint();
+        let scale_factor = self.scale_factor();
+        let found = crate::snapshot::REGISTRY.with(|r| {
+            let mut r = r.borrow_mut();
+            let now = r.tick();
+            let s = r.snapshots.get_mut(&key).filter(|s| s.version == version)?;
+            s.last_used = now;
+            Some((s.bounds, s.visible, s.slot, s.size))
+        });
+        let Some((taken, visible, slot, tex_size)) = found else { return false };
+        if taken.size.width.0 <= 0. || taken.size.height.0 <= 0. {
+            return false;
+        }
+        let now = bounds.scale(scale_factor);
+        let (kx, ky) = (now.size.width.0 / taken.size.width.0, now.size.height.0 / taken.size.height.0);
+        let target = Bounds {
+            origin: point(
+                ScaledPixels(now.origin.x.0 + (visible.origin.x.0 - taken.origin.x.0) * kx),
+                ScaledPixels(now.origin.y.0 + (visible.origin.y.0 - taken.origin.y.0) * ky),
+            ),
+            size: size(ScaledPixels(visible.size.width.0 * kx), ScaledPixels(visible.size.height.0 * ky)),
+        };
+        let content_mask = self.content_mask().scale(scale_factor);
+        let opacity = self.element_opacity() * opacity;
+        self.next_frame.scene.insert_primitive(PolychromeSprite {
+            order: 0,
+            pad: 0,
+            grayscale: false,
+            bounds: target,
+            content_mask,
+            corner_radii: Corners::default(),
+            tile: AtlasTile {
+                texture_id: AtlasTextureId { index: slot, kind: AtlasTextureKind::Polychrome },
+                tile_id: TileId(0),
+                padding: 0,
+                bounds: Bounds { origin: Point::default(), size: tex_size },
+            },
+            opacity,
+        });
+        true
     }
 
     /// Paint an image into the scene for the next frame at the current z-index.

@@ -128,7 +128,13 @@ impl DeckView {
         let appear = rt.appear.alpha(now);
         self.animating |= appearing;
         card = card.child(self.title_bar(&b, t, &paper, window, cx));
-        let body = self.body(&b, t, &paper, window, cx);
+        // Gliding, the body is its picture; at rest, laid out (`snapshot`).
+        let plan = self.body_plan(&b, (sx, sy, w, h), t.dark, window, now);
+        let body = match plan {
+            super::snapshot::Plan::Show { .. } => div().into_any_element(),
+            _ => self.body(&b, t, &paper, window, cx),
+        };
+        let body = super::snapshot::body_by(plan, body, t.surface);
         // A block worked in keeps the wheel: its content scrolls (it was
         // offered the wheel first), and the canvas does not pan under it.
         // GPUI's scrolling leaves the event going, so it is stopped here.

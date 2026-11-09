@@ -15,6 +15,8 @@ impl DeckView {
         if animate && !sharpen::reduce_motion() && self.view.0 > 0. {
             self.m.cam = from;
             self.glide = Some(Glide { from, to, f: 0., last: None });
+            // Each glide pictures its blocks anew, at the scale it starts from (`snapshot`).
+            self.glides += 1;
         } else {
             self.m.cam = to;
             self.lay = to;

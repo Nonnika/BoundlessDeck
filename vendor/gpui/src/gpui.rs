@@ -32,6 +32,8 @@ mod platform;
 pub mod prelude;
 mod scene;
 mod shared_string;
+// BoundlessDeck: pictures of what elements painted (`snapshot.rs`).
+mod snapshot;
 mod shared_uri;
 mod style;
 mod styled;
@@ -91,6 +93,7 @@ pub use refineable::*;
 pub use scene::*;
 pub use shared_string::*;
 pub use shared_uri::*;
+pub use snapshot::{SnapshotCapture, SnapshotInfo, forget_snapshot, snapshot_capture};
 pub use smol::Timer;
 pub use style::*;
 pub use styled::*;

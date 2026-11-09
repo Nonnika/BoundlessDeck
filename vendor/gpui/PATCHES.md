@@ -24,3 +24,15 @@
 结果跨帧缓存在 `shapes`（上限 `MAX_SHAPES` 行，满了清空），再把字形位置、行宽、上下沿按比例缩放到请求的字号
 （`scaled_to`）。字形仍按请求的字号光栅化，静止时清晰；换行由缩放后的位置计算，所以缩放时断行不变。
 档位与实际字号的差别只体现在可变字体的光学尺寸（极细微的字距）。`force_width` 的行（终端等宽排列）不走档位。
+
+## 4. 元素位图化（`src/snapshot.rs`、`src/window.rs`、`src/scene.rs`、`src/platform/mac/metal_renderer.rs`）
+
+- `snapshot_capture(key, version, background, child)`：照常画 `child`，并把它在本帧画出的 primitive 留作位图。
+  渲染器在本帧主画面之前，用 `Scene::extract` 把这些 primitive 平移到原点，画进一张该元素可见部分大小的
+  离屏纹理（先以 `background` 清屏，所以位图不透明）。含路径或 surface 的内容不截取。
+- `Window::paint_snapshot(key, version, bounds, opacity)`：把位图按截取时的框到 `bounds` 的比例拉伸画出，
+  以 polychrome sprite 绘制（纹理编号 ≥ `SNAPSHOT_SLOT_BASE` 时取位图的纹理）。没有该版本的位图时返回 false。
+- `Window::snapshot_info(key)`：位图的版本、截取时的框和其中实际截到的可见部分。
+- 位图按 key 存在主线程的登记表里，最多 `MAX_SNAPSHOTS` 张，最久未用的先丢；`forget_snapshot` 手动删除。
+
+应用在镜头滑动（焦点放映、`set_view`）时把正文换成位图（`src/deck/snapshot.rs`）。

@@ -352,6 +352,11 @@ impl Parsed {
     }
 
     /// Whether `other` is this very parse (not merely equal text).
+    /// Which parse this is, for telling it from another (a picture's version, `deck/snapshot.rs`).
+    pub fn ptr(&self) -> usize {
+        Arc::as_ptr(&self.nodes) as *const () as usize
+    }
+
     pub fn same(&self, other: &Parsed) -> bool {
         Arc::ptr_eq(&self.nodes, &other.nodes)
     }
