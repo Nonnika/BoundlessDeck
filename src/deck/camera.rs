@@ -59,8 +59,11 @@ impl DeckView {
         self.last_pointer = (x, y);
         self.zoom_anchor = (x, y);
         self.zoom_gen += 1;
+        let before = self.m.cam;
         self.m.zoom_at(x, y, factor);
         self.note_zoom(cx);
+        // Shown by scaling the picture, not by laying the canvas out anew (`photozoom`).
+        self.photo_moved(true, before, cx);
     }
 
     pub(super) fn fit_all(&mut self, _: &FitAll, _: &mut Window, cx: &mut Context<Self>) {

@@ -35,6 +35,7 @@ mod inspector;
 mod lifecycle;
 mod load;
 mod memofile;
+mod photozoom;
 mod popin;
 mod progress;
 mod sharpen;
@@ -250,6 +251,8 @@ pub struct DeckView {
     tasks: progress::Tasks,
     /// 焦点视图 and playing 焦点.
     fv: focusview::FocusView,
+    /// Zooming as a photo: the picture scaled on the GPU (`photozoom`).
+    photo: photozoom::Photo,
     /// The window this deck is drawn in: what `screenshot` captures.
     win: Option<gpui::AnyWindowHandle>,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
@@ -327,7 +330,6 @@ impl DeckView {
                         k *= nk;
                     }
                     d.zoom_at(x, y, k, cx);
-                    cx.notify();
                 }).is_err() {
                     break;
                 }
@@ -359,6 +361,7 @@ impl DeckView {
             insp: inspector::Inspector::default(),
             tasks: progress::Tasks::default(),
             fv: focusview::FocusView::default(),
+            photo: photozoom::Photo::default(),
             m,
             lay,
             zoom_settle: None,
@@ -424,6 +427,7 @@ impl DeckView {
 
     /// Ends every block's stay (`on_close`: notes written, shells hung up), then saves.
     pub fn close(&mut self, cx: &mut Context<Self>) {
+        self.photo_off();
         self.stop_mcp();
         self.life_delete(cx);
         self.life_close(cx);
@@ -605,6 +609,22 @@ fn kind_icon(k: BlockKind) -> &'static str {
 
 impl Render for DeckView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let backdrop = u32::from_str_radix(crate::ui::theme::hex(Theme::of(window).background).trim_start_matches('#'), 16).unwrap_or(0);
+        crate::platform::layerzoom::attach(window, backdrop);
+        self.photo_tick(cx);
+        // Zooming as a photo, the frame is drawn with the camera the picture
+        // was drawn with; Core Animation shows it where the live camera sees it.
+        let live = self.photo_drawn().map(|drawn| std::mem::replace(&mut self.m.cam, drawn));
+        let deck = self.draw(window, cx);
+        if let Some(live) = live {
+            self.m.cam = live;
+        }
+        deck
+    }
+}
+
+impl DeckView {
+    fn draw(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let t = Theme::of(window);
         let vs = window.viewport_size();
         self.view = (f32::from(vs.width), f32::from(vs.height));
@@ -714,13 +734,21 @@ impl Render for DeckView {
         crate::platform::webfocus::guard(window);
         crate::platform::webfocus::set_corners(self.resize_corners.clone());
 
-        // Playing, the chrome steps aside.
+        // Playing, the chrome steps aside; zooming as a photo too (it would be
+        // scaled with the picture), fading back in after (`photozoom`).
         let playing = self.fv.play.is_some();
-        let inspector = if playing { vec![] } else { self.inspector(&t, cx) };
-        let focus_layer = self.focus_layer(&t, cx);
-        let chrome: Vec<AnyElement> =
-            if playing { vec![] } else { vec![self.home_pill(&t, cx), self.toolbar(&t, cx)] };
-        let status = (!playing).then(|| self.status_bar(&t));
+        let chrome_alpha = self.chrome_alpha();
+        let hidden = playing || chrome_alpha <= 0.;
+        let inspector = if hidden { vec![] } else { self.inspector(&t, cx) };
+        let focus_layer = if chrome_alpha <= 0. { vec![] } else { self.focus_layer(&t, cx) };
+        let mut chrome: Vec<AnyElement> =
+            if hidden { vec![] } else { vec![self.home_pill(&t, cx), self.toolbar(&t, cx)] };
+        chrome.extend((!hidden).then(|| self.status_bar(&t)));
+        chrome.extend(inspector);
+        if chrome_alpha > 0. {
+            chrome.extend(self.task_capsule(&t));
+        }
+        let chrome = div().absolute().top_0().left_0().size_full().opacity(chrome_alpha).children(chrome);
         let marquee = match &self.drag {
             Some(Drag::Marquee { from, to }) => {
                 let (x0, y0) = cam.to_screen(from.0.min(to.0), from.1.min(to.1));
@@ -814,10 +842,7 @@ impl Render for DeckView {
             .children(blocks)
             .children(marquee)
             .children(focus_layer)
-            .children(chrome)
-            .children(inspector)
-            .children(status)
-            .children(self.task_capsule(&t))
+            .child(chrome)
             .children(self.stack_preview(&t, window, cx))
             .children(self.pluck_view(&t))
             .children(self.popup_view(&t, cx))

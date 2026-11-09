@@ -136,13 +136,13 @@ impl DeckView {
         let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
         if ev.modifiers.platform || ev.modifiers.control {
             self.zoom_at(x, y, wheel_zoom(-dy), cx);
-            cx.notify();
             return;
         }
         if ev.modifiers.shift && dx == 0.0 {
             (dx, dy) = (dy, 0.0);
         }
         // The wheel scrolls content: the canvas moves the other way.
+        let before = self.m.cam;
         self.m.cam.x -= dx / self.m.cam.s;
         self.m.cam.y -= dy / self.m.cam.s;
         let until = Instant::now() + GESTURE_HOLD;
@@ -168,7 +168,8 @@ impl DeckView {
                 }
             }).detach();
         }
-        cx.notify();
+        // Mid-zoom, the picture moves with it; else a frame is drawn.
+        self.photo_moved(false, before, cx);
     }
 
     pub(super) fn begin_move(&mut self, id: &str, x: f32, y: f32) {

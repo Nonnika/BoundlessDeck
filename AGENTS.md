@@ -24,7 +24,7 @@ BoundlessDeck 的 Rust 重写：无限画布工作台，界面由 GPUI 原生绘
 | 窗口 | `src/main.rs`、`src/app/windows.rs`、`src/app/commands.rs` | 装配窗口与生命周期；设置窗口（⌘,）与快捷键窗口（⌘/）共用 `app/commands.rs` 的命令表。 |
 | 界面部件 | `src/ui.rs` + `src/ui/` | `editor.rs`（文本编辑器）、`theme.rs`（颜色与调色板）、`icons.rs`、`font.rs`（字体索引）、`tape.rs`。 |
 | Block 内容 | `src/content.rs` + `src/content/` | `terminal.rs`、`markdown.rs` + `mdlive.rs`、`chart.rs` + `chartview.rs`、`pdf.rs`、`word.rs`、`preview.rs`、`memo.rs`、`lifespan.rs`：每种内容的解析、渲染与 I/O。 |
-| 平台 | `src/platform.rs` + `src/platform/` | macOS 原生集成：`nativepanel.rs`（系统颜色面板与取色器）、`pinch.rs`（触控板捏合）、`screenshot.rs`（窗口截图）、`webfocus.rs`（网页与 GPUI 的键盘仲裁）。 |
+| 平台 | `src/platform.rs` + `src/platform/` | macOS 原生集成：`nativepanel.rs`（系统颜色面板与取色器）、`pinch.rs`（触控板捏合）、`screenshot.rs`（窗口截图）、`layerzoom.rs`（在 GPU 上缩放窗口画面）、`webfocus.rs`（网页与 GPUI 的键盘仲裁）。 |
 | MCP | `src/mcp/` | `mod.rs` 端点与注册表，`server.rs` socket 服务，`rpc.rs` JSON-RPC，`tools.rs` + `tools/` 字段表与工具，`bridge.rs` stdio 桥，`config.rs` 各 agent 的全局/项目配置。 |
 
 ### 帧模型（最容易出错的地方）
@@ -45,7 +45,7 @@ GPUI 每帧重建整棵元素树，所以：
 ### 缩放
 
 - 不用 transform 缩放：所有坐标乘 `cam.s` 后重新布局，文字保持清晰。
-- 缩放像放大照片：所有内容（文字、正文宽度、标题栏）每帧都按相机比例 `content_scale()`（即 `cam.s`）排版，字号与换行宽度同比例变化，换行不变、不冻结、不跳档，手指停下后相机也不会自己吸附到档位。只有位图类内容在缩放中保持粗粒度：`DeckView.lay` 记着 PDF 页光栅化时的比例（越过 `ZOOM_REBASE` 才换），缩放停下 150 ms 后（`ZOOM_SETTLE_HOLD`）才按最终比例重做；网页在缩放中用快照代替（`zooming()`）。代价是缩放期间每帧重排文字，`BOUNDLESSDECK_FRAME_STATS=1` 可在每次手势结束后打印帧耗时。
+- 缩放像放大照片（`deck/photozoom.rs` + `platform/layerzoom.rs`）：捏合或 ⌘+滚轮时不重新排版，而是由 Core Animation 在 GPU 上缩放、平移 GPUI 画好的那一帧（给窗口的 CAMetalLayer 设仿射变换，p' = k·p + t）；期间 GPUI 若要画帧，`render` 用画面拍下时的相机（`Photo::drawn`）画。工具栏、状态栏、面板与画布同在一个图层，缩放时隐藏，结束后淡入（`chrome_alpha`）。放大超过 1.55×、视野走出照片的范围、以及手势停下 150 ms 后，换成清晰重画的一帧（缩小时照片以鼠标为中心多画 1.5 倍的范围，`picture_for`，边缘不露空白，且不低于 `LOD_SCALE`）：`layerzoom::present` 在同一个 CATransaction 里让图层立即重绘（GPUI 的 `displayLayer:` 以 presentsWithTransaction 同步提交）并撤掉变换，所以不闪；它会跑一帧 GPUI，只能在 task 里、任何 `update` 之外调用。缩小时露出的窗口边缘是窗口背景色，`attach` 把它设成画布背景。镜头滑动（`set_view`、焦点放映）仍逐帧排版。其余内容一律按 `content_scale()`（即 `cam.s`）排版；PDF 位图按 `DeckView.lay` 生成，缩放停下后才重做。`BOUNDLESSDECK_FRAME_STATS=1` 可在每次手势结束后打印帧耗时。
 - 布局几何（位置、大小）仍用原始 `cam.s`。
 - 清晰度过渡（`src/deck/sharpen.rs`）：内容换成更清晰的版本时统一淡入（180 ms，ease-out；系统开启“减弱动态效果”时直接切换）。矢量内容只在从 LOD 回到完整内容时过渡：LOD 下 body 区是与 block 背景同色的遮罩，回来时内容立即完整画出、遮罩淡出（450 ms，ease-in-out，`REVEAL_TIME`；`Runtime::appear`，`block_view` 统一处理）；位图（PDF）新页在拉伸的旧页上淡入（`Runtime::sharpen` + `crossfade`）；原生视图（WKWebView）露出时快照留在下面，视图 alpha 从 0 到 1。新增 block 种类时归入这三类之一，不要自己写时长与曲线。任何过渡进行中要设 `DeckView.animating`，由 `Render` 统一请求下一帧。
 - 出现动画（`src/deck/popin.rs`）：只有 `on_create` 的 block（撤销恢复、打开 deck 不算）在第一次被画出时展开：亮线从中间横向拉开、上下打开、扫描线自上而下印出内容，约 560 ms；期间原生网页先不显示。系统开启“减弱动态效果”时直接出现。
@@ -113,7 +113,7 @@ GPUI 每帧重建整棵元素树，所以：
 | 路径 | 内容 |
 |---|---|
 | `src/` | 唯一的 crate（`boundlessdeck`，single binary，无 `[lib]`）。顶层只有 `main.rs` 与七个模块：`app`（外壳）、`ui`（界面部件）、`content`（block 内容）、`platform`（macOS 集成）、`deck`、`model`、`mcp`。分组模块是同名的 `x.rs` 加 `x/` 目录，子模块用 `pub(crate) mod` 声明，引用写全路径（`crate::ui::theme::Theme`）。 |
-| `src/deck/` | `DeckView` 的子模块：`input.rs`（按下、拖动、滚轮与焦点）、`card.rs`（block 卡片、标题栏、缩放手柄、出现动画）、`body.rs`（卡片内容与 Markdown/图表缓存）、`chrome.rs`（工具栏、主页按钮、弹层、状态栏）、`camera.rs`（缩放与相机滑动）、`editing.rs`（原地编辑）、`memofile.rs`（笔记文件读写）、`load.rs`（文件、文档、PDF、终端的加载）、`endpoint.rs`（MCP 端点与任务执行）、`stack.rs`（块堆与弹簧动画）、`browser.rs`（WKWebView 嵌入与快照）、`zoomlayer.rs`（缩放状态机）、`sharpen.rs`（清晰度过渡）、`lifecycle.rs`、`popin.rs`、`progress.rs`（agent 任务进度胶囊）、`focusview.rs`（焦点视图、焦点面板与放映）、`styled.rs`、`inspector.rs` |
+| `src/deck/` | `DeckView` 的子模块：`input.rs`（按下、拖动、滚轮与焦点）、`card.rs`（block 卡片、标题栏、缩放手柄、出现动画）、`body.rs`（卡片内容与 Markdown/图表缓存）、`chrome.rs`（工具栏、主页按钮、弹层、状态栏）、`camera.rs`（缩放与相机滑动）、`editing.rs`（原地编辑）、`memofile.rs`（笔记文件读写）、`load.rs`（文件、文档、PDF、终端的加载）、`endpoint.rs`（MCP 端点与任务执行）、`stack.rs`（块堆与弹簧动画）、`browser.rs`（WKWebView 嵌入与快照）、`zoomlayer.rs`（缩放状态机）、`sharpen.rs`（清晰度过渡）、`lifecycle.rs`、`popin.rs`、`progress.rs`（agent 任务进度胶囊）、`photozoom.rs`（照片式缩放）、`focusview.rs`（焦点视图、焦点面板与放映）、`styled.rs`、`inspector.rs` |
 | `src/model/` | `block.rs`（`BlockKind`、`Block`、`Style`、默认尺寸）、`camera.rs`（相机与缩放档位）、`focus.rs`（焦点与焦点线）、`persist.rs`（路径与 deck.json 读写）；都由 `model.rs` 重新导出，外部仍写 `crate::model::X` |
 | `src/mcp/` | MCP 端点，见上文；`tools/` 下是 `schema.rs`（字段表与工具列表）、`patch.rs`（字段校验与写入）、`arrange.rs` + `layout.rs`（排版工具与算法）、`style.rs`（样式补丁） |
 | `target/` | 构建产物，已 gitignore |
