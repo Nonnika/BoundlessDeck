@@ -27,7 +27,9 @@ enum Key {
 enum Anim {
     Folder,
     Blocks,
+    Styled,
     Navigate,
+    Focus,
     Agent,
 }
 
@@ -53,15 +55,27 @@ const PAGES: &[Page] = &[
         keys: &[(Key::Menu("新建笔记"), "笔记"), (Key::Menu("新建终端"), "终端"), (Key::Menu("新建浏览器"), "网页")],
     },
     Page {
+        anim: Anim::Styled,
+        title: "文字与图形",
+        line: "文字按 Markdown 排版，拖动数值调大小，从屏幕上取色。",
+        keys: &[(Key::Menu("新建文字"), "文字"), (Key::Menu("新建图形"), "图形"), (Key::Gesture("左右拖动数值"), "调大小")],
+    },
+    Page {
         anim: Anim::Navigate,
         title: "画布没有边界",
         line: "平移、缩放、框选，放多大文字都清晰。",
         keys: &[(Key::Gesture("双指滑动"), "平移"), (Key::Gesture("双指捏合"), "缩放"), (Key::Menu("显示全部 block"), "看全部")],
     },
     Page {
+        anim: Anim::Focus,
+        title: "焦点与放映",
+        line: "把视野存成焦点，连成一条线，像幻灯片一样一站站讲下去。",
+        keys: &[(Key::Menu("把当前视野存为焦点"), "存焦点"), (Key::Menu("放映焦点"), "放映"), (Key::Gesture("空格"), "下一个")],
+    },
+    Page {
         anim: Anim::Agent,
         title: "和 agent 一起用",
-        line: "终端里的 agent 通过 MCP 整理画布，改动都能撤销。",
+        line: "agent 通过 MCP 整理画布、报告进度，改动都能撤销。",
         keys: &[(Key::Menu("设置…"), "一键安装"), (Key::Menu("撤销"), "撤销")],
     },
 ];
@@ -462,6 +476,23 @@ impl Pen<'_> {
         ));
     }
 
+    /// A filled shape through the points.
+    fn poly(&mut self, pts: &[(f32, f32)], c: Hsla) {
+        let mut b = PathBuilder::fill();
+        b.move_to(point(px(self.x0 + pts[0].0), px(self.y0 + pts[0].1)));
+        for p in &pts[1..] {
+            b.line_to(point(px(self.x0 + p.0), px(self.y0 + p.1)));
+        }
+        b.close();
+        if let Ok(p) = b.build() {
+            self.window.paint_path(p, c.opacity(c.a * self.alpha));
+        }
+    }
+
+    fn dot(&mut self, x: f32, y: f32, r: f32, c: Hsla) {
+        self.rect(x - r, y - r, 2. * r, 2. * r, r, c);
+    }
+
     fn line(&mut self, pts: &[(f32, f32)], width: f32, c: Hsla) {
         let mut b = PathBuilder::stroke(px(width));
         b.move_to(point(px(self.x0 + pts[0].0), px(self.y0 + pts[0].1)));
@@ -483,7 +514,9 @@ fn paint(anim: Anim, b: Bounds<Pixels>, time: f32, t: &Theme, window: &mut Windo
         match anim {
             Anim::Folder => folder(&mut pen, w, h, time, t),
             Anim::Blocks => blocks(&mut pen, w, h, time, t),
+            Anim::Styled => styled(&mut pen, w, h, time, t),
             Anim::Navigate => navigate(&mut pen, w, h, time, t),
+            Anim::Focus => focus(&mut pen, w, h, time, t),
             Anim::Agent => agent(&mut pen, w, h, time, t),
         }
     });
@@ -681,8 +714,223 @@ fn navigate(pen: &mut Pen, w: f32, h: f32, time: f32, t: &Theme) {
     }
 }
 
-/// An agent in a terminal lines the scattered blocks up, then adds one.
-fn agent(pen: &mut Pen, w: f32, h: f32, time: f32, t: &Theme) {
+/// A color of the palette, as the canvas draws it.
+fn ink(name: &str, t: &Theme) -> Hsla {
+    match crate::theme::paint(name, false, t) {
+        crate::theme::Paint::Color(c) => c,
+        _ => t.accent,
+    }
+}
+
+/// A broad arrow pointing right in x, y, w, h, as a 图形 draws it.
+fn arrow_pts(x: f32, y: f32, w: f32, h: f32) -> [(f32, f32); 7] {
+    let head = (h * 0.6).min(w * 0.5);
+    let (neck, cy, half) = (x + w - head, y + h / 2., h * 0.22);
+    [(x, cy - half), (neck, cy - half), (neck, y), (x + w, cy), (neck, y + h), (neck, cy + half), (x, cy + half)]
+}
+
+/// A spinner of eight spokes, stepping round as 准备中 and 进行中 do.
+fn spinner(pen: &mut Pen, cx: f32, cy: f32, r: f32, time: f32, c: Hsla) {
+    let head = (time * 9.) as usize % 8;
+    for i in 0..8 {
+        let behind = (head + 8 - i) % 8;
+        let a = i as f32 / 8. * std::f32::consts::TAU;
+        let (sn, cs) = a.sin_cos();
+        pen.line(&[(cx + cs * r * 0.45, cy + sn * r * 0.45), (cx + cs * r, cy + sn * r)], 1.4, c.opacity(1. - behind as f32 * 0.11));
+    }
+}
+
+/// Words on the canvas, set as Markdown, and an arrow with words in it; the
+/// style panel slides in, a number is scrubbed and the words in the arrow
+/// grow, and the eyedropper takes a color the arrow fills with.
+fn styled(pen: &mut Pen, w: f32, h: f32, time: f32, t: &Theme) {
+    dots(pen, 0., 0., w, h, 22., 0., 0., t.muted.opacity(0.3));
+    let text_c = ink("purple", t);
+    // 文字: a heading, two items, a checked task.
+    let (tx, ty) = (w * 0.08, h * 0.16);
+    let words = seg(time, 0.15, 1.1);
+    let tw = w * 0.34;
+    pen.rect(tx, ty, tw * 0.55 * seg(time, 0.15, 0.5), 10., 3., text_c);
+    for (i, f) in [0.8, 0.62].iter().enumerate() {
+        let g = ((words * 3.) - 1. - i as f32).clamp(0., 1.);
+        let y = ty + 24. + i as f32 * 14.;
+        pen.dot(tx + 3., y + 2.5, 2. * g, text_c.opacity(0.7));
+        pen.rect(tx + 12., y, (tw - 12.) * f * g, 5., 2.5, text_c.opacity(0.75));
+    }
+    let task = seg(time, 0.9, 1.2);
+    if task > 0. {
+        let y = ty + 52.;
+        pen.rect(tx, y - 2., 9., 9., 2., t.accent.opacity(task));
+        pen.line(&[(tx + 2., y + 2.5), (tx + 4., y + 4.5), (tx + 7.5, y + 0.5)], 1.4, t.accent_text.opacity(task));
+        pen.rect(tx + 14., y, (tw - 14.) * 0.5 * task, 5., 2.5, text_c.opacity(0.45));
+    }
+
+    // 图形: an arrow drawn out from its tail, its fill turning to the color picked.
+    let (ax, ay, aw, ah) = (w * 0.08, h * 0.52, w * 0.42, h * 0.32);
+    let drawn = seg(time, 1.0, 1.6);
+    let picked = seg(time, 3.5, 3.9);
+    let soft = |c: Hsla| Hsla { a: if t.dark { 0.35 } else { 0.22 }, ..c };
+    let (blue, orange) = (ink("blue", t), ink("orange", t));
+    let stroke = Hsla { h: lerp(blue.h, orange.h, picked), ..blue };
+    if drawn > 0. {
+        let pts = arrow_pts(ax, ay, aw * lerp(0.35, 1., drawn), ah);
+        let a = pen.alpha;
+        pen.alpha *= drawn;
+        // `opacity` scales the soft fill's own alpha.
+        pen.poly(&pts, soft(blue).opacity(1. - picked));
+        pen.poly(&pts, soft(orange).opacity(picked));
+        let mut ring = pts.to_vec();
+        ring.push(pts[0]);
+        pen.line(&ring, 1.6, stroke);
+        pen.alpha = a;
+    }
+    // Its words, growing as the size is scrubbed.
+    let scrub = seg(time, 2.3, 3.0);
+    let big = lerp(4., 8., scrub);
+    if drawn >= 1. {
+        let bw = aw * lerp(0.22, 0.32, scrub);
+        pen.rect(ax + aw * 0.12, ay + ah / 2. - big / 2., bw, big, big / 2., t.text.opacity(0.75));
+    }
+    // Picked: the outline, while the panel is out.
+    let panel_in = seg(time, 1.7, 2.2);
+    if panel_in > 0. {
+        pen.outline(ax - 4., ay - 4., aw + 8., ah + 8., 3., gpui::transparent_black(), t.accent.opacity(panel_in));
+    }
+
+    // The panel slides in from the right.
+    let (pw, ph) = (w * 0.3, h * 0.78);
+    let px0 = lerp(w + 10., w - pw - w * 0.05, panel_in);
+    let py0 = (h - ph) / 2.;
+    if panel_in > 0. {
+        pen.card(px0, py0, pw, ph, 8., t.surface, t.border);
+        // Shapes.
+        for i in 0..4 {
+            let bx = px0 + 10. + i as f32 * ((pw - 20.) / 4.);
+            let on = i == 3;
+            pen.rect(bx, py0 + 10., (pw - 20.) / 4. - 4., 14., 3., if on { t.accent.opacity(0.18) } else { t.background });
+        }
+        // Swatches, then the eyedropper.
+        let sw_y = py0 + 36.;
+        let names = ["red", "orange", "yellow", "green", "blue", "purple"];
+        let step = (pw - 20.) / 7.;
+        for (i, n) in names.iter().enumerate() {
+            let cx = px0 + 10. + step * (i as f32 + 0.5);
+            if i == 1 && picked > 0. {
+                pen.dot(cx, sw_y, 6.5, t.accent.opacity(picked));
+                pen.dot(cx, sw_y, 5., t.surface);
+            }
+            pen.dot(cx, sw_y, 4., ink(n, t));
+        }
+        let ex = px0 + 10. + step * 6.5;
+        pen.dot(ex, sw_y, 6., t.background);
+        pen.line(&[(ex - 3., sw_y + 3.), (ex + 3., sw_y - 3.)], 1.5, t.text.opacity(0.8));
+        // The size, scrubbed: a field whose bar fills as the pointer drags right.
+        let (fx, fy, fw) = (px0 + 10., py0 + 56., pw - 20.);
+        pen.outline(fx, fy, fw, 16., 4., t.background, if scrub > 0. && scrub < 1. { t.accent } else { t.border });
+        pen.rect(fx + 1., fy + 1., (fw - 2.) * lerp(0.25, 0.6, scrub), 14., 3., t.accent.opacity(0.18));
+        pen.rect(fx + fw - 22., fy + 6., 14., 4., 2., t.text.opacity(0.6));
+        let hand = seg(time, 2.2, 2.3) * (1. - seg(time, 3.0, 3.1));
+        if hand > 0. {
+            pen.dot(fx + fw * lerp(0.35, 0.7, scrub), fy + 8., 5., t.text.opacity(0.28 * hand));
+        }
+        // Rows below: font and alignment, standing in.
+        for k in 0..3 {
+            pen.rect(fx, fy + 26. + k as f32 * 14., fw * [0.9, 0.6, 0.75][k], 6., 3., t.muted.opacity(0.35));
+        }
+        // The eyedropper's loupe goes out to a color on the screen and takes it.
+        let go = seg(time, 3.05, 3.45);
+        if go > 0. && picked < 1. {
+            let (lx, ly) = (lerp(ex, w * 0.36, go), lerp(sw_y, h * 0.12, go));
+            pen.dot(lx, ly, 9., t.surface);
+            pen.dot(lx, ly, 7.5, orange);
+            pen.outline(lx - 9., ly - 9., 18., 18., 9., gpui::transparent_black(), t.text.opacity(0.5));
+        }
+    }
+    // The color it took, on the screen beyond: a spot of it.
+    pen.dot(w * 0.36, h * 0.12, 4. * seg(time, 2.9, 3.1), orange.opacity(0.9));
+}
+
+/// Foci marked on the dimmed canvas and joined into a line; then it plays:
+/// the view goes to the first, glides on to the second, and says where it is.
+fn focus(pen: &mut Pen, w: f32, h: f32, time: f32, t: &Theme) {
+    let paper = Paper::of(t);
+    let world = [(-150., -55., 96., 66.), (-20., -70., 104., 72.), (70., 25., 96., 60.), (-120., 35., 84., 56.)];
+    let center = |i: usize| (world[i].0 + world[i].2 / 2., world[i].1 + world[i].3 / 2.);
+    let stops = [3usize, 1, 2];
+    // The camera: still, then to the first stop, then gliding to the second (out a little on the way).
+    let f1 = (center(stops[0]).0, center(stops[0]).1, 1.9);
+    let f2 = (center(stops[1]).0, center(stops[1]).1, 1.7);
+    let a = seg(time, 2.3, 2.9);
+    let b = seg(time, 3.0, 3.7);
+    let (mut fx, mut fy, mut z) = (lerp(0., f1.0, a), lerp(0., f1.1, a), lerp(1., f1.2, a));
+    if b > 0. {
+        fx = lerp(f1.0, f2.0, b);
+        fy = lerp(f1.1, f2.1, b);
+        z = lerp(f1.2, f2.2, b) * (1. - 0.3 * (std::f32::consts::PI * b).sin());
+    }
+    let (cx, cy) = (w / 2., h / 2.);
+    let to = |x: f32, y: f32| (cx + (x - fx) * z, cy + (y - fy) * z);
+    let step = 22. * z;
+    let (ox, oy) = to(0., 0.);
+    dots(pen, 0., 0., w, h, step, ox, oy, t.muted.opacity(0.35));
+    for (i, (x, y, bw, bh)) in world.iter().enumerate() {
+        let (sx, sy) = to(*x, *y);
+        let (sw, sh) = (bw * z, bh * z);
+        let bg = if i == 0 { paper.top } else { t.surface };
+        pen.card(sx, sy, sw, sh, 5., bg, t.border);
+        pen.rect(sx, sy, sw, (sh * 0.16).min(11. * z), 5., if i == 0 { paper.header } else { t.surface_hover });
+        bars(pen, sx + 7. * z, sy + sh * 0.32, sw - 14. * z, &[0.8, 0.55], 1., t.muted.opacity(0.5));
+    }
+    // The focus view: dimmed, its dots coming one by one, joined in order.
+    let view = seg(time, 0.2, 0.6) * (1. - seg(time, 2.0, 2.3));
+    if view > 0. {
+        pen.rect(0., 0., w, h, 0., t.background.opacity(0.7 * view));
+        let a0 = pen.alpha;
+        pen.alpha *= view;
+        let pts: Vec<(f32, f32)> = stops.iter().map(|&i| to(center(i).0, center(i).1)).collect();
+        for k in 0..pts.len() - 1 {
+            let g = seg(time, 1.0 + k as f32 * 0.4, 1.35 + k as f32 * 0.4);
+            if g <= 0. {
+                continue;
+            }
+            let (p, q) = (pts[k], pts[k + 1]);
+            pen.line(&[p, (lerp(p.0, q.0, g), lerp(p.1, q.1, g))], 1.8, t.accent.opacity(0.75));
+        }
+        for (k, p) in pts.iter().enumerate() {
+            let pop = seg(time, 0.55 + k as f32 * 0.25, 0.85 + k as f32 * 0.25);
+            if pop <= 0. {
+                continue;
+            }
+            pen.dot(p.0, p.1, 5.5 * pop, t.accent);
+            pen.card(p.0 + 10., p.1 - 7., 34. * pop, 14., 4., t.surface, t.accent.opacity(0.5));
+            pen.rect(p.0 + 15., p.1 - 2., 6. * pop, 4., 2., t.accent);
+            pen.rect(p.0 + 24., p.1 - 2., 14. * pop, 4., 2., t.muted.opacity(0.6));
+        }
+        pen.alpha = a0;
+    }
+    // Playing: where it is, at the bottom.
+    let hud = seg(time, 2.4, 2.7);
+    if hud > 0. {
+        let (hw, hh) = (118., 20.);
+        let (hx, hy) = ((w - hw) / 2., h - hh - 12.);
+        let a0 = pen.alpha;
+        pen.alpha *= hud;
+        pen.card(hx, hy, hw, hh, hh / 2., t.surface, t.border);
+        pen.dot(hx + 12., hy + hh / 2., 3., t.accent);
+        pen.rect(hx + 22., hy + 8., 42., 4., 2., t.text.opacity(0.7));
+        // 1 / 3, then 2 / 3: three marks, the ones passed lit.
+        let at = if b > 0.5 { 2 } else { 1 };
+        for k in 0..3 {
+            pen.rect(hx + 74. + k as f32 * 12., hy + 8., 8., 4., 2., if k < at { t.accent } else { t.muted.opacity(0.35) });
+        }
+        pen.alpha = a0;
+    }
+}
+
+/// An agent in a terminal lines the scattered blocks up, then adds one;
+/// along the bottom, kept clear for it, the capsule tells how it goes.
+fn agent(pen: &mut Pen, w: f32, full_h: f32, time: f32, t: &Theme) {
+    let h = full_h - 30.;
     let term = crate::terminal::background(t.dark);
     let (tx, ty, tw, th) = (w * 0.07, h * 0.2, w * 0.34, h * 0.6);
     pen.card(tx, ty, tw, th, 6., term, t.border);
@@ -728,6 +976,33 @@ fn agent(pen: &mut Pen, w: f32, h: f32, time: f32, t: &Theme) {
         pen.card(x - 1., y - 10.5, iw + 2., 0.5, 0., t.accent, t.accent);
         pen.alpha = a;
         bars(pen, x + 8., y + 6., iw - 16., &[0.6, 0.4], made, t.accent.opacity(0.7));
+    }
+    // What it is doing, told at the bottom: getting ready, under way as the blocks move, done.
+    let shown = seg(time, 0.3, 0.6);
+    if shown > 0. {
+        let (cw2, chh) = (150., 20.);
+        let (cx2, cy2) = ((w - cw2) / 2., full_h - chh - 8. + 6. * (1. - shown));
+        let a = pen.alpha;
+        pen.alpha *= shown;
+        pen.card(cx2, cy2, cw2, chh, chh / 2., t.surface, t.border);
+        let done = seg(time, 3.6, 3.8);
+        let (dx, dy) = (cx2 + 12., cy2 + chh / 2.);
+        if done > 0. {
+            pen.dot(dx, dy, 6., ink("green", t).opacity(done));
+            pen.line(&[(dx - 3., dy), (dx - 1., dy + 2.), (dx + 3., dy - 2.5)], 1.4, gpui::white().opacity(done));
+        } else {
+            let running = time > 1.3;
+            spinner(pen, dx, dy, 5.5, time, if running { t.accent } else { t.muted });
+        }
+        pen.rect(cx2 + 24., cy2 + 8., 46., 4., 2., t.text.opacity(0.7));
+        let state = if done > 0. { ink("green", t) } else if time > 1.3 { t.accent } else { t.muted };
+        pen.rect(cx2 + cw2 - 32., cy2 + 8., 22., 4., 2., state.opacity(0.8));
+        // How far along: a bar on the bottom edge as the blocks are put in place.
+        let along = seg(time, 1.3, 3.5);
+        if along > 0. && done < 1. {
+            pen.rect(cx2 + 10., cy2 + chh - 2.5, (cw2 - 20.) * along, 2., 1., t.accent.opacity(0.8 * (1. - done)));
+        }
+        pen.alpha = a;
     }
 }
 
