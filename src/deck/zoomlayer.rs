@@ -5,6 +5,13 @@
 //! and `MetalAtlas` reuse shaped text, glyphs, SVGs, terminals and PDFs instead
 //! of rebuilding them at every continuous float scale. Once the gesture rests
 //! for 150ms, the camera glides onto the nearest zoom level over 120ms.
+//!
+//! Text holds still while the canvas zooms: through a gesture (or a glide)
+//! it keeps the scale it had when the zoom began, so nothing reshapes and
+//! nothing jumps mid-way. Once the zoom rests, the scale it is set at
+//! (`content_scale`) follows the level the camera lands on as a critically
+//! damped spring (`TextTween`): off from rest, no corner in its motion, and
+//! it rests exactly on the level, where the caches hit.
 
 use std::time::{Duration, Instant};
 
@@ -18,18 +25,76 @@ use crate::model::{self, Camera, ZOOM_REBASE};
 pub(super) const ZOOM_SETTLE_HOLD: Duration = Duration::from_millis(150);
 /// How long the camera takes to glide onto the nearest zoom level after a gesture.
 pub(super) const ZOOM_SNAP_TIME: Duration = Duration::from_millis(120);
-/// Text levels per doubling while a gesture is under way: coarser than
-/// `ZOOM_LEVELS`, so a pinch reshapes all text in sight a few times, not a dozen.
-const GESTURE_TEXT_LEVELS: f64 = 3.0;
-/// How far (in doublings) the camera may drift from the gesture's text level
-/// before the text moves to another: half a level, and a little more so a
-/// camera resting on the edge does not flip between two.
-const GESTURE_TEXT_SWITCH: f32 = (0.5 / GESTURE_TEXT_LEVELS + 1.0 / 48.0) as f32;
+/// How quickly text follows its level after a zoom: the smoothing time of
+/// each of the two springs it goes through (see `TextTween`).
+pub(super) const TEXT_SMOOTH: f32 = 0.05;
+/// A frame longer than this moves text no further: a slow frame does not skip ahead.
+const TEXT_STEP: f32 = 1. / 30.;
+/// Close enough, in the log of the scale (0.4%, under a tenth of a point
+/// for body text): it rests on the level and the caches hit again.
+const TEXT_REST: f32 = 0.004;
 
-/// The gesture text level nearest s.
-fn gesture_text_level(s: f32) -> f32 {
-    let n = (f64::from(s).log2() * GESTURE_TEXT_LEVELS).round();
-    ((n / GESTURE_TEXT_LEVELS).exp2() as f32).clamp(model::MIN_SCALE, model::MAX_SCALE)
+/// The scale text is set at, following its level through two critically
+/// damped springs in a row, in the log of the scale (a doubling looks the
+/// same at any size): a point between follows the level, and the text
+/// follows the point. Its speed and how fast that changes are both
+/// continuous, so it sets off gently, is quickest mid-way and comes to rest
+/// gently; it never overshoots, and a new level mid-way keeps the motion it has.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct TextTween {
+    /// Where it is now (0 before the first frame) and its speed; the point
+    /// between and its speed, both in log scale (per second); and when it
+    /// last moved.
+    shown: f32,
+    vel: f32,
+    mid: f32,
+    mid_vel: f32,
+    last: Option<Instant>,
+}
+
+/// One critically damped spring over dt from x (going at v) toward `to`,
+/// exactly as far as it goes (the smoothing of Game Programming Gems 4, 1.10).
+fn spring(x: f32, v: f32, to: f32, dt: f32) -> (f32, f32) {
+    let w = 2. / TEXT_SMOOTH;
+    let k = w * dt;
+    let decay = 1. / (1. + k + 0.48 * k * k + 0.235 * k * k * k);
+    let off = x - to;
+    let push = (v + w * off) * dt;
+    let (mut nx, mut nv) = (to + (off + push) * decay, (v - w * push) * decay);
+    // Never past where it goes.
+    if (to - x) * (nx - to) > 0. {
+        (nx, nv) = (to, 0.);
+    }
+    (nx, nv)
+}
+
+impl TextTween {
+    fn rest(target: f32) -> TextTween {
+        TextTween { shown: target, vel: 0., mid: target.ln(), mid_vel: 0., last: None }
+    }
+
+    /// Goes on toward `target` at `now`; true while still on the way. Without
+    /// `animate`, it is there at once.
+    pub fn step(&mut self, target: f32, now: Instant, animate: bool) -> bool {
+        if self.shown <= 0. || !animate || target <= 0. {
+            *self = TextTween::rest(target);
+            return false;
+        }
+        let (x, to) = (self.shown.ln(), target.ln());
+        let still = self.vel.abs() < TEXT_REST * 10. && self.mid_vel.abs() < TEXT_REST * 10.;
+        if (x - to).abs() < TEXT_REST && (self.mid - to).abs() < TEXT_REST && still {
+            *self = TextTween::rest(target);
+            return false;
+        }
+        // The first frame of a move only starts its clock.
+        let dt = self.last.map_or(0., |l| now.saturating_duration_since(l).as_secs_f32().min(TEXT_STEP));
+        self.last = Some(now);
+        (self.mid, self.mid_vel) = spring(self.mid, self.mid_vel, to, dt);
+        let (nx, nv) = spring(x, self.vel, self.mid, dt);
+        self.vel = nv;
+        self.shown = nx.exp();
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -104,10 +169,9 @@ impl DeckView {
             if self.m.cam.s < self.lay.s * ZOOM_REBASE || self.m.cam.s > self.lay.s / ZOOM_REBASE {
                 self.lay = Camera { x: self.m.cam.x, y: self.m.cam.y, s: model::zoom_level(self.m.cam.s) };
             }
-            // Text keeps its level until the camera has left it by half a coarse level.
-            let s = self.m.cam.s;
-            if self.text_s.is_none_or(|t| (s / t).log2().abs() > GESTURE_TEXT_SWITCH) {
-                self.text_s = Some(gesture_text_level(s));
+            // Text holds the scale it had when the zoom began, until it rests.
+            if self.text_s.is_none() {
+                self.text_s = Some(self.content_scale());
             }
             return;
         }
@@ -170,12 +234,28 @@ impl DeckView {
         (self.layer_scale() - 1.0).abs() > 1e-6 || x != 0.0 || y != 0.0
     }
 
+    /// The scale content is set at this frame: the text level, eased onto
+    /// when it changes (`TextTween`).
+    pub fn content_scale(&self) -> f32 {
+        if self.text_tween.shown > 0. { self.text_tween.shown } else { self.text_level() }
+    }
+
+    /// Once a frame, after the camera and the layer have moved: eases the
+    /// text toward its level, asking for frames until it is there.
+    pub(super) fn tween_text(&mut self, window: &mut Window) {
+        let target = self.text_level();
+        let animate = stepped_text() && !super::sharpen::reduce_motion();
+        if self.text_tween.step(target, Instant::now(), animate) {
+            window.request_animation_frame();
+        }
+    }
+
     /// The discrete scale used for text shaping, glyph/SVG rasterization and
     /// text wrapping while zooming so `LineLayoutCache` and `MetalAtlas` hit
     /// cache instead of reshaping/rasterizing at every continuous float scale:
-    /// during a gesture a coarse level (`GESTURE_TEXT_LEVELS`), during the snap
-    /// the level being glided to.
-    pub fn content_scale(&self) -> f32 {
+    /// during a gesture the scale it had when the gesture began, during the
+    /// snap the level being glided to.
+    pub fn text_level(&self) -> f32 {
         if !stepped_text() {
             self.m.cam.s
         } else if self.snap.on && self.lay.s > 0.0 {
@@ -266,18 +346,52 @@ pub(super) mod framestat {
 }
 
 #[cfg(test)]
-mod tests {
+mod tween_tests {
     use super::*;
 
+    /// Runs the tween at 60 frames a second from `t`, toward `to`, for `n` frames: the scales shown.
+    fn run(tw: &mut TextTween, t: &mut Instant, to: f32, n: usize) -> Vec<f32> {
+        (0..n)
+            .map(|_| {
+                *t += Duration::from_micros(16_667);
+                tw.step(to, *t, true);
+                tw.shown
+            })
+            .collect()
+    }
+
     #[test]
-    fn gesture_text_levels_are_coarse_and_hold() {
-        // Three levels per doubling: 1, 2^(1/3), 2^(2/3), 2.
-        assert!((gesture_text_level(1.05) - 1.0).abs() < 1e-6);
-        assert!((gesture_text_level(1.2) - 2f32.powf(1. / 3.)).abs() < 1e-5);
-        assert!((gesture_text_level(1.95) - 2.0).abs() < 1e-6);
-        assert_eq!(gesture_text_level(100.), model::MAX_SCALE);
-        // A level is held a little past the halfway point to the next one.
-        let half = 0.5 / GESTURE_TEXT_LEVELS as f32;
-        assert!(GESTURE_TEXT_SWITCH > half && GESTURE_TEXT_SWITCH < 2. * half);
+    fn text_sets_off_gently_never_overshoots_and_rests_on_its_level() {
+        let mut t = Instant::now();
+        let mut tw = TextTween::default();
+        assert!(!tw.step(1., t, true), "the first frame is where it is");
+        assert!(tw.step(2., t, true), "a new level: on its way");
+        assert_eq!(tw.shown, 1., "it starts from where it was");
+        let xs = run(&mut tw, &mut t, 2., 40);
+        // From rest: it speeds up over several frames, quickest mid-way, then slows.
+        let steps: Vec<f32> = std::iter::once(1.).chain(xs.iter().copied()).collect::<Vec<_>>().windows(2).map(|w| w[1] - w[0]).collect();
+        let peak = steps.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
+        assert!(peak >= 3, "quickest a few frames in, not at once: {steps:?}");
+        assert!(steps[..peak].windows(2).all(|w| w[1] >= w[0]), "speeding up to it: {steps:?}");
+        assert!(steps.iter().all(|d| *d >= 0.), "never back");
+        assert!(xs.iter().all(|x| *x <= 2.), "never past the level");
+        assert_eq!(*xs.last().unwrap(), 2., "it rests exactly on the level, where caches hit");
+        assert!(xs.iter().position(|x| *x == 2.).unwrap() < 30, "at rest within half a second: {xs:?}");
+    }
+
+    #[test]
+    fn a_new_level_mid_way_keeps_its_speed() {
+        let mut t = Instant::now();
+        let mut tw = TextTween::default();
+        tw.step(1., t, true);
+        tw.step(4., t, true);
+        let xs = run(&mut tw, &mut t, 4., 8);
+        let (before, at) = (xs[6], xs[7]);
+        // Sent back down: it turns, without a jump.
+        let after = run(&mut tw, &mut t, 1., 1)[0];
+        assert!((after - at).abs() < (at - before).abs() * 2., "no jump: {before} {at} {after}");
+        // Asked for less motion: there at once.
+        assert!(!tw.step(3., t, false));
+        assert_eq!(tw.shown, 3.);
     }
 }

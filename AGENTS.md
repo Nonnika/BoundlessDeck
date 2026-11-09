@@ -43,7 +43,7 @@ GPUI 每帧重建整棵元素树，所以：
 ### 缩放
 
 - 不用 transform 缩放：所有坐标乘 `cam.s` 后重新布局，文字保持清晰。
-- 手势期间 `DeckView.lay` 冻结布局比例；文字整形、光栅化、终端与 PDF 按 `content_scale()` 取离散档位，让 GPUI 的 `LineLayoutCache` 与 `MetalAtlas` 命中缓存。`src/deck/zoomlayer.rs` 管理状态机：手势保持 150 ms，之后约 120 ms 吸附到最近档位。
+- 手势期间 `DeckView.lay` 冻结布局比例；文字整形、光栅化、终端与 PDF 按 `content_scale()` 取值，让 GPUI 的 `LineLayoutCache` 与 `MetalAtlas` 命中缓存。缩放进行中（手势或镜头滑动）文字保持开始时的比例，不重排也不跳变；停下后相机约 120 ms 吸附到最近档位，文字再以临界阻尼弹簧跟到该档位（`TextTween`，对数尺度，从静止起步、不冲过头、中途换目标保留速度，约 300 ms 停稳；`tween_text` 每帧推进）。`src/deck/zoomlayer.rs` 管理状态机：手势保持 150 ms。
 - 布局几何（位置、大小）仍用原始 `cam.s`。
 - 清晰度过渡（`src/deck/sharpen.rs`）：内容换成更清晰的版本时统一淡入（180 ms，ease-out；系统开启“减弱动态效果”时直接切换）。矢量内容只在从 LOD 回到完整内容时过渡：LOD 下 body 区是与 block 背景同色的遮罩，回来时内容立即完整画出、遮罩淡出（450 ms，ease-in-out，`REVEAL_TIME`；`Runtime::appear`，`block_view` 统一处理）；位图（PDF）新页在拉伸的旧页上淡入（`Runtime::sharpen` + `crossfade`）；原生视图（WKWebView）露出时快照留在下面，视图 alpha 从 0 到 1。新增 block 种类时归入这三类之一，不要自己写时长与曲线。任何过渡进行中要设 `DeckView.animating`，由 `Render` 统一请求下一帧。
 - 出现动画（`src/deck/popin.rs`）：只有 `on_create` 的 block（撤销恢复、打开 deck 不算）在第一次被画出时展开：亮线从中间横向拉开、上下打开、扫描线自上而下印出内容，约 560 ms；期间原生网页先不显示。系统开启“减弱动态效果”时直接出现。

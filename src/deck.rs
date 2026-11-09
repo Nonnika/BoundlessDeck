@@ -253,6 +253,8 @@ pub struct DeckView {
     tasks: progress::Tasks,
     /// 焦点视图 and playing 焦点.
     fv: focusview::FocusView,
+    /// The scale text is set at, easing between text levels (`zoomlayer`).
+    text_tween: zoomlayer::TextTween,
     /// The window this deck is drawn in: what `screenshot` captures.
     win: Option<gpui::AnyWindowHandle>,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
@@ -362,6 +364,7 @@ impl DeckView {
             insp: inspector::Inspector::default(),
             tasks: progress::Tasks::default(),
             fv: focusview::FocusView::default(),
+            text_tween: zoomlayer::TextTween::default(),
             m,
             lay,
             zoom_settle: None,
@@ -617,6 +620,7 @@ impl Render for DeckView {
         self.grab_keys(window, cx);
         self.tick_glide(cx);
         self.settle_layer(Some(window));
+        self.tween_text(window);
         zoomlayer::framestat::begin(self.zooming());
         self.track_active(window, cx);
         self.expire_notes(window, cx);
