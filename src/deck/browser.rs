@@ -505,6 +505,9 @@ impl DeckView {
                 return Some("被工具栏遮住 · 平移画布让它露出来");
             }
         }
+        if self.tasks.rect.is_some_and(over) {
+            return Some("被任务进度遮住 · 任务完成后会露出来");
+        }
         if self.insp.rects.iter().any(|r| over(*r)) {
             return Some("被样式面板遮住 · 取消选择文字或图形让它露出来");
         }

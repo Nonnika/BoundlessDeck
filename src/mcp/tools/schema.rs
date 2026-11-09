@@ -248,6 +248,13 @@ pub fn tool_list() -> Vec<(&'static str, &'static str, &'static str, Value)> {
                 "scale": {"type": "number", "minimum": model::MIN_SCALE, "maximum": model::MAX_SCALE, "description": "缩放，1 为 100%；省略保持当前"},
                 "animate": {"type": "boolean", "description": "平滑滑过去（默认 true）；false 立即跳过去"},
             }), &[])),
+        ("process", "报告任务进度", "告诉人你在做什么、做到哪了：窗口底部中间会显示一个胶囊。每项任务都必须用它报告：开始时 status=preparing（title 写任务名，如「整理调研笔记」），动手时 status=running（detail 写当前这一步，能估算时带 progress 0–1，可多次调用更新），结束时 status=done（胶囊显示「已完成」后自己消失）；中途放弃也要报 done 并在 detail 里说明。一个终端里的 agent 同时只有一项任务，新的报告接替旧的；没给的字段沿用上次。不改画布，不进撤销栈。",
+            object_schema(json!({
+                "status": {"type": "string", "enum": crate::mcp::tools::Stage::NAMES, "description": "preparing（准备中）、running（进行中）或 done（已完成）"},
+                "title": {"type": "string", "description": "任务名，简短（80 字以内）；省略沿用上次"},
+                "detail": {"type": "string", "description": "当前这一步在做什么；省略沿用上次"},
+                "progress": {"type": "number", "minimum": 0, "maximum": 1, "description": "完成了多少，0–1；不确定就省略"},
+            }), &["status"])),
         ("undo", "撤销", "撤销上一步画布操作（加、删 block），与窗口里的 ⌘Z 同一条撤销栈。", object_schema(json!({}), &[])),
         ("redo", "重做", "重做上一步撤销。", object_schema(json!({}), &[])),
         ("save_deck", "保存画布", "立刻把画布写进工作区的 .boundlessdeck/deck.json；写操作本来就会自动保存，这个用于确认。", object_schema(json!({}), &[])),

@@ -110,6 +110,53 @@ pub struct Ctx<'a> {
     pub view_from: Option<(Camera, bool)>,
     /// The window's picture, taken before the call (`screenshot`): PNG or why not.
     pub shot: Option<Result<crate::screenshot::Shot, String>>,
+    /// A task's progress, as the agent told it (`process`): shown in the window.
+    pub process: Option<Report>,
+}
+
+/// Where an agent's task is: getting ready, under way, finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Preparing,
+    Running,
+    Done,
+}
+
+impl Stage {
+    pub const NAMES: &'static [&'static str] = &["preparing", "running", "done"];
+
+    fn parse(s: &str) -> Option<Stage> {
+        match s {
+            "preparing" => Some(Stage::Preparing),
+            "running" => Some(Stage::Running),
+            "done" => Some(Stage::Done),
+            _ => None,
+        }
+    }
+
+    /// As the window says it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Stage::Preparing => "准备中",
+            Stage::Running => "进行中",
+            Stage::Done => "已完成",
+        }
+    }
+}
+
+/// What an agent said of its task with `process`. A task is the caller's:
+/// one per terminal it runs in (`key`), a later report taking the place of
+/// an earlier one; what a report leaves out keeps what was said before.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Report {
+    pub key: String,
+    /// The caller's terminal's title, to say whose task it is.
+    pub from: Option<String>,
+    pub stage: Stage,
+    pub title: Option<String>,
+    pub detail: Option<String>,
+    /// 0 to 1.
+    pub progress: Option<f32>,
 }
 
 impl Ctx<'_> {
@@ -202,6 +249,29 @@ impl Ctx<'_> {
     fn view_center(&self) -> Value {
         let (x, y) = self.m.cam.to_world(self.view.0 / 2., self.view.1 / 2.);
         json!({"x": round(x), "y": round(y)})
+    }
+
+    /// An agent's task, as it goes: shown at the bottom of the window until it is done.
+    fn process(&mut self, a: &Args) -> Result<Value, String> {
+        let status = arg_str(a, "status")?.ok_or("process 需要 status：preparing、running 或 done")?;
+        let stage = Stage::parse(&status).ok_or_else(|| format!("没有状态 {status:?}：可用 {}", Stage::NAMES.join("、")))?;
+        let text = |name: &str| -> Result<Option<String>, String> {
+            Ok(arg_str(a, name)?.map(|s| s.trim().chars().take(80).collect::<String>()).filter(|s| !s.is_empty()))
+        };
+        let (title, detail) = (text("title")?, text("detail")?);
+        let progress = match arg_num(a, "progress")? {
+            Some(v) if v.is_finite() && (0. ..=1.).contains(&v) => Some(v as f32),
+            Some(_) => return Err("progress 要是 0 到 1 之间的数".into()),
+            None => None,
+        };
+        let terminal = self.caller_terminal().ok();
+        let from = terminal.as_ref().and_then(|id| self.m.block(id)).map(|b| b.title.clone()).filter(|t| !t.trim().is_empty());
+        self.process = Some(Report { key: terminal.unwrap_or_else(|| "agent".into()), from, stage, title, detail, progress });
+        Ok(json!({"ok": true, "status": status, "label": stage.label(), "shown": stage != Stage::Done, "note": if stage == Stage::Done {
+            "窗口底部的进度胶囊显示「已完成」后会自己消失"
+        } else {
+            "进度显示在窗口底部中间的胶囊里；结束时务必再调用一次 status=done"
+        }}))
     }
 
     /// Moves the view: its center to a block or a point, its scale as asked.
@@ -555,6 +625,7 @@ impl Ctx<'_> {
             "arrange_blocks" => self.arrange_blocks(args),
             "select_blocks" => self.select_blocks(args),
             "set_view" => self.set_view(args),
+            "process" => self.process(args),
             "undo" => {
                 self.m.undo_last();
                 self.dirty = true;
@@ -607,8 +678,24 @@ mod tests {
     }
 
     fn call_from(m: &mut Model, here: Here, name: &str, args: Value) -> Result<Value, String> {
-        let mut c = Ctx { m, view: (1000., 800.), mcp: Value::Null, here, dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None };
+        let mut c = Ctx { m, view: (1000., 800.), mcp: Value::Null, here, dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None };
         c.call(name, args.as_object().unwrap())
+    }
+
+    #[test]
+    fn process_reports_the_callers_task() {
+        let (_dir, mut m) = ctx_model();
+        let mut c = Ctx { m: &mut m, view: (1000., 800.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None };
+        let out = c.call("process", json!({"status": "running", "title": "  整理画布 ", "detail": "排成网格", "progress": 0.5}).as_object().unwrap()).unwrap();
+        assert_eq!(out["label"], "进行中");
+        let r = c.process.clone().unwrap();
+        assert_eq!((r.key.as_str(), r.stage, r.title.as_deref(), r.detail.as_deref(), r.progress), ("agent", Stage::Running, Some("整理画布"), Some("排成网格"), Some(0.5)));
+        assert!(!c.dirty, "a report is not an edit");
+        assert!(c.call("process", json!({"status": "paused"}).as_object().unwrap()).is_err());
+        assert!(c.call("process", json!({"title": "x"}).as_object().unwrap()).is_err());
+        assert!(c.call("process", json!({"status": "running", "progress": 2}).as_object().unwrap()).is_err());
+        c.call("process", json!({"status": "done"}).as_object().unwrap()).unwrap();
+        assert_eq!(c.process.as_ref().map(|r| (r.stage, r.title.clone())), Some((Stage::Done, None)), "left out, the title is kept by the window");
     }
 
     #[test]
@@ -792,7 +879,7 @@ mod tests {
     #[test]
     fn a_screenshot_hands_back_the_picture_and_its_camera() {
         let (_d, mut m) = ctx_model();
-        let mut c = Ctx { m: &mut m, view: (1000., 800.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None };
+        let mut c = Ctx { m: &mut m, view: (1000., 800.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None };
         assert!(c.call("screenshot", &Args::new()).is_err(), "no window, no picture");
         let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3];
         c.shot = Some(Ok(crate::screenshot::Shot { png: png.clone(), width: 2000, height: 1600 }));
@@ -810,7 +897,7 @@ mod tests {
         assert_eq!(normalize_url("example.com").unwrap(), "https://example.com");
         assert!(normalize_url("javascript:alert(1)").is_err());
         let (_d, mut m) = ctx_model();
-        let c = Ctx { m: &mut m, view: (0., 0.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None };
+        let c = Ctx { m: &mut m, view: (0., 0.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None };
         assert_eq!(c.read_resource("boundlessdeck://schema").unwrap()["kinds"].as_array().unwrap().len(), BlockKind::ALL.len());
         assert!(c.read_resource("other://x").is_err());
     }

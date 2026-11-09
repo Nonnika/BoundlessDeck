@@ -35,6 +35,7 @@ mod lifecycle;
 mod load;
 mod memofile;
 mod popin;
+mod progress;
 mod sharpen;
 mod stack;
 mod styled;
@@ -244,6 +245,8 @@ pub struct DeckView {
     color_slot: inspector::Slot,
     /// The style panel showed this frame: web pages under it give way.
     insp: inspector::Inspector,
+    /// Agents' tasks, as `process` tells them: the capsule at the bottom.
+    tasks: progress::Tasks,
     /// The window this deck is drawn in: what `screenshot` captures.
     win: Option<gpui::AnyWindowHandle>,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
@@ -351,6 +354,7 @@ impl DeckView {
             panel_tx,
             color_slot: inspector::Slot::Fill,
             insp: inspector::Inspector::default(),
+            tasks: progress::Tasks::default(),
             m,
             lay,
             zoom_settle: None,
@@ -680,6 +684,7 @@ impl Render for DeckView {
 
         // Known before the blocks are drawn: web pages under the style panel give way.
         self.inspector_tick();
+        self.tasks_tick();
         let visible: Vec<String> =
             self.m.visible(self.view.0, self.view.1).into_iter().map(|i| self.m.blocks[i].id.clone()).collect();
         self.frame_rects = visible
@@ -793,6 +798,7 @@ impl Render for DeckView {
             .child(self.toolbar(&t, cx))
             .children(inspector)
             .child(self.status_bar(&t))
+            .children(self.task_capsule(&t))
             .children(self.stack_preview(&t, window, cx))
             .children(self.pluck_view(&t))
             .children(self.popup_view(&t, cx))

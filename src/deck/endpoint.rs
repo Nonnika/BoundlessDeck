@@ -116,12 +116,15 @@ impl DeckView {
             Job::Tool(name, _) if name == "screenshot" => Some(self.photograph(cx)),
             _ => None,
         };
-        let mut ctx = Ctx { m: &mut self.m, view: self.view, mcp: info, here, dirty: false, memos: vec![], reload: vec![], view_from: None, shot };
+        let mut ctx = Ctx { m: &mut self.m, view: self.view, mcp: info, here, dirty: false, memos: vec![], reload: vec![], view_from: None, shot, process: None };
         let out = match job {
             Job::Tool(name, args) => ctx.call(&name, &args),
             Job::Resource(uri) => ctx.read_resource(&uri),
         };
-        let (dirty, memos, reload, view_from) = (ctx.dirty, ctx.memos, ctx.reload, ctx.view_from);
+        let (dirty, memos, reload, view_from, process) = (ctx.dirty, ctx.memos, ctx.reload, ctx.view_from, ctx.process);
+        if let Some(r) = process {
+            self.report_task(r, cx);
+        }
         for (id, text) in memos {
             let rt = self.rts.entry(id).or_default();
             if rt.memo.loaded {
