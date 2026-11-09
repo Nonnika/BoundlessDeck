@@ -43,7 +43,7 @@ mod zoomlayer;
 use crate::editor::Editor;
 use crate::markdown;
 use crate::memo;
-use crate::model::{self, Block, BlockKind, Camera, Geometry, Model, file_block_size, new_block_of};
+use crate::model::{self, Block, BlockKind, Geometry, Model, file_block_size, new_block_of};
 use crate::terminal::Terminal;
 use crate::theme::Theme;
 
@@ -247,7 +247,7 @@ pub struct DeckView {
     /// The window this deck is drawn in: what `screenshot` captures.
     win: Option<gpui::AnyWindowHandle>,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
-    glide: Option<(Camera, Camera, Instant)>,
+    glide: Option<camera::Glide>,
     focus: FocusHandle,
     rts: HashMap<String, Runtime>,
     view: (f32, f32),

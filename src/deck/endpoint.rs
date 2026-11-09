@@ -110,7 +110,7 @@ impl DeckView {
             None => serde_json::json!({"running": false, "error": self.mcp_err}),
         };
         // Mid-glide, tools see the camera where it is going.
-        let shown = self.glide.map(|(_, to, _)| std::mem::replace(&mut self.m.cam, to));
+        let shown = self.glide.map(|g| std::mem::replace(&mut self.m.cam, g.to));
         // The picture is taken from the window as it shows, before the call changes anything.
         let shot = match &job {
             Job::Tool(name, _) if name == "screenshot" => Some(self.photograph(cx)),
