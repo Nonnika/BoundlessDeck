@@ -69,6 +69,22 @@ impl DeckView {
         Some(parsed)
     }
 
+    /// How much of a block's body, from its top, can show in the window:
+    /// lists of its text lay out no further. GPUI's lists fill their own
+    /// height, not the window's: zoomed in on a long note, its whole height
+    /// would be laid out though most of it is past the window's bottom.
+    /// Bodies drawn away from the canvas (a stack's preview) are not cut.
+    pub(super) fn body_room(&self, id: &str) -> Option<f32> {
+        if !self.clip_bodies {
+            return None;
+        }
+        let b = self.m.block(id)?;
+        let cam = self.m.cam;
+        let top = (b.y - cam.y + TITLE_H) * cam.s;
+        let full = ((b.h - TITLE_H) * cam.s).max(1.);
+        Some((self.view.1 - top).clamp(1., full))
+    }
+
     /// A Markdown body as it reads, in a list of its blocks that lays out only
     /// those in sight: a long document costs what shows, also while zooming.
     /// Its scroll stays where it was when the text changes.
@@ -103,17 +119,19 @@ impl DeckView {
         // GPUI's list keeps only its top and bottom padding (items start at its
         // left edge, as wide as it), so each item carries the sides itself.
         let (pr, pl) = (px(pad[1]), px(pad[3]));
+        let room = self.body_room(id);
+        let list = gpui::list(state, move |ix, _, _| {
+            div().pl(pl).pr(pr).child(parsed.render_item(ix, size, &colors, &*images, toggle.as_ref())).into_any_element()
+        })
+        .w(px(outer_w.max(40.)))
+        .pt(px(pad[0]))
+        .pb(px(pad[2]));
         div()
             .size_full()
-            .child(
-                gpui::list(state, move |ix, _, _| {
-                    div().pl(pl).pr(pr).child(parsed.render_item(ix, size, &colors, &*images, toggle.as_ref())).into_any_element()
-                })
-                .w(px(outer_w.max(40.)))
-                .h_full()
-                .pt(px(pad[0]))
-                .pb(px(pad[2])),
-            )
+            .child(match room {
+                Some(h) => list.h(px(h)),
+                None => list.h_full(),
+            })
             .into_any_element()
     }
 
@@ -363,6 +381,7 @@ impl DeckView {
                         let digits = lines.len().to_string().len() as f32;
                         let (muted, text) = (t.muted, t.text);
                         let handle = rt.list.clone();
+                        let room = self.body_room(&b.id);
                         uniform_list(SharedString::from(format!("text:{}", b.id)), lines.len(), move |range, _, _| {
                             range
                                 .map(|i| {
@@ -383,7 +402,11 @@ impl DeckView {
                                 .collect()
                         })
                         .track_scroll(handle)
-                        .size_full()
+                        .w_full()
+                        .map(|d| match room {
+                            Some(h) => d.h(px(h)),
+                            None => d.h_full(),
+                        })
                         .px(px(6. * s))
                         .py(px(4. * s))
                         .font_family(crate::ui::font::mono())

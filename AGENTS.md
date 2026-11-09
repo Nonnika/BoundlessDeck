@@ -195,7 +195,7 @@ cx.spawn(async move |this, cx| {
 
 ### 渲染与缓存
 
-- 布局用 `div()` 与 flex；大量文字用 `uniform_list`；点阵、图表、胶带、主页画布用 `canvas(…)` 中的 `paint_quad` / `paint_path`。
+- 布局用 `div()` 与 flex；大量文字用 `gpui::list` / `uniform_list`，并把列表高度限制在窗口能看到的部分（`DeckView::body_room`）：GPUI 的列表按自身高度而不是窗口决定排版到哪，放大到长文档上时否则会把窗口外的段落全排一遍；画在别处的正文（块堆预览）关掉这个裁剪（`clip_bodies`）；点阵、图表、胶带、主页画布用 `canvas(…)` 中的 `paint_quad` / `paint_path`。
 - 派生结果按输入缓存（Markdown 解析、图表数据、PDF 页位图）；缓存键不要包含连续的缩放值，PDF 位图按 `lay.s` 生成。
 - 颜色来自 `Theme`，不要硬编码。
 

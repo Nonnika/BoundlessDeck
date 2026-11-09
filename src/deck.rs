@@ -253,6 +253,8 @@ pub struct DeckView {
     fv: focusview::FocusView,
     /// Zooming as a photo: the picture scaled on the GPU (`photozoom`).
     photo: photozoom::Photo,
+    /// Lists in block bodies lay out only what the window can show (`body_room`).
+    clip_bodies: bool,
     /// The window this deck is drawn in: what `screenshot` captures.
     win: Option<gpui::AnyWindowHandle>,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
@@ -362,6 +364,7 @@ impl DeckView {
             tasks: progress::Tasks::default(),
             fv: focusview::FocusView::default(),
             photo: photozoom::Photo::default(),
+            clip_bodies: true,
             m,
             lay,
             zoom_settle: None,

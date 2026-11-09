@@ -806,8 +806,11 @@ impl DeckView {
                 let saved_lay = self.lay;
                 self.m.cam.s = 1.;
                 self.lay.s = 1.;
+                // Drawn here, not where it lies on the canvas: its lists are not cut to the window.
+                self.clip_bodies = false;
                 let paper = crate::ui::theme::Paper::of(t);
                 let el = self.body(&card, t, &paper, window, cx);
+                self.clip_bodies = true;
                 self.m.cam = saved;
                 self.lay = saved_lay;
                 el
