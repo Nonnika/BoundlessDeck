@@ -348,13 +348,6 @@ impl WindowTextSystem {
         self.line_layout_cache.layout_index()
     }
 
-    /// BoundlessDeck: lays the lines of the last frame out again at `ratio`
-    /// times their size on another thread, so a frame drawn at that scale
-    /// (a zoom coming to rest) finds them ready instead of shaping them all.
-    pub fn prefetch_scaled(&self, ratio: f32) {
-        self.line_layout_cache.prefetch_scaled(ratio)
-    }
-
     pub(crate) fn reuse_layouts(&self, index: Range<LineLayoutIndex>) {
         self.line_layout_cache.reuse_layouts(index)
     }

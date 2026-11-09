@@ -91,12 +91,6 @@ impl DeckView {
         // shows at its edges (`layerzoom`'s underlay), until it rests.
         super::zoomlayer::framestat::bare(!covers(drawn, self.m.cam, self.view));
         layerzoom::set(map_between(drawn, self.m.cam));
-        // The frame that ends the zoom lays every line in sight out at the
-        // scale it rests at: they are laid out ahead, off this thread, while
-        // the fingers move (GPUI's `prefetch_scaled`, our patch).
-        if let Some(ts) = &self.text_sys {
-            ts.prefetch_scaled(self.m.cam.s / drawn.s);
-        }
     }
 
     /// Before each frame: a zoom that has rested ends, the sharp picture taking over.

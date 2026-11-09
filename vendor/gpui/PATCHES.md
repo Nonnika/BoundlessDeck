@@ -17,11 +17,10 @@
 直到 CoreAnimation 的 1 秒超时，且这一帧不画。表现为缩放结束时画面卡住约 1 秒。
 现在记住最后一个异步命令缓冲（`last_async`），切到同步提交前 `wait_until_completed`（实测 0–5 ms）。
 
-## 3. 预排下一帧的文字（`src/text_system/line_layout.rs`、`src/text_system.rs`）
+## 3. 文字按字号档位排版，缩放不再重排（`src/text_system/line_layout.rs`）
 
-新增 `WindowTextSystem::prefetch_scaled(ratio)`：把上一帧排过的每一行（含自动换行段落的原始行）在后台线程
-按 `ratio` 倍字号重新交给 CoreText 排版，放进 `Prefetch.ready`；之后 `layout_line` 未命中帧缓存时先查这里
-（字号按 1/64 px 取整匹配，再精确缩放到请求的字号）。每次请求作废之前的请求；后台线程先等 16 ms，
-连续请求时只有最后一次真正干活。
-
-应用在照片式缩放的每一步调用它（`src/deck/photozoom.rs` 的 `photo_moved`），停手后的清晰帧因此大多不必在主线程排版。
+`LineLayoutCache::layout_line` 不再按请求的精确字号调用 CoreText，而是按字号所在的档位排版：
+每二倍区间 4 档（`STEPS_PER_OCTAVE`），档位与请求字号最多差约 9%。同一段文字在同一档位只排一次，
+结果跨帧缓存在 `shapes`（上限 `MAX_SHAPES` 行，满了清空），再把字形位置、行宽、上下沿按比例缩放到请求的字号
+（`scaled_to`）。字形仍按请求的字号光栅化，静止时清晰；换行由缩放后的位置计算，所以缩放时断行不变。
+档位与实际字号的差别只体现在可变字体的光学尺寸（极细微的字距）。`force_width` 的行（终端等宽排列）不走档位。

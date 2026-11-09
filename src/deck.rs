@@ -297,8 +297,6 @@ pub struct DeckView {
     fv: focusview::FocusView,
     /// Zooming as a photo: the picture scaled on the GPU (`photozoom`).
     photo: photozoom::Photo,
-    /// The window's text system, for laying lines out ahead of a zoom's last frame (`photozoom`).
-    text_sys: Option<std::sync::Arc<gpui::WindowTextSystem>>,
     /// Lists in block bodies lay out only what the window can show (`body_room`).
     clip_bodies: bool,
     /// The window this deck is drawn in: what `screenshot` captures.
@@ -410,7 +408,6 @@ impl DeckView {
             tasks: progress::Tasks::default(),
             fv: focusview::FocusView::default(),
             photo: photozoom::Photo::default(),
-            text_sys: None,
             clip_bodies: true,
             m,
             lay,
@@ -661,9 +658,6 @@ impl Render for DeckView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let backdrop = u32::from_str_radix(crate::ui::theme::hex(Theme::of(window).background).trim_start_matches('#'), 16).unwrap_or(0);
         crate::platform::layerzoom::attach(window, backdrop);
-        if self.text_sys.is_none() {
-            self.text_sys = Some(window.text_system().clone());
-        }
         self.photo_tick(cx);
         // Zooming as a photo, the frame is drawn with the camera the picture
         // was drawn with; Core Animation shows it where the live camera sees it.

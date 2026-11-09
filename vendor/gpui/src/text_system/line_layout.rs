@@ -6,11 +6,7 @@ use std::{
     borrow::Borrow,
     hash::{Hash, Hasher},
     ops::Range,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
+    sync::Arc,
 };
 
 use super::LineWrapper;
@@ -397,38 +393,61 @@ pub(crate) struct LineLayoutCache {
     previous_frame: Mutex<FrameCache>,
     current_frame: RwLock<FrameCache>,
     platform_text_system: Arc<dyn PlatformTextSystem>,
-    /// BoundlessDeck: lines laid out ahead, on another thread (`prefetch_scaled`).
-    prefetch: Arc<Prefetch>,
+    /// BoundlessDeck: lines as CoreText laid them out at a step size (`size_step`).
+    shapes: Mutex<FxHashMap<ShapeKey, Arc<LineLayout>>>,
 }
 
-/// BoundlessDeck: the lines of the last frame, laid out again at a scale the
-/// app expects to draw at next (a zoom about to rest), while the main thread
-/// has nothing to do. The frame at that scale then finds them laid out: the
-/// same lines CoreText would make, made earlier.
-#[derive(Default)]
-struct Prefetch {
-    /// Each ask outdates the ones before; a worker gives up on an old one.
-    asked: AtomicU64,
-    /// Lines laid out for the latest ask, by text, runs and size.
-    ready: Mutex<FxHashMap<PrefetchKey, Arc<LineLayout>>>,
-}
-
+/// BoundlessDeck: text is laid out at a few sizes only, steps a quarter of
+/// an octave apart (`STEPS_PER_OCTAVE`), and set at the size asked for by
+/// scaling where its glyphs go. A canvas that zooms asks for a new size each
+/// frame; laying the text out anew at each (CoreText's shaping) was most of
+/// what such a frame cost, and broke lines differently at each size. Now
+/// zooming lays nothing out within a step, lines keep their breaks, and the
+/// glyphs are still drawn at the size asked for. The step is at most 9% off
+/// the size: what it changes is a variable font's optical size, a hair of
+/// spacing. Kept across frames, up to `MAX_SHAPES` lines.
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct PrefetchKey {
+struct ShapeKey {
     text: SharedString,
     runs: SmallVec<[FontRun; 1]>,
-    /// The font size in 1/64 px: sizes the app reaches by multiplying differ
-    /// from the ones asked for in the last bits.
-    size: i64,
+    step: i32,
 }
 
-fn quantize_size(size: Pixels) -> i64 {
-    (size.0 as f64 * 64.).round() as i64
+const STEPS_PER_OCTAVE: f32 = 4.;
+const MAX_SHAPES: usize = 20_000;
+
+/// The step a size is laid out at, and that step's size.
+fn size_step(size: Pixels) -> (i32, Pixels) {
+    let step = (size.0.max(0.01).log2() * STEPS_PER_OCTAVE).round() as i32;
+    (step, px(2f32.powf(step as f32 / STEPS_PER_OCTAVE)))
 }
 
-/// How long a prefetch waits for the asks to stop coming before it starts:
-/// a zoom asks at each step, only the scale it rests at is worth laying out.
-const PREFETCH_SETTLE: Duration = Duration::from_millis(16);
+/// A line laid out at one size, set at `font_size`: where its glyphs go, scaled.
+fn scaled_to(found: &LineLayout, font_size: Pixels) -> LineLayout {
+    let k = font_size.0 / found.font_size.0;
+    let scale = |p: Pixels| px(p.0 * k);
+    LineLayout {
+        font_size,
+        width: scale(found.width),
+        ascent: scale(found.ascent),
+        descent: scale(found.descent),
+        runs: found
+            .runs
+            .iter()
+            .map(|r| ShapedRun {
+                font_id: r.font_id,
+                glyphs: r
+                    .glyphs
+                    .iter()
+                    .map(|g| ShapedGlyph { position: point(scale(g.position.x), scale(g.position.y)), ..g.clone() })
+                    .collect(),
+            })
+            .collect(),
+        len: found.len,
+    }
+}
+
+
 
 #[derive(Default)]
 struct FrameCache {
@@ -450,97 +469,29 @@ impl LineLayoutCache {
             previous_frame: Mutex::default(),
             current_frame: RwLock::default(),
             platform_text_system,
-            prefetch: Arc::default(),
+            shapes: Mutex::default(),
         }
     }
 
-    /// BoundlessDeck: lays the lines of the last frame out again at `ratio`
-    /// times their size, on another thread, for the next frame to find
-    /// (`take_prefetched`). A newer ask replaces this one.
-    pub fn prefetch_scaled(&self, ratio: f32) {
-        if !ratio.is_finite() || ratio <= 0. || (ratio - 1.).abs() < 1e-4 {
-            return;
-        }
-        let mut wanted: Vec<(SharedString, SmallVec<[FontRun; 1]>, Pixels)> = Vec::new();
-        {
-            let prev = self.previous_frame.lock();
-            let curr = self.current_frame.read();
-            // A wrapped paragraph found in the last frame is not laid out
-            // again (only its wrapping is kept), so its line is not in
-            // `lines`: it is laid out from its wrapped key.
-            let keys = prev.lines.keys().chain(curr.lines.keys());
-            let wrapped = prev.wrapped_lines.keys().chain(curr.wrapped_lines.keys());
-            let mut seen = collections::FxHashSet::default();
-            for key in keys.chain(wrapped) {
-                if key.force_width.is_none() && seen.insert((key.text.clone(), key.runs.clone(), key.font_size)) {
-                    wanted.push((key.text.clone(), key.runs.clone(), key.font_size * ratio));
+    /// BoundlessDeck: the line laid out at its size's step (`size_step`),
+    /// set at `font_size`.
+    fn layout_at_step(&self, text: &SharedString, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
+        let (step, step_size) = size_step(font_size);
+        let key = ShapeKey { text: text.clone(), runs: SmallVec::from(runs), step };
+        let found = self.shapes.lock().get(&key).cloned();
+        let found = match found {
+            Some(found) => found,
+            None => {
+                let laid = Arc::new(self.platform_text_system.layout_line(text, step_size, runs));
+                let mut shapes = self.shapes.lock();
+                if shapes.len() >= MAX_SHAPES {
+                    shapes.clear();
                 }
+                shapes.insert(key, laid.clone());
+                laid
             }
-        }
-        if wanted.is_empty() {
-            return;
-        }
-        let ask = self.prefetch.asked.fetch_add(1, Ordering::SeqCst) + 1;
-        let prefetch = self.prefetch.clone();
-        let platform = self.platform_text_system.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(PREFETCH_SETTLE);
-            if prefetch.asked.load(Ordering::SeqCst) != ask {
-                return;
-            }
-            prefetch.ready.lock().clear();
-            for (text, runs, size) in wanted {
-                if prefetch.asked.load(Ordering::SeqCst) != ask {
-                    return;
-                }
-                let key = PrefetchKey { text, runs, size: quantize_size(size) };
-                if prefetch.ready.lock().contains_key(&key) {
-                    continue;
-                }
-                let layout = Arc::new(platform.layout_line(&key.text, size, &key.runs));
-                if prefetch.asked.load(Ordering::SeqCst) != ask {
-                    return;
-                }
-                prefetch.ready.lock().insert(key, layout);
-            }
-        });
-    }
-
-    /// A line laid out ahead at about this size, set to exactly this size.
-    fn take_prefetched(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> Option<LineLayout> {
-        let mut ready = self.prefetch.ready.lock();
-        if ready.is_empty() {
-            return None;
-        }
-        let q = quantize_size(font_size);
-        let mut key = PrefetchKey { text: SharedString::new(text.to_string()), runs: SmallVec::from(runs), size: q };
-        let found = [q, q - 1, q + 1].into_iter().find_map(|size| {
-            key.size = size;
-            ready.remove(&key)
-        });
-        let found = found?;
-        drop(ready);
-        let k = font_size.0 / found.font_size.0;
-        let scale = |p: Pixels| px(p.0 * k);
-        Some(LineLayout {
-            font_size,
-            width: scale(found.width),
-            ascent: scale(found.ascent),
-            descent: scale(found.descent),
-            runs: found
-                .runs
-                .iter()
-                .map(|r| ShapedRun {
-                    font_id: r.font_id,
-                    glyphs: r
-                        .glyphs
-                        .iter()
-                        .map(|g| ShapedGlyph { position: point(scale(g.position.x), scale(g.position.y)), ..g.clone() })
-                        .collect(),
-                })
-                .collect(),
-            len: found.len,
-        })
+        };
+        scaled_to(&found, font_size)
     }
 
     pub fn layout_index(&self) -> LineLayoutIndex {
@@ -685,15 +636,12 @@ impl LineLayoutCache {
             current_frame.used_lines.push(key);
             layout
         } else {
-            let prefetched = if force_width.is_none() {
-                self.take_prefetched(text.as_ref(), font_size, runs)
-            } else {
-                None
-            };
             let text = SharedString::from(text);
-            let mut layout = match prefetched {
-                Some(layout) => layout,
-                None => self.platform_text_system.layout_line(&text, font_size, runs),
+            // BoundlessDeck: laid out at its size's step, unless its glyphs are set apart.
+            let mut layout = if force_width.is_none() {
+                self.layout_at_step(&text, font_size, runs)
+            } else {
+                self.platform_text_system.layout_line(&text, font_size, runs)
             };
 
             if let Some(force_width) = force_width {
