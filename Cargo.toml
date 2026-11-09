@@ -42,3 +42,7 @@ objc2-core-image = { version = "0.3.2", features = ["CIFilter"] }
 objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "SCScreenshotManager", "SCShareableContent", "SCStream", "block2", "objc2-core-foundation", "objc2-core-graphics"] }
 raw-window-handle = "0.6"
 objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "WKSnapshotConfiguration", "WKNavigation", "block2", "objc2-app-kit"] }
+
+# GPUI 打了本仓库自己的补丁（文字排版缓存等），见 vendor/gpui/PATCHES.md
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }
