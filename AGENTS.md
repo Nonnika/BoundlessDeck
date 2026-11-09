@@ -43,7 +43,7 @@ GPUI 每帧重建整棵元素树，所以：
 ### 缩放
 
 - 不用 transform 缩放：所有坐标乘 `cam.s` 后重新布局，文字保持清晰。
-- 手势期间 `DeckView.lay` 冻结布局比例；文字整形、光栅化、终端与 PDF 按 `content_scale()` 取值，让 GPUI 的 `LineLayoutCache` 与 `MetalAtlas` 命中缓存。缩放进行中（手势或镜头滑动）文字保持开始时的比例，不重排也不跳变；停下后相机约 120 ms 吸附到最近档位，文字再以临界阻尼弹簧跟到该档位（`TextTween`，对数尺度，从静止起步、不冲过头、中途换目标保留速度，约 300 ms 停稳；`tween_text` 每帧推进）。`src/deck/zoomlayer.rs` 管理状态机：手势保持 150 ms。
+- 缩放像放大照片：所有内容（文字、正文宽度、标题栏）每帧都按相机比例 `content_scale()`（即 `cam.s`）排版，字号与换行宽度同比例变化，换行不变、不冻结、不跳档，手指停下后相机也不会自己吸附到档位。只有位图类内容在缩放中保持粗粒度：`DeckView.lay` 记着 PDF 页光栅化时的比例（越过 `ZOOM_REBASE` 才换），缩放停下 150 ms 后（`ZOOM_SETTLE_HOLD`）才按最终比例重做；网页在缩放中用快照代替（`zooming()`）。代价是缩放期间每帧重排文字，`BOUNDLESSDECK_FRAME_STATS=1` 可在每次手势结束后打印帧耗时。
 - 布局几何（位置、大小）仍用原始 `cam.s`。
 - 清晰度过渡（`src/deck/sharpen.rs`）：内容换成更清晰的版本时统一淡入（180 ms，ease-out；系统开启“减弱动态效果”时直接切换）。矢量内容只在从 LOD 回到完整内容时过渡：LOD 下 body 区是与 block 背景同色的遮罩，回来时内容立即完整画出、遮罩淡出（450 ms，ease-in-out，`REVEAL_TIME`；`Runtime::appear`，`block_view` 统一处理）；位图（PDF）新页在拉伸的旧页上淡入（`Runtime::sharpen` + `crossfade`）；原生视图（WKWebView）露出时快照留在下面，视图 alpha 从 0 到 1。新增 block 种类时归入这三类之一，不要自己写时长与曲线。任何过渡进行中要设 `DeckView.animating`，由 `Render` 统一请求下一帧。
 - 出现动画（`src/deck/popin.rs`）：只有 `on_create` 的 block（撤销恢复、打开 deck 不算）在第一次被画出时展开：亮线从中间横向拉开、上下打开、扫描线自上而下印出内容，约 560 ms；期间原生网页先不显示。系统开启“减弱动态效果”时直接出现。
@@ -194,7 +194,7 @@ cx.spawn(async move |this, cx| {
 ### 渲染与缓存
 
 - 布局用 `div()` 与 flex；大量文字用 `uniform_list`；点阵、图表、胶带、主页画布用 `canvas(…)` 中的 `paint_quad` / `paint_path`。
-- 派生结果按输入缓存（Markdown 解析、图表数据、PDF 页位图），缓存键包含缩放档位（`content_scale`），而不是连续缩放值。
+- 派生结果按输入缓存（Markdown 解析、图表数据、PDF 页位图）；缓存键不要包含连续的缩放值，PDF 位图按 `lay.s` 生成。
 - 颜色来自 `Theme`，不要硬编码。
 
 ### 平台代码
@@ -209,7 +209,7 @@ cx.spawn(async move |this, cx| {
 | `src/main.rs` | 入口：MCP 桥分派、窗口选项、关闭与退出钩子。 |
 | `src/model.rs` | Change、撤销、块堆、选择等模型操作；block、camera、持久化在 `model/` 子模块。行为修改从这里开始。 |
 | `src/deck.rs` | 画布视图：`DeckView` 与 `Runtime` 的定义、保存调度、增删 block、`Render`；输入、卡片、内容、MCP 任务执行在 `deck/` 子模块。 |
-| `src/deck/zoomlayer.rs` | 缩放冻结与吸附状态机。 |
+| `src/deck/zoomlayer.rs` | 缩放进行中的判断与 PDF 光栅比例（`lay`），帧耗时统计。 |
 | `src/deck/browser.rs` | WKWebView 的生命周期、遮挡与快照回退。 |
 | `src/mcp/tools.rs` | `Ctx` 与 24 个工具的分派；字段表、校验、排版在 `tools/` 子模块。 |
 | `src/mcp/mod.rs` | 端点注册、socket 路径、活动 deck 注册表。 |

@@ -155,17 +155,12 @@ fn text_inset(shape: Shape, w: f32, h: f32, pad: f32) -> [f32; 4] {
 /// The block's body, w by h on screen, its words at `scale` (the content
 /// scale); being edited, `editor` takes the words' place. With `md`, the
 /// words are that Markdown in those colors. Far out (`lod`) only the shape is drawn.
-///
-/// The words are laid out as in a block `hold` times the size (the content
-/// scale over the camera's, 1 at rest): while zooming they keep their lines,
-/// placed in the shape where their alignment puts them, and they settle to
-/// fill it when the zoom does.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn view(
     b: &Block,
     l: &Look,
-    (w, h): (f32, f32),
-    hold: f32,
+    w: f32,
+    h: f32,
     scale: f32,
     editor: Option<Entity<Editor>>,
     md: Option<(Parsed, MdColors)>,
@@ -183,10 +178,8 @@ pub(super) fn view(
     if lod {
         return out.into_any_element();
     }
-    let (fw, fh) = (w * hold, h * hold);
-    let [il, it, ir, ib] = text_inset(shape, fw, fh, 10. * scale);
-    let (ox, oy) = ((w - fw) * l.align, (h - fh) * l.valign);
-    let area = div().absolute().left(px(ox + il)).top(px(oy + it)).w(px((fw - il - ir).max(0.))).h(px((fh - it - ib).max(0.)));
+    let [il, it, ir, ib] = text_inset(shape, w, h, 10. * scale);
+    let area = div().absolute().left(px(il)).top(px(it)).right(px(ir)).bottom(px(ib));
     let words = match editor {
         Some(ed) => area.child(ed).into_any_element(),
         None => {

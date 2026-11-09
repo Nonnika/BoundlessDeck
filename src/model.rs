@@ -20,11 +20,14 @@ pub use block::{
     file_name, new_block_of, next_tab_key, scale_keeping_ratio,
 };
 pub use camera::{
-    Camera, LOD_SCALE, MAX_SCALE, MIN_SCALE, ZOOM_KEY_STEPS, ZOOM_LEVELS, ZOOM_REBASE, on_level, wheel_zoom, zoom_level,
+    Camera, LOD_SCALE, MAX_SCALE, MIN_SCALE, ZOOM_KEY_STEPS, ZOOM_LEVELS, ZOOM_REBASE, wheel_zoom, zoom_level,
     zoom_level_at_most, zoom_level_of,
 };
 pub use focus::{Focus, FocusLine};
 pub use persist::{data_dir, write_file_atomic};
+// Named only by tests, now that a zoom no longer comes to rest on a level.
+#[cfg(test)]
+pub use camera::on_level;
 // Named only by tests; elsewhere tabs are reached through `Block`.
 #[cfg(test)]
 pub use block::WebTab;

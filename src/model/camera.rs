@@ -43,6 +43,7 @@ pub fn zoom_level(s: f32) -> f32 {
 }
 
 /// Whether s is already on a zoom level.
+#[cfg(test)]
 pub fn on_level(s: f32) -> bool {
     (s - zoom_level(s)).abs() <= s * 1e-5
 }

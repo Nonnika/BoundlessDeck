@@ -67,21 +67,18 @@ impl DeckView {
         self.m.fit_all(self.view.0, self.view.1);
         self.lay = self.m.cam;
         self.zoom_settle = None;
-        self.snap.on = false;
         cx.notify();
     }
     pub(super) fn zoom_in(&mut self, _: &ZoomIn, _: &mut Window, cx: &mut Context<Self>) {
         self.m.zoom_step(self.view.0 / 2.0, self.view.1 / 2.0, 1);
         self.lay = self.m.cam;
         self.zoom_settle = None;
-        self.snap.on = false;
         cx.notify();
     }
     pub(super) fn zoom_out(&mut self, _: &ZoomOut, _: &mut Window, cx: &mut Context<Self>) {
         self.m.zoom_step(self.view.0 / 2.0, self.view.1 / 2.0, -1);
         self.lay = self.m.cam;
         self.zoom_settle = None;
-        self.snap.on = false;
         cx.notify();
     }
 }

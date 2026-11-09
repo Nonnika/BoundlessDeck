@@ -131,15 +131,6 @@ impl DeckView {
         // offered the wheel first), and the canvas does not pan under it.
         // GPUI's scrolling leaves the event going, so it is stopped here.
         let wid = id.to_string();
-        // While zooming, text holds its scale (`zoomlayer`); a body of text is
-        // laid out at that scale too, in a box of its own size, so its lines
-        // do not wrap anew each frame as the card grows or shrinks around it.
-        let body = if holds_layout(&b) {
-            let cs = self.content_scale();
-            div().w(px(b.w * cs)).h(px((b.h - TITLE_H) * cs)).child(body).into_any_element()
-        } else {
-            body
-        };
         let mut body_box = div()
             .relative()
             .flex_1()
@@ -219,8 +210,6 @@ impl DeckView {
         let cs = self.content_scale();
         let lod = s < LOD_SCALE;
         let look = styled::look(b, t);
-        // The words are laid out at the scale text holds while zooming (`zoomlayer`).
-        let hold = if s > 0. { cs / s } else { 1. };
         let editor = if lod { None } else { self.editing(&b.id, EditPart::Body).cloned() };
         if let Some(ed) = &editor {
             ed.update(cx, |e, _| {
@@ -245,7 +234,7 @@ impl DeckView {
             .h(px(h))
             .occlude()
             .on_mouse_down(MouseButton::Left, cx.listener(move |d, ev, window, cx| d.on_card_down(&eid, ev, window, cx)))
-            .child(styled::view(b, &look, (w, h), hold, cs, editor, md, lod));
+            .child(styled::view(b, &look, w, h, cs, editor, md, lod));
         let mut out = vec![card.into_any_element()];
         let shown = selected
             || self.active.as_deref() == Some(b.id.as_str())
@@ -337,19 +326,12 @@ impl DeckView {
         let cs = self.content_scale();
         let note = b.kind == BlockKind::Note;
         let color = if note { paper.text } else { t.text };
-        // The bar spans the card; what is in it is laid out at the content
-        // scale, as wide as the bar is at that scale, so while zooming the
-        // title is cut (and its ellipsis placed) the same in every frame.
-        let width = if b.kind.bare() { (b.w * cs + 6.).max(160.) } else { b.w * cs };
-        let frame = div()
+        // Laid out at the camera's scale, as everything is: zooming, the bar
+        // and its words grow together, and the title is cut in the same place.
+        let mut bar = div()
             .h(px(TITLE_H * s))
             .w_full()
             .flex_none()
-            .overflow_hidden()
-            .when(note, |d| d.bg(paper.header));
-        let mut bar = div()
-            .h_full()
-            .w(px(width))
             .flex()
             .flex_row()
             .items_center()
@@ -357,7 +339,7 @@ impl DeckView {
             .px(px(if note { 10. } else { 8. } * cs))
             .text_size(px(TITLE_FONT * cs))
             .text_color(color)
-            .when(note, |d| d.font_weight(FontWeight::SEMIBOLD));
+            .when(note, |d| d.bg(paper.header).font_weight(FontWeight::SEMIBOLD));
         if let Some(ed) = self.editing(&b.id, EditPart::Title).cloned() {
             ed.update(cx, |e, _| {
                 e.font_size = TITLE_FONT * cs;
@@ -382,7 +364,7 @@ impl DeckView {
                 div().text_size(px(10. * cs)).text_color(t.muted).whitespace_nowrap().child(b.kind.label()),
             );
         }
-        frame.child(bar).into_any_element()
+        bar.into_any_element()
     }
 
     /// A chart's type chip (a menu of types) and its table button.
@@ -520,16 +502,4 @@ fn popin_layers(f: popin::Frame, r: (f32, f32, f32, f32), card: AnyElement, blan
         .child(layer().border_1().border_color(t.accent.opacity(f.glow)))
         .into_any_element();
     [glow, clip]
-}
-
-/// Whether a block's body is text laid out at the content scale, held still
-/// while zooming. Pictures (an image, a PDF page, a page's snapshot, a video)
-/// and a stack's fanned cards are drawn to the card's size instead, stretching
-/// smoothly with it.
-fn holds_layout(b: &Block) -> bool {
-    match b.kind {
-        BlockKind::Browser | BlockKind::Stack => false,
-        BlockKind::File => !matches!(crate::preview::of(&b.path), crate::preview::Kind::Image | crate::preview::Kind::Pdf | crate::preview::Kind::Video),
-        _ => true,
-    }
 }

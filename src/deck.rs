@@ -229,14 +229,11 @@ struct MemoRt {
 
 pub struct DeckView {
     pub m: Model,
-    /// The camera the blocks layer is currently laid out at; frozen during zoom gestures.
+    /// The camera rasters (PDF pages) are made at; held while a zoom is under way (`zoomlayer`).
     pub lay: model::Camera,
     /// Until when a wheel/pinch zoom is considered in-flight.
     pub zoom_settle: Option<Instant>,
-    snap: zoomlayer::ZoomSnap,
     zoom_timer_active: bool,
-    /// The text level held while a zoom gesture is under way (`content_scale`).
-    text_s: Option<f32>,
     /// Blocks still allowed out of LOD this frame (`LOD_WAKE_PER_FRAME`).
     lod_wake: usize,
     /// Something drawn this frame is fading: the next frame is asked for.
@@ -253,8 +250,6 @@ pub struct DeckView {
     tasks: progress::Tasks,
     /// 焦点视图 and playing 焦点.
     fv: focusview::FocusView,
-    /// The scale text is set at, easing between text levels (`zoomlayer`).
-    text_tween: zoomlayer::TextTween,
     /// The window this deck is drawn in: what `screenshot` captures.
     win: Option<gpui::AnyWindowHandle>,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
@@ -364,13 +359,10 @@ impl DeckView {
             insp: inspector::Inspector::default(),
             tasks: progress::Tasks::default(),
             fv: focusview::FocusView::default(),
-            text_tween: zoomlayer::TextTween::default(),
             m,
             lay,
             zoom_settle: None,
-            snap: zoomlayer::ZoomSnap::default(),
             zoom_timer_active: false,
-            text_s: None,
             lod_wake: LOD_WAKE_PER_FRAME,
             animating: false,
             covered: false,
@@ -619,8 +611,7 @@ impl Render for DeckView {
         self.win = Some(window.window_handle());
         self.grab_keys(window, cx);
         self.tick_glide(cx);
-        self.settle_layer(Some(window));
-        self.tween_text(window);
+        self.settle_layer();
         zoomlayer::framestat::begin(self.zooming());
         self.track_active(window, cx);
         self.expire_notes(window, cx);
@@ -844,14 +835,13 @@ mod zoom_tests {
         m: Model,
         lay: Camera,
         zoom_settle: Option<Instant>,
-        snap: zoomlayer::ZoomSnap,
     }
 
     impl Harness {
         fn new() -> Self {
             let m = Model::new(std::path::Path::new("/tmp"));
             let lay = m.cam;
-            Self { m, lay, zoom_settle: None, snap: zoomlayer::ZoomSnap::default() }
+            Self { m, lay, zoom_settle: None }
         }
 
         fn zoom_gesture(&mut self) {
@@ -864,19 +854,12 @@ mod zoom_tests {
             }
             let now = Instant::now();
             if self.zoom_settle.is_some_and(|u| now < u) {
-                self.snap.on = false;
                 if self.m.cam.s < self.lay.s * ZOOM_REBASE || self.m.cam.s > self.lay.s / ZOOM_REBASE {
                     self.lay = Camera { x: self.m.cam.x, y: self.m.cam.y, s: zoom_level(self.m.cam.s) };
                 }
                 return;
             }
             self.zoom_settle = None;
-            if !self.snap.on && (self.lay.s - self.m.cam.s).abs() > 1e-6 && !on_level(self.m.cam.s) {
-                let to = zoom_level(self.m.cam.s);
-                self.m.zoom_at(640.0, 400.0, to / self.m.cam.s);
-                self.lay = self.m.cam;
-                return;
-            }
             self.lay = self.m.cam;
         }
 
@@ -886,7 +869,7 @@ mod zoom_tests {
     }
 
     #[test]
-    fn zoom_layer_holds_scale_during_gesture_and_snaps_on_rest() {
+    fn rasters_hold_their_scale_while_zooming_and_the_camera_rests_where_it_stopped() {
         let mut h = Harness::new();
         assert_eq!(h.lay.s, 1.0);
 
@@ -906,11 +889,12 @@ mod zoom_tests {
         assert!(on_level(h.lay.s));
         assert!((h.lay.s - zoom_level(0.4)).abs() < 1e-6);
 
-        // Once the gesture rests, `m.cam.s` snaps to the nearest zoom level and `lay == m.cam`.
+        // Once the gesture rests, the camera stays where the fingers left it
+        // (as a photo does, it does not move by itself) and rasters catch up.
         h.m.zoom_at(640.0, 400.0, 0.77 / h.m.cam.s);
         h.zoom_settle = Some(Instant::now() - Duration::from_millis(10));
         h.settle();
-        assert!(on_level(h.m.cam.s));
+        assert!((h.m.cam.s - 0.77).abs() < 1e-5 && !on_level(h.m.cam.s));
         assert_eq!(h.lay, h.m.cam);
     }
 }
