@@ -518,7 +518,7 @@ impl From<Quad> for Primitive {
 #[repr(C)]
 pub(crate) struct Underline {
     pub order: DrawOrder,
-    pub pad: u32, // align to 8 bytes
+    pub pad: u32, // align to 8 bytes; BoundlessDeck: 1 marks a premultiplied picture (`snapshot.rs`)
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
@@ -667,7 +667,7 @@ impl Default for TransformationMatrix {
 #[repr(C)]
 pub(crate) struct MonochromeSprite {
     pub order: DrawOrder,
-    pub pad: u32, // align to 8 bytes
+    pub pad: u32, // align to 8 bytes; BoundlessDeck: 1 marks a premultiplied picture (`snapshot.rs`)
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
@@ -685,7 +685,7 @@ impl From<MonochromeSprite> for Primitive {
 #[repr(C)]
 pub(crate) struct PolychromeSprite {
     pub order: DrawOrder,
-    pub pad: u32, // align to 8 bytes
+    pub pad: u32, // align to 8 bytes; BoundlessDeck: 1 marks a premultiplied picture (`snapshot.rs`)
     pub grayscale: bool,
     pub opacity: f32,
     pub bounds: Bounds<ScaledPixels>,

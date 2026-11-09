@@ -29,7 +29,11 @@
 
 - `snapshot_capture(key, version, background, child)`：照常画 `child`，并把它在本帧画出的 primitive 留作位图。
   渲染器在本帧主画面之前，用 `Scene::extract` 把这些 primitive 平移到原点，画进一张该元素可见部分大小的
-  离屏纹理（先以 `background` 清屏，所以位图不透明）。含路径或 surface 的内容不截取。
+  离屏纹理（先以 `background` 清屏，位图不透明）。`background` 透明时不清成底色：位图只含内容、颜色已乘覆盖率
+  （预乘），显示时以 sprite 的 `pad = 1` 标记，`polychrome_sprite_fragment` 把颜色除回覆盖率，再叠到实时绘制的底上
+  （渐变底的便签）。GPUI 的管线把透明度相加（目标透明度系数为 1），画在不透明的目标上看不出，画进透明纹理时
+  相邻字形的边缘会叠出过大的透明度，所以这种位图用另一套透明度按 over 混合的管线画（`over_pipelines`，
+  `swap_over_pipelines` 在截取时临时换上）。含路径或 surface 的内容不截取。
 - `Window::paint_snapshot(key, version, bounds, opacity)`：把位图按截取时的框到 `bounds` 的比例拉伸画出，
   以 polychrome sprite 绘制（纹理编号 ≥ `SNAPSHOT_SLOT_BASE` 时取位图的纹理）。没有该版本的位图时返回 false。
 - `Window::snapshot_info(key)`：位图的版本、截取时的框和其中实际截到的可见部分。

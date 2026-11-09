@@ -33,7 +33,9 @@ pub(crate) struct SnapshotRequest {
     pub bounds: Bounds<ScaledPixels>,
     /// The part of them in the window, in device pixels.
     pub visible: Bounds<ScaledPixels>,
-    /// What shows under the content (the picture is opaque).
+    /// What shows under the content. A see-through one (alpha below 1) is
+    /// not drawn: the picture holds the content alone, its colors multiplied
+    /// by its coverage, to lay over what is drawn live under it (a gradient).
     pub background: Hsla,
 }
 
@@ -54,6 +56,8 @@ pub(crate) struct Snapshot {
     pub visible: Bounds<ScaledPixels>,
     pub slot: u32,
     pub size: Size<DevicePixels>,
+    /// It holds the content alone, its colors multiplied by its coverage.
+    pub premultiplied: bool,
     pub last_used: u64,
     #[cfg(target_os = "macos")]
     pub texture: metal::Texture,
@@ -106,7 +110,8 @@ pub fn forget_snapshot(key: u64) {
 }
 
 /// Paints `child`, keeping what it painted as a picture under `key`, of the
-/// caller's `version` of it, over `background` (`Window::paint_snapshot_capture`).
+/// caller's `version` of it, over `background` (`Window::paint_snapshot_capture`);
+/// a see-through `background` keeps the content alone, for a live one under it.
 pub fn snapshot_capture(key: u64, version: u64, background: crate::Hsla, child: impl crate::IntoElement) -> SnapshotCapture {
     SnapshotCapture { key, version, background, child: Some(child.into_any_element()) }
 }

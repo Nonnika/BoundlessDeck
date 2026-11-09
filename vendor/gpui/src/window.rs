@@ -3187,9 +3187,9 @@ impl Window {
             let now = r.tick();
             let s = r.snapshots.get_mut(&key).filter(|s| s.version == version)?;
             s.last_used = now;
-            Some((s.bounds, s.visible, s.slot, s.size))
+            Some((s.bounds, s.visible, s.slot, s.size, s.premultiplied))
         });
-        let Some((taken, visible, slot, tex_size)) = found else { return false };
+        let Some((taken, visible, slot, tex_size, premultiplied)) = found else { return false };
         if taken.size.width.0 <= 0. || taken.size.height.0 <= 0. {
             return false;
         }
@@ -3206,7 +3206,8 @@ impl Window {
         let opacity = self.element_opacity() * opacity;
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
-            pad: 0,
+            // A picture of the content alone is premultiplied: the shader divides it back.
+            pad: premultiplied as u32,
             grayscale: false,
             bounds: target,
             content_mask,

@@ -134,7 +134,7 @@ impl DeckView {
             super::snapshot::Plan::Show { .. } | super::snapshot::Plan::Blank => div().into_any_element(),
             _ => self.body(&b, t, &paper, window, cx),
         };
-        let body = super::snapshot::body_by(plan, body, t.surface);
+        let body = super::snapshot::body_by(plan, body, super::snapshot::body_background(b.kind, t.surface));
         // A block worked in keeps the wheel: its content scrolls (it was
         // offered the wheel first), and the canvas does not pan under it.
         // GPUI's scrolling leaves the event going, so it is stopped here.

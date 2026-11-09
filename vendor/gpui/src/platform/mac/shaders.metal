@@ -708,6 +708,11 @@ fragment float4 polychrome_sprite_fragment(
       quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
 
   float4 color = sample;
+  // BoundlessDeck: a picture of content alone (`snapshot.rs`) holds colors
+  // multiplied by coverage; `pad` marks it, and they are divided back.
+  if (sprite.pad == 1 && color.a > 0.0) {
+    color.rgb /= color.a;
+  }
   if (sprite.grayscale) {
     float grayscale = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
     color.r = grayscale;

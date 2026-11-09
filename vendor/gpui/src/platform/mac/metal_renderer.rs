@@ -112,6 +112,10 @@ pub(crate) struct MetalRenderer {
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
     polychrome_sprites_pipeline_state: metal::RenderPipelineState,
     surfaces_pipeline_state: metal::RenderPipelineState,
+    /// BoundlessDeck: the same pipelines blending alpha as "over" does, for
+    /// pictures of content alone (`draw_snapshots`): GPUI's add the alpha up,
+    /// which an opaque target hides and a see-through one does not.
+    over_pipelines: [metal::RenderPipelineState; 5],
     unit_vertices: metal::Buffer,
     #[allow(clippy::arc_with_non_send_sync)]
     instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
@@ -252,6 +256,17 @@ impl MetalRenderer {
             MTLPixelFormat::BGRA8Unorm,
         );
 
+        let over = |label: &str, vertex: &str, fragment: &str| {
+            build_pipeline_state_blending(&device, &library, label, vertex, fragment, MTLPixelFormat::BGRA8Unorm, true)
+        };
+        let over_pipelines = [
+            over("shadows_over", "shadow_vertex", "shadow_fragment"),
+            over("quads_over", "quad_vertex", "quad_fragment"),
+            over("underlines_over", "underline_vertex", "underline_fragment"),
+            over("monochrome_sprites_over", "monochrome_sprite_vertex", "monochrome_sprite_fragment"),
+            over("polychrome_sprites_over", "polychrome_sprite_vertex", "polychrome_sprite_fragment"),
+        ];
+
         let command_queue = device.new_command_queue();
         let sprite_atlas = Arc::new(MetalAtlas::new(device.clone()));
         let core_video_texture_cache =
@@ -271,6 +286,7 @@ impl MetalRenderer {
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
             surfaces_pipeline_state,
+            over_pipelines,
             unit_vertices,
             instance_buffer_pool,
             sprite_atlas,
@@ -500,6 +516,16 @@ impl MetalRenderer {
                 }
             };
             let bg = crate::Rgba::from(request.background);
+            // See-through: the content alone, on nothing (premultiplied, as GPUI blends).
+            let premultiplied = bg.a < 0.999;
+            let clear = if premultiplied {
+                metal::MTLClearColor::new(0., 0., 0., 0.)
+            } else {
+                metal::MTLClearColor::new(bg.r as f64, bg.g as f64, bg.b as f64, 1.)
+            };
+            if premultiplied {
+                self.swap_over_pipelines();
+            }
             let drawn = self.encode_scene(
                 &sub,
                 instance_buffer,
@@ -507,8 +533,11 @@ impl MetalRenderer {
                 size,
                 command_buffer,
                 &texture,
-                metal::MTLClearColor::new(bg.r as f64, bg.g as f64, bg.b as f64, 1.),
+                clear,
             );
+            if premultiplied {
+                self.swap_over_pipelines();
+            }
             crate::snapshot::REGISTRY.with(|r| {
                 let mut r = r.borrow_mut();
                 if drawn.is_err() {
@@ -524,6 +553,7 @@ impl MetalRenderer {
                         visible: request.visible,
                         slot,
                         size,
+                        premultiplied,
                         last_used: now,
                         texture,
                     },
@@ -531,6 +561,17 @@ impl MetalRenderer {
                 r.trim();
             });
         }
+    }
+
+    /// BoundlessDeck: trades the pipelines for those blending alpha as
+    /// "over" does (`over_pipelines`), or back.
+    fn swap_over_pipelines(&mut self) {
+        let [shadows, quads, underlines, mono, poly] = &mut self.over_pipelines;
+        mem::swap(&mut self.shadows_pipeline_state, shadows);
+        mem::swap(&mut self.quads_pipeline_state, quads);
+        mem::swap(&mut self.underlines_pipeline_state, underlines);
+        mem::swap(&mut self.monochrome_sprites_pipeline_state, mono);
+        mem::swap(&mut self.polychrome_sprites_pipeline_state, poly);
     }
 
     /// Encodes a scene's batches into `target`, cleared to `clear` first.
@@ -1311,6 +1352,20 @@ fn build_pipeline_state(
     fragment_fn_name: &str,
     pixel_format: metal::MTLPixelFormat,
 ) -> metal::RenderPipelineState {
+    build_pipeline_state_blending(device, library, label, vertex_fn_name, fragment_fn_name, pixel_format, false)
+}
+
+/// BoundlessDeck: `over_alpha` blends alpha as "over" does (a + d·(1 − a))
+/// instead of adding it up, for targets that start see-through.
+fn build_pipeline_state_blending(
+    device: &metal::DeviceRef,
+    library: &metal::LibraryRef,
+    label: &str,
+    vertex_fn_name: &str,
+    fragment_fn_name: &str,
+    pixel_format: metal::MTLPixelFormat,
+    over_alpha: bool,
+) -> metal::RenderPipelineState {
     let vertex_fn = library
         .get_function(vertex_fn_name, None)
         .expect("error locating vertex function");
@@ -1330,7 +1385,11 @@ fn build_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::SourceAlpha);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    color_attachment.set_destination_alpha_blend_factor(if over_alpha {
+        metal::MTLBlendFactor::OneMinusSourceAlpha
+    } else {
+        metal::MTLBlendFactor::One
+    });
 
     device
         .new_render_pipeline_state(&descriptor)

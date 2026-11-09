@@ -18,9 +18,8 @@
 //!
 //! A picture is of a version of the content (`version_of`); one of another
 //! version is not shown. One holds only the part of the body that was in
-//! the window. Bodies that change on their own (terminals, web pages), are
-//! being worked in, or are not flat content on the card's own color are not
-//! pictured.
+//! the window. Bodies that change on their own (terminals, web pages) or are
+//! being worked in are not pictured.
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -218,10 +217,11 @@ fn part_of(part: Bounds<Pixels>, of: Bounds<Pixels>) -> (f32, f32, f32, f32) {
     )
 }
 
-/// Whether a kind's body is pictured: flat content on the card's color, not
-/// changing by itself.
+/// Whether a kind's body is pictured: content not changing by itself. A
+/// QuickLook's paper is a gradient: its picture holds the text alone, laid
+/// over the paper drawn live (`body_background`).
 fn pictured(kind: BlockKind) -> bool {
-    matches!(kind, BlockKind::Memo | BlockKind::File | BlockKind::Chart)
+    matches!(kind, BlockKind::Memo | BlockKind::Note | BlockKind::File | BlockKind::Chart)
 }
 
 /// The picture's key for a block.
@@ -230,6 +230,12 @@ fn key_of(id: &str) -> u64 {
     "body".hash(&mut h);
     id.hash(&mut h);
     h.finish()
+}
+
+/// What a body's picture is taken over: the card's color, or for a
+/// QuickLook, nothing (the paper under it is drawn live).
+pub(super) fn body_background(kind: BlockKind, surface: Hsla) -> Hsla {
+    if kind == BlockKind::Note { gpui::transparent_black() } else { surface }
 }
 
 /// The ids pictured this frame (`plan_captures`).
