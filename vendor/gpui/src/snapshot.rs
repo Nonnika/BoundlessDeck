@@ -66,6 +66,9 @@ pub(crate) struct Snapshot {
 #[derive(Default)]
 pub(crate) struct Registry {
     pub snapshots: collections::FxHashMap<u64, Snapshot>,
+    /// Keys whose content of a version cannot be pictured (paths, surfaces in
+    /// it), by that version: the caller draws them as they are.
+    pub refused: collections::FxHashMap<u64, u64>,
     next_slot: u32,
     clock: u64,
 }
@@ -105,7 +108,21 @@ thread_local! {
 /// Forgets the picture kept for `key` (its element is gone).
 pub fn forget_snapshot(key: u64) {
     REGISTRY.with(|r| {
-        r.borrow_mut().snapshots.remove(&key);
+        let mut r = r.borrow_mut();
+        r.snapshots.remove(&key);
+        r.refused.remove(&key);
+    });
+}
+
+/// Notes that `key`'s content of `version` cannot be pictured.
+pub(crate) fn refuse_snapshot(key: u64, version: u64) {
+    REGISTRY.with(|r| {
+        let mut r = r.borrow_mut();
+        r.snapshots.remove(&key);
+        if r.refused.len() > 4 * MAX_SNAPSHOTS {
+            r.refused.clear();
+        }
+        r.refused.insert(key, version);
     });
 }
 

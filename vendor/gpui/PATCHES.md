@@ -37,6 +37,8 @@
 - `Window::paint_snapshot(key, version, bounds, opacity)`：把位图按截取时的框到 `bounds` 的比例拉伸画出，
   以 polychrome sprite 绘制（纹理编号 ≥ `SNAPSHOT_SLOT_BASE` 时取位图的纹理）。没有该版本的位图时返回 false。
 - `Window::snapshot_info(key)`：位图的版本、截取时的框和其中实际截到的可见部分。
+- `Window::snapshot_refused(key, version)`：该版本的内容截取失败过（含路径或 surface），调用方应照常绘制，
+  不要反复请求截取；同一 key 截取成功或 `forget_snapshot` 后清除。
 - 位图按 key 存在主线程的登记表里，最多 `MAX_SNAPSHOTS` 张，最久未用的先丢；`forget_snapshot` 手动删除。
 
 应用在镜头滑动（焦点放映、`set_view`）时把正文换成位图（`src/deck/snapshot.rs`）。

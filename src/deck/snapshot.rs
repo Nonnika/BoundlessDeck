@@ -18,7 +18,8 @@
 //!
 //! A picture is of a version of the content (`version_of`); one of another
 //! version is not shown. One holds only the part of the body that was in
-//! the window. Bodies that change on their own (terminals, web pages) or are
+//! the window. Content GPUI cannot picture (paths: a pie, a line chart) is
+//! refused once (`snapshot_refused`) and drawn as it is after. Bodies that change on their own (terminals, web pages) or are
 //! being worked in are not pictured.
 
 use std::collections::HashSet;
@@ -92,6 +93,10 @@ impl DeckView {
         }
         let key = key_of(&b.id);
         let version = self.version_of(b, dark);
+        // Its content cannot be pictured (a pie or a line is drawn as paths): as it is.
+        if window.snapshot_refused(key, version) {
+            return None;
+        }
         let info = window.snapshot_info(key).filter(|i| i.version == version);
         let now_part = part_of(seen, body);
         let covers = info.is_some_and(|i| {

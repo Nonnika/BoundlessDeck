@@ -494,7 +494,8 @@ impl MetalRenderer {
                 DevicePixels(request.visible.size.height.0.ceil() as i32),
             );
             let Some(sub) = scene.extract(request.ops.clone(), offset) else {
-                crate::snapshot::forget_snapshot(request.key);
+                // Paths or surfaces in it: it is drawn as it is (`snapshot_refused`).
+                crate::snapshot::refuse_snapshot(request.key, request.version);
                 continue;
             };
             // Reuse the texture kept for this key if it is the same size.
@@ -545,6 +546,7 @@ impl MetalRenderer {
                     return;
                 }
                 let now = r.tick();
+                r.refused.remove(&request.key);
                 r.snapshots.insert(
                     request.key,
                     crate::snapshot::Snapshot {

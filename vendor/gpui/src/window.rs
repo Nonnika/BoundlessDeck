@@ -3176,6 +3176,12 @@ impl Window {
         })
     }
 
+    /// BoundlessDeck: whether `key`'s content of `version` was found not to
+    /// be picturable (paths or surfaces in it): it is to be drawn as it is.
+    pub fn snapshot_refused(&self, key: u64, version: u64) -> bool {
+        crate::snapshot::REGISTRY.with(|r| r.borrow().refused.get(&key) == Some(&version))
+    }
+
     /// BoundlessDeck: paints the picture kept under `key`, of `version`,
     /// stretched as the bounds it was taken in are to `bounds`. False, and
     /// nothing painted, if no such picture is kept.
