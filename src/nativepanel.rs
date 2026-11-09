@@ -2,6 +2,9 @@
 //! color, and what is picked in it comes back through a channel, to be
 //! applied on the UI thread. The panel talks to a small object of ours set as
 //! its target (`changeColor:`). Fonts are picked in the style panel itself.
+//!
+//! The eyedropper is the system's color sampler: a loupe that picks a color
+//! from anywhere on the screen, its pick coming back the same way.
 
 /// What was picked in a panel.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,21 +39,30 @@ mod mac {
             #[unsafe(method(changeColor:))]
             fn change_color(&self, sender: &AnyObject) {
                 let color: Retained<AnyObject> = unsafe { msg_send![sender, color] };
-                let Some(space) = AnyClass::get(c"NSColorSpace") else { return };
-                let srgb: Retained<AnyObject> = unsafe { msg_send![space, sRGBColorSpace] };
-                let rgb: Option<Retained<AnyObject>> = unsafe { msg_send![&*color, colorUsingColorSpace: &*srgb] };
-                let Some(rgb) = rgb else { return };
-                let ch = |v: f64| (v.clamp(0., 1.) * 255.).round() as u8;
-                let (r, g, b): (f64, f64, f64) =
-                    unsafe { (msg_send![&*rgb, redComponent], msg_send![&*rgb, greenComponent], msg_send![&*rgb, blueComponent]) };
-                let _ = self.ivars().tx.try_send(Pick::Color(format!("#{:02x}{:02x}{:02x}", ch(r), ch(g), ch(b))));
+                if let Some(hex) = hex_of(&color) {
+                    let _ = self.ivars().tx.try_send(Pick::Color(hex));
+                }
             }
         }
     );
 
+    /// An NSColor as `#rrggbb` in sRGB.
+    fn hex_of(color: &AnyObject) -> Option<String> {
+        let space = AnyClass::get(c"NSColorSpace")?;
+        let srgb: Retained<AnyObject> = unsafe { msg_send![space, sRGBColorSpace] };
+        let rgb: Option<Retained<AnyObject>> = unsafe { msg_send![color, colorUsingColorSpace: &*srgb] };
+        let rgb = rgb?;
+        let ch = |v: f64| (v.clamp(0., 1.) * 255.).round() as u8;
+        let (r, g, b): (f64, f64, f64) =
+            unsafe { (msg_send![&*rgb, redComponent], msg_send![&*rgb, greenComponent], msg_send![&*rgb, blueComponent]) };
+        Some(format!("#{:02x}{:02x}{:02x}", ch(r), ch(g), ch(b)))
+    }
+
     thread_local! {
         /// The panel's target: it does not keep it itself.
         static TARGET: RefCell<Option<Retained<Target>>> = const { RefCell::new(None) };
+        /// The sampler showing, kept until the next one.
+        static SAMPLER: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
     }
 
     fn target(tx: &smol::channel::Sender<Pick>, mtm: MainThreadMarker) -> Retained<Target> {
@@ -64,6 +76,25 @@ mod mac {
             *t = Some(new.clone());
             new
         })
+    }
+
+    pub fn sample(tx: &smol::channel::Sender<Pick>) {
+        if MainThreadMarker::new().is_none() {
+            return;
+        }
+        let Some(class) = AnyClass::get(c"NSColorSampler") else { return };
+        let tx = tx.clone();
+        // Called once, with the color picked, or with nil when Esc puts the loupe away.
+        let handler = block2::RcBlock::new(move |color: *mut AnyObject| {
+            if let Some(hex) = unsafe { color.as_ref() }.and_then(hex_of) {
+                let _ = tx.try_send(Pick::Color(hex));
+            }
+        });
+        unsafe {
+            let sampler: Retained<AnyObject> = msg_send![class, new];
+            let _: () = msg_send![&*sampler, showSamplerWithSelectionHandler: &*handler];
+            SAMPLER.with(|s| *s.borrow_mut() = Some(sampler));
+        }
     }
 
     pub fn color_panel(hex: &str, tx: &smol::channel::Sender<Pick>) {
@@ -97,4 +128,13 @@ pub fn color_panel(hex: &str, tx: &smol::channel::Sender<Pick>) {
     mac::color_panel(hex, tx);
     #[cfg(not(target_os = "macos"))]
     let _ = (hex, tx);
+}
+
+/// Shows the system's loupe to pick a color from anywhere on the screen; what
+/// is picked comes through `tx`, and nothing when it is put away.
+pub fn sample_color(tx: &smol::channel::Sender<Pick>) {
+    #[cfg(target_os = "macos")]
+    mac::sample(tx);
+    #[cfg(not(target_os = "macos"))]
+    let _ = tx;
 }

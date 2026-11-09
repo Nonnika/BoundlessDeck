@@ -1,8 +1,9 @@
 //! 文字 and 图形: blocks drawn as they are, without a card. Their `style`
 //! says the colors, the font, the corners and where the words sit; what it
 //! leaves out takes the kind's default (`look`). A 图形 is a rectangle, an
-//! ellipse, a diamond or a triangle, with its words inside the part of it
-//! they fit in.
+//! ellipse, a diamond, a triangle or an arrow, with its words inside the part
+//! of it they fit in. A 文字's words are Markdown, set in its style: headings,
+//! lists and the rest take its font and color, and each line typed is a line.
 
 use gpui::{
     AnyElement, Bounds, Entity, FontWeight, Hsla, IntoElement, ParentElement, PathBuilder, Pixels,
@@ -10,8 +11,9 @@ use gpui::{
 };
 
 use crate::editor::Editor;
+use crate::markdown::{self, Parsed};
 use crate::model::{Block, BlockKind};
-use crate::theme::{Paint, Theme, paint};
+use crate::theme::{MdColors, Paint, Theme, paint};
 
 /// A block's style, worked out: what to draw.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,6 +40,8 @@ pub(super) enum Shape {
     Ellipse,
     Diamond,
     Triangle,
+    /// A broad arrow pointing right, its words in the shaft.
+    Arrow,
 }
 
 impl Shape {
@@ -46,6 +50,7 @@ impl Shape {
             "ellipse" => Shape::Ellipse,
             "diamond" => Shape::Diamond,
             "triangle" => Shape::Triangle,
+            "arrow" => Shape::Arrow,
             _ => Shape::Rect,
         }
     }
@@ -114,6 +119,17 @@ pub(super) fn radii(b: &Block) -> [f32; 4] {
     b.style.corners.map(|c| c.map(|r| r.max(0.))).unwrap_or([radius(b); 4])
 }
 
+/// The colors a 文字's Markdown is set in: its words' color, fainter for
+/// quotes, rules and code, and links in the accent.
+pub(super) fn md_colors(l: &Look, t: &Theme) -> MdColors {
+    MdColors { text: l.color, muted: l.color.opacity(0.6), link: t.accent, code_bg: l.color.opacity(0.08), rule: l.color.opacity(0.25) }
+}
+
+/// An arrow's head: how far it reaches back from the tip, in a w by h box.
+fn arrow_head(w: f32, h: f32) -> f32 {
+    (h * 0.6).min(w * 0.5)
+}
+
 /// Sets an editor up to look as the block's words do.
 pub(super) fn dress(e: &mut Editor, l: &Look, scale: f32) {
     e.font_size = l.size * scale;
@@ -132,13 +148,24 @@ fn text_inset(shape: Shape, w: f32, h: f32, pad: f32) -> [f32; 4] {
         Shape::Ellipse => [w * 0.15 + pad / 2., h * 0.15 + pad / 2., w * 0.15 + pad / 2., h * 0.15 + pad / 2.],
         Shape::Diamond => [w * 0.25, h * 0.25, w * 0.25, h * 0.25],
         Shape::Triangle => [w * 0.25, h * 0.45, w * 0.25, pad],
+        Shape::Arrow => [pad, h * 0.28, arrow_head(w, h) * 0.6 + pad, h * 0.28],
     }
 }
 
 /// The block's body, w by h on screen, its words at `scale` (the content
-/// scale); being edited, `editor` takes the words' place. Far out (`lod`)
-/// only the shape is drawn.
-pub(super) fn view(b: &Block, l: &Look, w: f32, h: f32, scale: f32, editor: Option<Entity<Editor>>, lod: bool) -> AnyElement {
+/// scale); being edited, `editor` takes the words' place. With `md`, the
+/// words are that Markdown in those colors. Far out (`lod`) only the shape is drawn.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn view(
+    b: &Block,
+    l: &Look,
+    w: f32,
+    h: f32,
+    scale: f32,
+    editor: Option<Entity<Editor>>,
+    md: Option<(Parsed, MdColors)>,
+    lod: bool,
+) -> AnyElement {
     let shape = l.shape;
     let (fill_c, stroke_c, radii) = (l.fill, l.stroke, l.radii.map(|r| r * scale));
     let stroke_w = (if b.kind == BlockKind::Shape { 2. } else { 1.5 }) * scale;
@@ -163,8 +190,11 @@ pub(super) fn view(b: &Block, l: &Look, w: f32, h: f32, scale: f32, editor: Opti
                 .font_weight(l.weight)
                 .text_color(l.color)
                 .when(l.italic, |d| d.italic())
-                .when_some(l.family.clone(), |d, f| d.font_family(f))
-                .child(b.text.clone());
+                .when_some(l.family.clone(), |d, f| d.font_family(f));
+            text = match &md {
+                Some((doc, colors)) => text.child(markdown::render_parsed(doc, l.size * scale, colors)),
+                None => text.child(b.text.clone()),
+            };
             text = if l.align >= 0.75 {
                 text.text_right()
             } else if l.align >= 0.25 {
@@ -227,6 +257,11 @@ fn paint_shape(
     let pts: Vec<(f32, f32)> = match shape {
         Shape::Diamond => vec![(cx, y0), (x1, cy), (cx, y1), (x0, cy)],
         Shape::Triangle => vec![(cx, y0), (x1, y1), (x0, y1)],
+        Shape::Arrow => {
+            let head = arrow_head(x1 - x0, y1 - y0);
+            let (neck, half) = (x1 - head, (y1 - y0) * 0.22);
+            vec![(x0, cy - half), (neck, cy - half), (neck, y0), (x1, cy), (neck, y1), (neck, cy + half), (x0, cy + half)]
+        }
         _ => {
             let (rx, ry) = ((x1 - x0) / 2., (y1 - y0) / 2.);
             (0..96)
@@ -271,6 +306,15 @@ pub(super) fn paint_icon(window: &mut Window, b: Bounds<Pixels>, shape: Shape, c
 mod tests {
     use super::*;
     use crate::model::Style;
+
+    #[test]
+    fn an_arrow_keeps_its_words_in_the_shaft() {
+        assert_eq!(Shape::of("arrow"), Shape::Arrow);
+        let [l, t, r, b] = text_inset(Shape::Arrow, 220., 100., 10.);
+        assert!(l < r, "the head leaves less room on the right");
+        assert!(t > 20. && b > 20. && 100. - t - b > 30., "the words sit in the shaft");
+        assert!(arrow_head(40., 100.) <= 20., "a narrow arrow is not all head");
+    }
 
     #[test]
     fn styles_fall_back_to_the_kind() {

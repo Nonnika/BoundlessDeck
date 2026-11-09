@@ -214,7 +214,7 @@ pub struct Block {
     /// The blocks a 块堆 holds, by ID, the top card first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<String>,
-    /// A 图形's outline: `rect` (the default), `ellipse`, `diamond` or `triangle`.
+    /// A 图形's outline: `rect` (the default), `ellipse`, `diamond`, `triangle` or `arrow`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shape: String,
     /// How a 文字 or 图形 looks; each part left out takes its kind's default.
@@ -223,7 +223,7 @@ pub struct Block {
 }
 
 /// The shapes a 图形 can be.
-pub const SHAPES: &[&str] = &["rect", "ellipse", "diamond", "triangle"];
+pub const SHAPES: &[&str] = &["rect", "ellipse", "diamond", "triangle", "arrow"];
 
 /// How a 文字 or 图形 looks. Colors are a palette name (`theme::INKS`, which
 /// follow light and dark), `#rrggbb`, or `none`; empty takes the default.

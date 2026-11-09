@@ -30,6 +30,22 @@ impl DeckView {
         parsed
     }
 
+    /// A 文字's words as Markdown, in its own colors, each typed line its own line.
+    pub(super) fn text_markdown(&mut self, id: &str, src: &str, c: &MdColors, dark: bool) -> markdown::Parsed {
+        // The colors are baked into the parse (links, code), so they are part of what it is cached by.
+        let key = format!("{:?}{:?}{:?}\u{0}{src}", c.text, c.link, c.muted);
+        let rt = self.rts.entry(id.to_string()).or_default();
+        if let Some((cached, parsed)) = &rt.md_cache
+            && cached == &key
+            && parsed.is_dark() == dark
+        {
+            return parsed.clone();
+        }
+        let parsed = markdown::parse_lines(src, c, dark);
+        rt.md_cache = Some((key, parsed.clone()));
+        parsed
+    }
+
     pub(super) fn face_parsed_markdown(
         &mut self,
         b: &Block,

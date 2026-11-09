@@ -219,6 +219,11 @@ impl DeckView {
                 e.placeholder = "输入文字".into();
             });
         }
+        // A 文字's words are Markdown; a 图形's are drawn as typed.
+        let md = (b.kind == BlockKind::Text && !lod && editor.is_none() && !b.text.trim().is_empty()).then(|| {
+            let colors = styled::md_colors(&look, t);
+            (self.text_markdown(&b.id, &b.text, &colors, t.dark), colors)
+        });
         let eid = b.id.clone();
         let card = div()
             .id(SharedString::from(format!("block:{}", b.id)))
@@ -229,7 +234,7 @@ impl DeckView {
             .h(px(h))
             .occlude()
             .on_mouse_down(MouseButton::Left, cx.listener(move |d, ev, window, cx| d.on_card_down(&eid, ev, window, cx)))
-            .child(styled::view(b, &look, w, h, cs, editor, lod));
+            .child(styled::view(b, &look, w, h, cs, editor, md, lod));
         let mut out = vec![card.into_any_element()];
         let shown = selected
             || self.active.as_deref() == Some(b.id.as_str())

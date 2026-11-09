@@ -118,6 +118,12 @@ impl Parsed {
 }
 
 fn parse(src: &str, c: &MdColors) -> Vec<Node<Inline>> {
+    parse_with(src, c, false)
+}
+
+/// With `breaks`, a single newline breaks the line, as typed, instead of
+/// joining the lines into one paragraph.
+fn parse_with(src: &str, c: &MdColors, breaks: bool) -> Vec<Node<Inline>> {
     let mut nodes = Vec::new();
     let mut stack: Vec<Container> = Vec::new();
     let mut cur: Option<Inline> = None;
@@ -263,7 +269,7 @@ fn parse(src: &str, c: &MdColors) -> Vec<Node<Inline>> {
                 let s = HighlightStyle { background_color: Some(c.code_bg), ..style };
                 push_text(&mut cur, &format!("\u{2009}{t}\u{2009}"), s);
             }
-            Event::SoftBreak => push_text(&mut cur, " ", HighlightStyle::default()),
+            Event::SoftBreak => push_text(&mut cur, if breaks { "\n" } else { " " }, HighlightStyle::default()),
             Event::HardBreak => push_text(&mut cur, "\n", HighlightStyle::default()),
             Event::TaskListMarker(done) => {
                 // The event spans `[ ]`; inside a quote the source may differ, so look.
@@ -303,6 +309,12 @@ fn styled(t: &Text) -> StyledText {
 /// Parses `src` once for the given palette so frames during zoom or scroll reuse the AST.
 pub fn parse_doc(src: &str, c: &MdColors, dark: bool) -> Parsed {
     Parsed { nodes: parse(src, c).into_iter().map(Node::freeze).collect(), dark }
+}
+
+/// Like `parse_doc`, but each newline typed breaks its line: for short text
+/// set on the canvas, where a line is meant as written.
+pub fn parse_lines(src: &str, c: &MdColors, dark: bool) -> Parsed {
+    Parsed { nodes: parse_with(src, c, true).into_iter().map(Node::freeze).collect(), dark }
 }
 
 /// Renders a pre-parsed document at font size `size`, in colors `c`.
@@ -537,6 +549,17 @@ mod tests {
         // Not a checkbox: nothing happens.
         assert_eq!(toggle_task(src, 0), None);
         assert_eq!(toggle_task(src, src.len()), None);
+    }
+
+    #[test]
+    fn lines_can_break_where_typed() {
+        let c = MdColors::of_theme(&Theme::light());
+        let text = |n: &Node<Inline>| match n {
+            Node::Para(i) => i.text.clone(),
+            _ => String::new(),
+        };
+        assert_eq!(text(&parse("一\n二", &c)[0]), "一 二");
+        assert_eq!(text(&parse_with("一\n二", &c, true)[0]), "一\n二");
     }
 
     #[test]
