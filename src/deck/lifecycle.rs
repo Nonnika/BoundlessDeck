@@ -191,7 +191,7 @@ impl DeckView {
         for b in &self.m.blocks {
             let rt = self.rts.get(&b.id).map(|r| r.life);
             let open = rt.is_some_and(|l| l.open);
-            // A block held under its mask a frame longer (`LOD_WAKE_PER_FRAME`) resumes with it.
+            // A block held under its mask a frame longer (`LodWake`) resumes with it.
             let lod = lod || self.rts.get(&b.id).is_some_and(|r| r.lod);
             let want = pause_for(window_active, stacked.contains(&b.id), visible.contains(b.id.as_str()), lod);
             let shown = open && rt.is_some_and(|l| l.shown);

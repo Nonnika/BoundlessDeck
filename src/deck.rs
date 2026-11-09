@@ -46,7 +46,7 @@ mod zoomlayer;
 use crate::ui::editor::Editor;
 use crate::content::markdown;
 use crate::content::memo;
-use crate::model::{self, Block, BlockKind, Geometry, Model, file_block_size, new_block_of};
+use crate::model::{self, Block, BlockKind, Geometry, LOD_SCALE, Model, file_block_size, new_block_of};
 use crate::content::terminal::Terminal;
 use crate::ui::theme::Theme;
 
@@ -89,10 +89,46 @@ const CHROME_LEFT: f32 = 84.0;
 const CHROME_TOP: f32 = 8.0;
 /// How long after its last move a scroll the canvas took is still the canvas's.
 const GESTURE_HOLD: Duration = Duration::from_millis(300);
-/// How many blocks may come back from LOD to full content in one frame: zooming
-/// in past `LOD_SCALE`, the rest wait a frame or two under their mask, so the
-/// layout, shaping and starting of them all is spread out instead of one stall.
-const LOD_WAKE_PER_FRAME: usize = 2;
+/// How long one frame may spend bringing blocks back from LOD to full content:
+/// zooming in past `LOD_SCALE`, the rest wait under their mask, so the layout,
+/// shaping and starting of them all is spread out instead of one stall. One
+/// block always gets through, so a frame full of slow ones still makes progress.
+const LOD_WAKE_BUDGET: Duration = Duration::from_millis(6);
+
+/// A frame's allowance for blocks leaving LOD: about `LOD_WAKE_BUDGET` of work,
+/// at least one block. `draw` begins it before building the blocks that wait,
+/// `block_view` asks, and `draw` ends it once they are built.
+#[derive(Default)]
+struct LodWake {
+    /// When this frame's waking budget runs out; set while a block waits.
+    until: Option<Instant>,
+    /// A block has left LOD this frame.
+    woke: bool,
+}
+
+impl LodWake {
+    /// Starts a frame: the budget runs from now if a block waits.
+    fn begin(&mut self, waiting: bool, now: Instant) {
+        self.until = waiting.then(|| now + LOD_WAKE_BUDGET);
+        self.woke = false;
+    }
+
+    /// Whether the next block may leave LOD now: one always may, then until the
+    /// frame's budget is spent.
+    fn may(&mut self, now: Instant) -> bool {
+        if self.woke {
+            return self.until.is_some_and(|until| now < until);
+        }
+        self.woke = true;
+        true
+    }
+
+    /// The frame is done with it.
+    fn end(&mut self) {
+        self.until = None;
+        self.woke = false;
+    }
+}
 
 /// What the deck asks of the app.
 pub enum DeckEvent {
@@ -210,6 +246,14 @@ fn image_format(name: &str) -> gpui::ImageFormat {
     }
 }
 
+/// Where a block ranks when blocks come back from LOD: nearest the middle of
+/// the window first, then higher up, so a zoom-in surfaces from its focus out.
+fn wake_rank(cam: model::Camera, b: &Block, (cw, ch): (f32, f32)) -> (f32, f32) {
+    let (mx, my) = (cw / 2., ch / 2.);
+    let (x, y) = cam.to_screen(b.x + b.w / 2., b.y + b.h / 2.);
+    ((x - mx).powi(2) + (y - my).powi(2), y)
+}
+
 /// What shows around a PDF page, as a reader's gray desk.
 fn pdf_backdrop(t: &Theme) -> Hsla {
     if t.dark { gpui::rgb(0x2a2b2f).into() } else { gpui::rgb(0xececef).into() }
@@ -235,8 +279,8 @@ pub struct DeckView {
     /// Until when a wheel/pinch zoom is considered in-flight.
     pub zoom_settle: Option<Instant>,
     zoom_timer_active: bool,
-    /// Blocks still allowed out of LOD this frame (`LOD_WAKE_PER_FRAME`).
-    lod_wake: usize,
+    /// This frame's allowance for blocks leaving LOD (`LodWake`).
+    lod_wake: LodWake,
     /// Something drawn this frame is fading: the next frame is asked for.
     animating: bool,
     /// A panel of the window's (the welcome) lies over the deck: web pages give way to their pictures.
@@ -369,7 +413,7 @@ impl DeckView {
             lay,
             zoom_settle: None,
             zoom_timer_active: false,
-            lod_wake: LOD_WAKE_PER_FRAME,
+            lod_wake: LodWake::default(),
             animating: false,
             covered: false,
             win: None,
@@ -723,11 +767,32 @@ impl DeckView {
             })
             .collect();
         self.life_tick(&visible, window, cx);
-        self.lod_wake = LOD_WAKE_PER_FRAME;
-        let mut blocks = Vec::new();
         self.resize_corners.clear();
-        for id in &visible {
-            blocks.extend(self.block_view(id, &t, window, cx));
+        let mut built: Vec<Option<Vec<AnyElement>>> = (0..visible.len()).map(|_| None).collect();
+        // Blocks coming back from LOD are built nearest the middle of the window
+        // first, so they surface like a focus pulling in, and only until this
+        // frame's waking budget (`LodWake`) is spent. Everything else is built,
+        // and every element put back, in the stack's own order.
+        let my = self.view.1 / 2.;
+        let mut waking: Vec<(usize, f32, f32)> = Vec::new();
+        for (i, id) in visible.iter().enumerate() {
+            let waiting = self.rts.get(id).is_some_and(|r| r.lod) && self.m.cam.s >= LOD_SCALE;
+            if waiting {
+                let (d, y) = self.m.block(id).map_or((0.0, my), |b| wake_rank(cam, b, self.view));
+                waking.push((i, d, y));
+            } else {
+                built[i] = Some(self.block_view(id, &t, window, cx));
+            }
+        }
+        waking.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)));
+        self.lod_wake.begin(!waking.is_empty(), Instant::now());
+        for (i, _, _) in waking {
+            built[i] = Some(self.block_view(&visible[i], &t, window, cx));
+        }
+        self.lod_wake.end();
+        let mut blocks = Vec::new();
+        for b in built.into_iter().flatten() {
+            blocks.extend(b);
         }
 
         self.hide_unshown_pages();
@@ -924,6 +989,65 @@ mod zoom_tests {
         h.settle();
         assert!((h.m.cam.s - 0.77).abs() < 1e-5 && !on_level(h.m.cam.s));
         assert_eq!(h.lay, h.m.cam);
+    }
+}
+
+#[cfg(test)]
+mod lod_wake_tests {
+    use super::*;
+
+    #[test]
+    fn waking_spends_the_frame_budget_but_always_lets_one_block_go() {
+        let at = Instant::now();
+        let mut w = LodWake::default();
+        w.begin(true, at);
+        assert!(w.may(at), "one block goes even if the budget were already spent");
+        assert!(w.may(at + LOD_WAKE_BUDGET / 2), "within the budget");
+        assert!(!w.may(at + LOD_WAKE_BUDGET), "the budget is spent");
+        assert!(!w.may(at + LOD_WAKE_BUDGET * 2), "and stays spent");
+    }
+
+    #[test]
+    fn a_slow_first_block_ends_the_frame() {
+        let at = Instant::now();
+        let mut w = LodWake::default();
+        w.begin(true, at);
+        assert!(w.may(at), "the first block");
+        assert!(!w.may(at + LOD_WAKE_BUDGET + Duration::from_millis(1)), "the next waits for the next frame");
+    }
+
+    #[test]
+    fn a_new_frame_starts_with_a_fresh_allowance() {
+        let at = Instant::now();
+        let mut w = LodWake::default();
+        w.begin(true, at);
+        assert!(w.may(at));
+        assert!(!w.may(at + LOD_WAKE_BUDGET * 2));
+        w.end();
+        w.begin(true, at + Duration::from_secs(1));
+        assert!(w.may(at + Duration::from_secs(1)), "a new frame wakes again");
+    }
+
+    #[test]
+    fn waking_order_is_nearest_the_middle_then_higher_up() {
+        let cam = model::Camera { x: 0., y: 0., s: 1. };
+        let view = (1000., 800.);
+        let block = |x, y, w, h| {
+            let mut b = Block::new(BlockKind::Memo);
+            (b.x, b.y, b.w, b.h) = (x, y, w, h);
+            b
+        };
+        let middle = block(450., 350., 100., 100.); // center (500, 400)
+        let top = block(450., 100., 100., 100.); // center (500, 150)
+        let corner = block(0., 0., 100., 100.); // center (50, 50)
+        assert!(wake_rank(cam, &middle, view).0 < wake_rank(cam, &top, view).0);
+        assert!(wake_rank(cam, &top, view).0 < wake_rank(cam, &corner, view).0);
+        let lower = block(450., 600., 100., 100.); // center (500, 650), as far as `top`
+        assert_eq!(wake_rank(cam, &top, view).0, wake_rank(cam, &lower, view).0);
+        assert!(
+            wake_rank(cam, &top, view).1 < wake_rank(cam, &lower, view).1,
+            "the higher one goes first"
+        );
     }
 }
 

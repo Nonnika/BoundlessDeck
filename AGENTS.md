@@ -33,7 +33,7 @@ GPUI 每帧重建整棵元素树，所以：
 - **元素（`Div`、`AnyElement`）只在本帧有效，不能存进结构体。** 跨帧状态放在 `DeckView.rts: HashMap<String, Runtime>`（`deck.rs:250`，每个 block 的缓存，永不落盘），或放进 `Entity`。
 - 慢 I/O 不在 UI 线程做：`cx.background_spawn(...).detach()`，结果用 `this.update(cx, |d, cx| { …; cx.notify() })` 回到 UI 线程。
 - 延迟与轮询用 `cx.background_executor().timer(dur)` 自调度，而不是在每次输入时重启计时器。
-- LOD：`cam.s < LOD_SCALE` 时只画框和标题，不构建编辑器、终端、位图。
+- LOD：`cam.s < LOD_SCALE` 时只画框和标题，不构建编辑器、终端、位图。从 LOD 回来时按离窗口中心由近到远恢复，每帧只花 `LOD_WAKE_BUDGET`（6 ms）做排版与启动，至少恢复一个，其余继续盖着遮罩等下一帧。
 
 ### 输入仲裁
 

@@ -87,12 +87,12 @@ impl DeckView {
             }
         };
         let rt = self.rts.entry(id.to_string()).or_default();
-        // A block coming back from LOD waits its turn (`LOD_WAKE_PER_FRAME`).
-        let held = s >= LOD_SCALE && rt.lod && self.lod_wake == 0;
+        let now = Instant::now();
+        // A block coming back from LOD waits its turn: the frame wakes as many as
+        // its budget allows, nearest the middle of the window first (`LodWake`).
+        let held = s >= LOD_SCALE && rt.lod && !self.lod_wake.may(now);
         if held {
             self.animating = true;
-        } else if s >= LOD_SCALE && rt.lod {
-            self.lod_wake -= 1;
         }
         if s < LOD_SCALE || held {
             rt.lod = true;
@@ -118,7 +118,6 @@ impl DeckView {
         }
 
         // Back from LOD: the mask over the body fades off under the title it kept.
-        let now = Instant::now();
         if std::mem::take(&mut rt.lod) {
             rt.appear.reveal(now);
         }
