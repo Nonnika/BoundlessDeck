@@ -9,16 +9,16 @@
 //! would be scaled with it, so it steps aside while zooming and fades back
 //! in after (`CHROME_IN`).
 //!
-//! The picture is swapped for a sharp one, in the frame the map comes off
-//! (`layerzoom::present`), when the zoom rests; and on the way, when it has
-//! been scaled up past `REBASE_IN` (it would blur), or the view has left the
-//! part of the canvas it shows (bare edges would show). Each swap is one
-//! frame laid out at the new scale, not one each frame.
+//! The picture is swapped for a sharp one only when the zoom rests, in the
+//! frame the map comes off (`layerzoom::present`). Not on the way: a swap
+//! lays out everything in sight at a new scale on the main thread (tens of
+//! ms on a page of text), and one mid-gesture stalls the fingers. Zoomed in
+//! a long way the picture softens until then; zoomed out past it, the
+//! canvas's color shows at its edges (`layerzoom`'s underlay).
 //!
-//! Zooming out, the picture is drawn wider than the window: `OVERSCAN`
+//! Zooming out, the first picture is drawn wider than the window: `OVERSCAN`
 //! times the view around the pointer, at a smaller scale, and shown scaled
-//! up to look as the view does. Going on out, what comes in at the edges is
-//! already in it; only past it is another drawn, as wide again.
+//! up to look as the view does.
 
 use std::time::{Duration, Instant};
 
@@ -28,10 +28,12 @@ use super::DeckView;
 use crate::model::{Camera, LOD_SCALE, MIN_SCALE};
 use crate::platform::layerzoom::{self, Map, map_between};
 
-/// How far the picture is scaled up before a sharp one takes its place.
-const REBASE_IN: f32 = 1.55;
-/// Zooming out, how much wider than the view the picture is drawn.
-const OVERSCAN: f32 = 1.5;
+/// Zooming out, how much wider than the view the picture is drawn: as far
+/// out as a gesture goes before its edges show the canvas's bare color.
+/// Only the blocks in the view it started from are drawn whole in it, the
+/// rest as far away ones are (`photo_far`), so a wide picture costs about
+/// what the view did.
+const OVERSCAN: f32 = 4.0;
 /// How long the chrome takes to come back.
 const CHROME_IN: Duration = Duration::from_millis(180);
 
@@ -39,10 +41,13 @@ const CHROME_IN: Duration = Duration::from_millis(180);
 pub(super) struct Photo {
     /// While zooming as a photo: the camera the picture showing was drawn with.
     drawn: Option<Camera>,
-    /// A swap is on its way (to start, sharpen, or end): the map waits for it.
+    /// A swap is on its way (to start or end): the map waits for it.
     pending: bool,
     /// The zoom went out last: a new picture is drawn wider than the view.
     out: bool,
+    /// Zooming out, the world the view showed when the picture was taken
+    /// (x, y, w, h): blocks outside it are drawn far (`photo_far`).
+    core: Option<(f32, f32, f32, f32)>,
     /// When the chrome came back.
     chrome_since: Option<Instant>,
 }
@@ -50,7 +55,6 @@ pub(super) struct Photo {
 #[derive(Clone, Copy)]
 enum Swap {
     Start,
-    Sharpen,
     End,
 }
 
@@ -70,6 +74,7 @@ impl DeckView {
             if zoomed && layerzoom::available() {
                 // The first picture shows the view as it was, drawn wider if going out.
                 self.photo.drawn = Some(picture_for(before, self.last_pointer, self.photo.out));
+                self.photo.core = self.photo.out.then(|| (before.x, before.y, self.view.0 / before.s, self.view.1 / before.s));
                 self.photo.pending = true;
                 self.photo_swap(Swap::Start, cx);
             } else {
@@ -80,11 +85,17 @@ impl DeckView {
         if self.photo.pending {
             return;
         }
-        if self.m.cam.s / drawn.s > REBASE_IN || !covers(drawn, self.m.cam, self.view) {
-            self.photo.pending = true;
-            self.photo_swap(Swap::Sharpen, cx);
-        } else {
-            layerzoom::set(map_between(drawn, self.m.cam));
+        // No new picture while the fingers move: one costs a layout of all
+        // in sight at a new scale, tens of ms on a page of text, and stalls
+        // the gesture. Scaled up it softens, scaled down the canvas's color
+        // shows at its edges (`layerzoom`'s underlay), until it rests.
+        super::zoomlayer::framestat::bare(!covers(drawn, self.m.cam, self.view));
+        layerzoom::set(map_between(drawn, self.m.cam));
+        // The frame that ends the zoom lays every line in sight out at the
+        // scale it rests at: they are laid out ahead, off this thread, while
+        // the fingers move (GPUI's `prefetch_scaled`, our patch).
+        if let Some(ts) = &self.text_sys {
+            ts.prefetch_scaled(self.m.cam.s / drawn.s);
         }
     }
 
@@ -98,6 +109,36 @@ impl DeckView {
         if self.photo.chrome_since.is_some_and(|t| t.elapsed() < CHROME_IN) {
             self.animating = true;
         }
+    }
+
+    /// The zoom has rested (the settle timer): the sharp picture takes over
+    /// now, without first drawing a frame of the old one. False when no
+    /// picture is showing.
+    pub(super) fn photo_rest(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.photo.drawn.is_none() {
+            return false;
+        }
+        // A swap on its way draws a frame, and that frame's `photo_tick` ends it.
+        if !self.photo.pending {
+            self.photo.pending = true;
+            self.photo_swap(Swap::End, cx);
+        }
+        true
+    }
+
+    /// Whether the picture on screen is a photo being scaled: frames drawn
+    /// now would only redraw what Core Animation is scaling, so fades and
+    /// other animations wait for it to end instead of asking for frames.
+    pub(super) fn photo_showing(&self) -> bool {
+        self.photo.drawn.is_some()
+    }
+
+    /// Whether a block is drawn as far away ones are in the picture showing:
+    /// zooming out, those outside the view it started from. They come back
+    /// whole once it ends, a few a frame (`LodWake`), fading in.
+    pub(super) fn photo_far(&self, b: &crate::model::Block) -> bool {
+        let (Some(_), Some((x, y, w, h))) = (self.photo.drawn, self.photo.core) else { return false };
+        b.x + b.w < x || b.y + b.h < y || b.x > x + w || b.y > y + h
     }
 
     /// How much of the chrome shows: none while zooming as a photo, then fading in.
@@ -122,9 +163,9 @@ impl DeckView {
             let map = this.update(cx, |d, cx| {
                 match swap {
                     Swap::Start => {}
-                    Swap::Sharpen => d.photo.drawn = Some(picture_for(d.m.cam, d.last_pointer, d.photo.out)),
                     Swap::End => {
                         d.photo.drawn = None;
+                        d.photo.core = None;
                         d.photo.chrome_since = Some(Instant::now());
                     }
                 }
@@ -133,7 +174,10 @@ impl DeckView {
                 d.photo.drawn.map_or(Map::NONE, |drawn| map_between(drawn, d.m.cam))
             });
             if let Ok(map) = map {
+                let t = Instant::now();
                 layerzoom::present(map);
+                super::zoomlayer::framestat::swap(t.elapsed());
+                super::zoomlayer::framestat::swap_done();
             }
         })
         .detach();
@@ -189,10 +233,10 @@ mod tests {
         // It shows the view, and the view zoomed out about the pointer, until OVERSCAN.
         assert!(covers(drawn, live, view));
         let mut m = crate::model::Model { cam: live, ..Default::default() };
-        m.zoom_at(pointer.0, pointer.1, 1. / 1.4);
+        m.zoom_at(pointer.0, pointer.1, 1.1 / OVERSCAN);
         assert!(covers(drawn, m.cam, view), "still inside");
         m.zoom_at(pointer.0, pointer.1, 1. / 1.2);
-        assert!(!covers(drawn, m.cam, view), "past it: another picture is drawn");
+        assert!(!covers(drawn, m.cam, view), "past it: its edges are bare");
         // Zooming in, the picture is the view itself.
         assert_eq!(picture_for(live, pointer, false), live);
     }

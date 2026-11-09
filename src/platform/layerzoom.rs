@@ -11,8 +11,9 @@
 //! As that runs a GPUI frame, it must be called where nothing of GPUI is
 //! borrowed: from a task, outside any `update`.
 //!
-//! Scaled down, the picture leaves the window's edges bare: the window's
-//! own background shows there, so it is set to the canvas's (`attach`).
+//! Scaled down, the picture leaves the window's edges bare. The window's
+//! own background does not show there (it reads black), so `attach` keeps a
+//! layer of the canvas's color under GPUI's (`underlay`).
 
 /// The map from where things were drawn to where they are seen.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,11 +55,58 @@ mod mac {
         const ENCODING: Encoding = Encoding::Struct("CGAffineTransform", &[Encoding::Double, Encoding::Double, Encoding::Double, Encoding::Double, Encoding::Double, Encoding::Double]);
     }
 
+    /// Core Graphics' color, only ever passed by pointer.
+    #[repr(C)]
+    struct CGColor {
+        _private: [u8; 0],
+    }
+
+    unsafe impl objc2::encode::RefEncode for CGColor {
+        const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("CGColor", &[]));
+    }
+
     thread_local! {
         /// The layer GPUI draws the deck's window into.
         static LAYER: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
         /// The window's background as last set, `#rrggbb`.
         static BACKDROP: RefCell<u32> = const { RefCell::new(u32::MAX) };
+        /// A layer of the canvas's color under GPUI's: what a scaled-down or
+        /// moved picture leaves bare shows it, not the window's black.
+        static UNDER: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+    }
+
+    /// Keeps `UNDER` below `layer`, filling its superlayer, in `backdrop`'s color.
+    fn underlay(layer: &AnyObject, backdrop: u32, recolor: bool) {
+        let Some(class) = AnyClass::get(c"CALayer") else { return };
+        let Some(color_class) = AnyClass::get(c"NSColor") else { return };
+        let sup: Option<Retained<AnyObject>> = unsafe { msg_send![layer, superlayer] };
+        let Some(sup) = sup else { return };
+        UNDER.with(|u| {
+            let mut u = u.borrow_mut();
+            let fresh = u.is_none();
+            let under = u.get_or_insert_with(|| unsafe { msg_send![class, layer] });
+            let placed: Option<Retained<AnyObject>> = unsafe { msg_send![&**under, superlayer] };
+            let place = !placed.is_some_and(|p| std::ptr::eq(&*p, &*sup));
+            if !(place || fresh || recolor) {
+                return;
+            }
+            transaction(|| unsafe {
+                if place {
+                    let _: () = msg_send![&*sup, insertSublayer: &**under, below: layer];
+                    // kCALayerWidthSizable | kCALayerHeightSizable
+                    let _: () = msg_send![&**under, setAutoresizingMask: 2u32 | 16u32];
+                    let bounds: NSRect = msg_send![&*sup, bounds];
+                    let _: () = msg_send![&**under, setFrame: bounds];
+                }
+                if fresh || recolor {
+                    let ch = |s: u32| f64::from((backdrop >> s) & 0xff) / 255.;
+                    let color: Retained<AnyObject> =
+                        msg_send![color_class, colorWithSRGBRed: ch(16), green: ch(8), blue: ch(0), alpha: 1.0f64];
+                    let cg: *mut CGColor = msg_send![&*color, CGColor];
+                    let _: () = msg_send![&**under, setBackgroundColor: cg];
+                }
+            });
+        });
     }
 
     pub fn attach(window: &gpui::Window, backdrop: u32) {
@@ -73,6 +121,10 @@ mod mac {
                 *l = layer;
             }
         });
+        let recolor = BACKDROP.with(|b| *b.borrow() != backdrop);
+        if let Some(layer) = LAYER.with(|l| l.borrow().clone()) {
+            underlay(&layer, backdrop, recolor);
+        }
         if BACKDROP.with(|b| b.replace(backdrop)) != backdrop {
             let ns_window: Option<Retained<AnyObject>> = unsafe { msg_send![view, window] };
             let Some(color_class) = AnyClass::get(c"NSColor") else { return };

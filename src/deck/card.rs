@@ -86,11 +86,14 @@ impl DeckView {
                 d.bg(t.surface)
             }
         };
+        // Zooming out as a photo, blocks outside the view it started from are
+        // drawn far in it, so a wide picture costs what the view did (`photo_far`).
+        let far = self.photo_far(&b);
         let rt = self.rts.entry(id.to_string()).or_default();
         let now = Instant::now();
         // A block coming back from LOD waits its turn: the frame wakes as many as
         // its budget allows, nearest the middle of the window first (`LodWake`).
-        let held = s >= LOD_SCALE && rt.lod && !self.lod_wake.may(now);
+        let held = far || (s >= LOD_SCALE && rt.lod && !self.lod_wake.may(now));
         if held {
             self.animating = true;
         }

@@ -45,7 +45,7 @@ GPUI 每帧重建整棵元素树，所以：
 ### 缩放
 
 - 不用 transform 缩放：所有坐标乘 `cam.s` 后重新布局，文字保持清晰。
-- 缩放像放大照片（`deck/photozoom.rs` + `platform/layerzoom.rs`）：捏合或 ⌘+滚轮时不重新排版，而是由 Core Animation 在 GPU 上缩放、平移 GPUI 画好的那一帧（给窗口的 CAMetalLayer 设仿射变换，p' = k·p + t）；期间 GPUI 若要画帧，`render` 用画面拍下时的相机（`Photo::drawn`）画。工具栏、状态栏、面板与画布同在一个图层，缩放时隐藏，结束后淡入（`chrome_alpha`）。放大超过 1.55×、视野走出照片的范围、以及手势停下 150 ms 后，换成清晰重画的一帧（缩小时照片以鼠标为中心多画 1.5 倍的范围，`picture_for`，边缘不露空白，且不低于 `LOD_SCALE`）：`layerzoom::present` 在同一个 CATransaction 里让图层立即重绘（GPUI 的 `displayLayer:` 以 presentsWithTransaction 同步提交）并撤掉变换，所以不闪；它会跑一帧 GPUI，只能在 task 里、任何 `update` 之外调用。缩小时露出的窗口边缘是窗口背景色，`attach` 把它设成画布背景。镜头滑动（`set_view`、焦点放映）仍逐帧排版。其余内容一律按 `content_scale()`（即 `cam.s`）排版；PDF 位图按 `DeckView.lay` 生成，缩放停下后才重做。`BOUNDLESSDECK_FRAME_STATS=1` 可在每次手势结束后打印帧耗时。
+- 缩放像放大照片（`deck/photozoom.rs` + `platform/layerzoom.rs`）：捏合或 ⌘+滚轮时不重新排版，而是由 Core Animation 在 GPU 上缩放、平移 GPUI 画好的那一帧（给窗口的 CAMetalLayer 设仿射变换，p' = k·p + t）；期间 GPUI 若要画帧，`render` 用画面拍下时的相机（`Photo::drawn`）画。工具栏、状态栏、面板与画布同在一个图层，缩放时隐藏，结束后淡入（`chrome_alpha`）。手势进行中不换图（每次换图都要在主线程按新比例排版所有看得见的文字，几十毫秒，会卡住手指）：放大时照片变软，缩小超出照片时露出画布底色；手势停下 150 ms 后才换成清晰重画的一帧，由缩放计时器直接触发（`photo_rest`）。缩小时第一张照片以鼠标为中心多画 4 倍的范围（`picture_for`，且不低于 `LOD_SCALE`），其中只有起始视野里的 block 画完整内容，其余按 LOD 样子画（`photo_far`），所以宽照片的代价约等于原视野；结束后它们经 `LodWake` 逐帧恢复并淡入。`layerzoom::present` 在同一个 CATransaction 里让图层立即重绘（GPUI 的 `displayLayer:` 以 presentsWithTransaction 同步提交）并撤掉变换，所以不闪；它会跑一帧 GPUI，只能在 task 里、任何 `update` 之外调用。窗口自己的背景在 GPUI 图层下显示为黑色，所以 `attach` 在它下面垫一层画布底色的 CALayer（`underlay`）。镜头滑动（`set_view`、焦点放映）仍逐帧排版。其余内容一律按 `content_scale()`（即 `cam.s`）排版；PDF 位图按 `DeckView.lay` 生成，缩放停下后才重做。照片显示期间不为淡入等动画请求帧。每一步缩放调用 GPUI 的 `prefetch_scaled`（我们的补丁），在后台按新比例预排上一帧的文字，停手后的清晰帧多半直接命中。`BOUNDLESSDECK_FRAME_STATS=1` 可在每次手势结束后打印帧耗时、每次同步换图的耗时与视野超出照片的总时长。
 - 布局几何（位置、大小）仍用原始 `cam.s`。
 - 清晰度过渡（`src/deck/sharpen.rs`）：内容换成更清晰的版本时统一淡入（180 ms，ease-out；系统开启“减弱动态效果”时直接切换）。矢量内容只在从 LOD 回到完整内容时过渡：LOD 下 body 区是与 block 背景同色的遮罩，回来时内容立即完整画出、遮罩淡出（450 ms，ease-in-out，`REVEAL_TIME`；`Runtime::appear`，`block_view` 统一处理）；位图（PDF）新页在拉伸的旧页上淡入（`Runtime::sharpen` + `crossfade`）；原生视图（WKWebView）露出时快照留在下面，视图 alpha 从 0 到 1。新增 block 种类时归入这三类之一，不要自己写时长与曲线。任何过渡进行中要设 `DeckView.animating`，由 `Render` 统一请求下一帧。
 - 出现动画（`src/deck/popin.rs`）：只有 `on_create` 的 block（撤销恢复、打开 deck 不算）在第一次被画出时展开：亮线从中间横向拉开、上下打开、扫描线自上而下印出内容，约 560 ms；期间原生网页先不显示。系统开启“减弱动态效果”时直接出现。
@@ -216,7 +216,8 @@ cx.spawn(async move |this, cx| {
 | `src/mcp/tools.rs` | `Ctx` 与 24 个工具的分派；字段表、校验、排版在 `tools/` 子模块。 |
 | `src/mcp/mod.rs` | 端点注册、socket 路径、活动 deck 注册表。 |
 | `src/app/commands.rs` | 命令表：菜单、快捷键与快捷键窗口的单一来源。 |
-| `Cargo.toml` | 依赖；`gpui` 0.2.2 与 `runtime_shaders`；macOS 专属 objc2 系列。 |
+| `Cargo.toml` | 依赖；`gpui` 0.2.2 与 `runtime_shaders`（经 `[patch.crates-io]` 换成 `vendor/gpui`）；macOS 专属 objc2 系列。 |
+| `vendor/gpui/` | 打了本仓库补丁的 gpui 0.2.2：按字号缓存 CTFont、同步提交前等上一帧（修 1 秒卡顿）、`prefetch_scaled` 预排文字。改动以 `BoundlessDeck:` 注释标出，说明见 `vendor/gpui/PATCHES.md`。不要整目录格式化；升级上游时重新打补丁。 |
 | `README.md` | 功能清单与 Go 版差异。 |
 
 ### 常见改动路径

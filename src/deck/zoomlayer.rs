@@ -54,7 +54,10 @@ impl DeckView {
                     None => {
                         let _ = this.update(cx, |d, cx| {
                             d.zoom_timer_active = false;
-                            cx.notify();
+                            // A photo ends in the frame that swaps it (`photo_rest`).
+                            if !d.photo_rest(cx) {
+                                cx.notify();
+                            }
                         });
                         break;
                     }
@@ -118,9 +121,14 @@ pub(super) mod framestat {
         start: Option<Instant>,
         zooming: bool,
         frames: Vec<Duration>,
+        /// Pictures swapped synchronously (`layerzoom::present`), whole.
+        swaps: Vec<Duration>,
+        /// Since when the view has gone past the picture, and for how long in all.
+        bare_since: Option<Instant>,
+        bare: Duration,
     }
 
-    static STATE: Mutex<S> = Mutex::new(S { start: None, zooming: false, frames: Vec::new() });
+    static STATE: Mutex<S> = Mutex::new(S { start: None, zooming: false, frames: Vec::new(), swaps: Vec::new(), bare_since: None, bare: Duration::ZERO });
 
     pub fn enabled() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -134,7 +142,15 @@ pub(super) mod framestat {
         }
         let mut s = STATE.lock().unwrap();
         if s.zooming && !zooming {
-            report(&mut s.frames);
+            if let Some(t) = s.bare_since.take() {
+                s.bare += t.elapsed();
+            }
+            if !s.bare.is_zero() {
+                eprintln!("[zoom] 视野超出画面共 {:.0}ms", s.bare.as_secs_f64() * 1000.);
+                s.bare = Duration::ZERO;
+            }
+            let S { frames, swaps, .. } = &mut *s;
+            report(frames, swaps);
         }
         s.zooming = zooming;
         s.start = zooming.then(Instant::now);
@@ -151,12 +167,53 @@ pub(super) mod framestat {
         }
     }
 
-    fn report(frames: &mut Vec<Duration>) {
+    /// A picture swapped in by `layerzoom::present`: layout, paint and the
+    /// wait for the GPU, all on the main thread.
+    pub fn swap(d: Duration) {
+        if !enabled() {
+            return;
+        }
+        STATE.lock().unwrap().swaps.push(d);
+    }
+
+    /// After each zoom step: whether the view now reaches past the picture.
+    pub fn bare(bare: bool) {
+        if !enabled() {
+            return;
+        }
+        let mut s = STATE.lock().unwrap();
+        match (bare, s.bare_since) {
+            (true, None) => s.bare_since = Some(Instant::now()),
+            (false, Some(t)) => {
+                s.bare += t.elapsed();
+                s.bare_since = None;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn swap_done() {
+        if !enabled() {
+            return;
+        }
+        let mut s = STATE.lock().unwrap();
+        if let Some(t) = s.bare_since.take() {
+            s.bare += t.elapsed();
+        }
+    }
+
+    fn report(frames: &mut Vec<Duration>, swaps: &mut Vec<Duration>) {
+        let ms = |d: Duration| d.as_secs_f64() * 1000.;
+        if !swaps.is_empty() {
+            let max = swaps.iter().map(|d| ms(*d)).fold(0., f64::max);
+            let all = swaps.iter().map(|d| format!("{:.1}", ms(*d))).collect::<Vec<_>>().join(" ");
+            eprintln!("[zoom] 同步换图 {} 次  最长 {max:.2}ms  ({all})", swaps.len());
+            swaps.clear();
+        }
         if frames.is_empty() {
             return;
         }
         frames.sort();
-        let ms = |d: Duration| d.as_secs_f64() * 1000.;
         let n = frames.len();
         let avg = frames.iter().map(|d| ms(*d)).sum::<f64>() / n as f64;
         let over = |lim: f64| frames.iter().filter(|d| ms(**d) > lim).count();
