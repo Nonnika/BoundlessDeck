@@ -36,16 +36,17 @@ use crate::theme::{INKS, Paint, Theme, hex, paint};
 /// The panel's width, and where it sits under the toolbar.
 pub(super) const PANEL_W: f32 = 248.;
 pub(super) const PANEL_TOP: f32 = 64.;
-const PANEL_RIGHT: f32 = 12.;
-/// How far it slides: from just past the window's right edge, shadow and all.
-const TRAVEL: f32 = PANEL_W + PANEL_RIGHT + 28.;
+/// How far it stands off the window's edge; the 焦点 panel (`focusview`) stands as far off the left.
+pub(super) const PANEL_RIGHT: f32 = 12.;
+/// How far it slides: from just past the window's edge, shadow and all.
+pub(super) const TRAVEL: f32 = PANEL_W + PANEL_RIGHT + 28.;
 /// How long sliding in and out takes.
-const ENTER: Duration = Duration::from_millis(380);
-const LEAVE: Duration = Duration::from_millis(240);
+pub(super) const ENTER: Duration = Duration::from_millis(380);
+pub(super) const LEAVE: Duration = Duration::from_millis(240);
 /// The smear: as far as the panel moves in this long, in this many copies, no longer than this.
-const SHUTTER: f32 = 1. / 24.;
-const GHOSTS: usize = 6;
-const MAX_TRAIL: f32 = 150.;
+pub(super) const SHUTTER: f32 = 1. / 24.;
+pub(super) const GHOSTS: usize = 6;
+pub(super) const MAX_TRAIL: f32 = 150.;
 
 /// The font list beside the panel: its size, and how it comes in.
 const PICKER_W: f32 = 268.;
@@ -163,11 +164,11 @@ pub(super) enum Slot {
 }
 
 /// Fast at first, settling in place. Run backwards, the slide out starts slow and speeds off.
-fn ease(p: f32) -> f32 {
+pub(super) fn ease(p: f32) -> f32 {
     1. - (1. - p).powi(3)
 }
 
-fn ease_rate(p: f32) -> f32 {
+pub(super) fn ease_rate(p: f32) -> f32 {
     3. * (1. - p).powi(2)
 }
 

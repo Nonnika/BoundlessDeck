@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 mod block;
 mod camera;
+mod focus;
 mod persist;
 
 pub use block::{
@@ -22,6 +23,7 @@ pub use camera::{
     Camera, LOD_SCALE, MAX_SCALE, MIN_SCALE, ZOOM_KEY_STEPS, ZOOM_LEVELS, ZOOM_REBASE, on_level, wheel_zoom, zoom_level,
     zoom_level_at_most, zoom_level_of,
 };
+pub use focus::{Focus, FocusLine};
 pub use persist::{data_dir, write_file_atomic};
 // Named only by tests; elsewhere tabs are reached through `Block`.
 #[cfg(test)]
@@ -91,6 +93,11 @@ pub struct Model {
     /// Blocks deck.json holds that this build cannot read (a newer kind, say),
     /// kept as they were and saved back after the others.
     pub foreign: Vec<serde_json::Value>,
+    /// 焦点 and the lines through them (`focus`), saved at deck.json's top level.
+    pub focus: Vec<Focus>,
+    pub focus_lines: Vec<FocusLine>,
+    /// What deck.json's top level holds that this build does not know, saved back as it was.
+    pub extra: serde_json::Map<String, serde_json::Value>,
     pub sel: HashSet<String>,
     pub undo: Vec<Change>,
     pub redo: Vec<Change>,

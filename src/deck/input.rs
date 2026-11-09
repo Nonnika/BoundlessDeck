@@ -43,7 +43,7 @@ impl DeckView {
     pub(super) fn on_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
         let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
         self.last_pointer = (x, y);
-        if self.scrub_move(ev, cx) {
+        if self.scrub_move(ev, cx) || self.focus_drag_move(ev, cx) {
             return;
         }
         let cam = self.m.cam;
@@ -81,7 +81,7 @@ impl DeckView {
     }
 
     pub(super) fn on_up(&mut self, ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.scrub_up(window, cx) {
+        if self.scrub_up(window, cx) || self.focus_drag_up(cx) {
             return;
         }
         let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));

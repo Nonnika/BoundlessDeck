@@ -16,11 +16,13 @@ use crate::model::{self, BlockKind, Block, Camera, Model};
 use crate::preview;
 
 mod arrange;
+mod focus;
 pub mod layout;
 mod patch;
 mod schema;
 mod style;
 
+pub use focus::{PlayCmd, Playing};
 pub use schema::{block_schema, kind_defaults, schema_digest, tool_list, tool_names};
 use schema::{KIND_NAMES, mutable_names, read_only_names};
 
@@ -112,6 +114,9 @@ pub struct Ctx<'a> {
     pub shot: Option<Result<crate::screenshot::Shot, String>>,
     /// A task's progress, as the agent told it (`process`): shown in the window.
     pub process: Option<Report>,
+    /// Where the window is playing 焦点, if it is; and what a tool asks of it (`focus_play`).
+    pub playing: Option<Playing>,
+    pub play: Option<PlayCmd>,
 }
 
 /// Where an agent's task is: getting ready, under way, finished.
@@ -626,6 +631,9 @@ impl Ctx<'_> {
             "select_blocks" => self.select_blocks(args),
             "set_view" => self.set_view(args),
             "process" => self.process(args),
+            "focus_list" => Ok(self.focus_list()),
+            "focus_set" => self.focus_set(args),
+            "focus_play" => self.focus_play(args),
             "undo" => {
                 self.m.undo_last();
                 self.dirty = true;
@@ -678,14 +686,14 @@ mod tests {
     }
 
     fn call_from(m: &mut Model, here: Here, name: &str, args: Value) -> Result<Value, String> {
-        let mut c = Ctx { m, view: (1000., 800.), mcp: Value::Null, here, dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None };
+        let mut c = Ctx { m, view: (1000., 800.), mcp: Value::Null, here, dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None, playing: None, play: None };
         c.call(name, args.as_object().unwrap())
     }
 
     #[test]
     fn process_reports_the_callers_task() {
         let (_dir, mut m) = ctx_model();
-        let mut c = Ctx { m: &mut m, view: (1000., 800.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None };
+        let mut c = Ctx { m: &mut m, view: (1000., 800.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None, playing: None, play: None };
         let out = c.call("process", json!({"status": "running", "title": "  整理画布 ", "detail": "排成网格", "progress": 0.5}).as_object().unwrap()).unwrap();
         assert_eq!(out["label"], "进行中");
         let r = c.process.clone().unwrap();
@@ -879,7 +887,7 @@ mod tests {
     #[test]
     fn a_screenshot_hands_back_the_picture_and_its_camera() {
         let (_d, mut m) = ctx_model();
-        let mut c = Ctx { m: &mut m, view: (1000., 800.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None };
+        let mut c = Ctx { m: &mut m, view: (1000., 800.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None, playing: None, play: None };
         assert!(c.call("screenshot", &Args::new()).is_err(), "no window, no picture");
         let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3];
         c.shot = Some(Ok(crate::screenshot::Shot { png: png.clone(), width: 2000, height: 1600 }));
@@ -897,7 +905,7 @@ mod tests {
         assert_eq!(normalize_url("example.com").unwrap(), "https://example.com");
         assert!(normalize_url("javascript:alert(1)").is_err());
         let (_d, mut m) = ctx_model();
-        let c = Ctx { m: &mut m, view: (0., 0.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None };
+        let c = Ctx { m: &mut m, view: (0., 0.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None, playing: None, play: None };
         assert_eq!(c.read_resource("boundlessdeck://schema").unwrap()["kinds"].as_array().unwrap().len(), BlockKind::ALL.len());
         assert!(c.read_resource("other://x").is_err());
     }

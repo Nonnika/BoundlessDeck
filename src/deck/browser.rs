@@ -505,6 +505,10 @@ impl DeckView {
                 return Some("被工具栏遮住 · 平移画布让它露出来");
             }
         }
+        // The focus view dims the canvas: pages show as pictures, dimmed with it.
+        if self.fv.p > 0. {
+            return Some("");
+        }
         if self.tasks.rect.is_some_and(over) {
             return Some("被任务进度遮住 · 任务完成后会露出来");
         }

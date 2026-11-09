@@ -4,10 +4,10 @@
 
 use gpui::{
     AnyElement, Context, Div, FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
-    Stateful, StatefulInteractiveElement, Styled, div, px, svg,
+    Stateful, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder, px, svg,
 };
 
-use super::{CHROME_LEFT, CHROME_TOP, DeckEvent, DeckView, Popup, shadow};
+use super::{CHROME_LEFT, CHROME_TOP, DeckEvent, DeckView, Popup, ToggleFocusView, shadow};
 use crate::icons;
 use crate::lifespan::LIFE_CHOICES;
 use crate::model::{self, BlockKind};
@@ -101,6 +101,26 @@ impl DeckView {
                         cx.notify();
                     })),
             )
+            .child(div().w(px(1.)).h(px(18.)).mx(px(2.)).bg(t.border))
+            .child({
+                let on = self.fv.on;
+                div()
+                    .id("focus-view")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.))
+                    .px(px(8.))
+                    .py(px(5.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .when(on, |d| d.bg(t.accent.opacity(0.16)))
+                    .when(!on, |d| d.hover(|d| d.bg(t.surface_hover)))
+                    .child(svg().path(icons::path("focus")).size(px(15.)).text_color(if on { t.accent } else { t.text }))
+                    .child(div().text_size(px(12.)).text_color(if on { t.accent } else { t.text }).child("焦点"))
+                    .on_click(cx.listener(|d, _, window, cx| d.toggle_focus_view(&ToggleFocusView, window, cx)))
+            })
+            .child(self.play_button(t, cx))
             .into_any_element()
     }
 

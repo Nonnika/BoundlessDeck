@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize, Serializer};
 
-use super::{Block, BlockKind, Camera, DECK_DIR, Model};
+use super::{Block, BlockKind, Camera, DECK_DIR, Focus, FocusLine, Model};
 
 impl Model {
     /// A block's path, resolved against the root.
@@ -72,6 +72,10 @@ impl Model {
             b.ensure_tabs();
         }
         self.cam = Camera { x: ws.cam_x, y: ws.cam_y, s: if ws.cam_s == 0.0 { 1.0 } else { ws.cam_s } };
+        self.focus = ws.focus;
+        self.focus_lines = ws.focus_lines;
+        self.extra = ws.extra;
+        self.prune_focus();
         self.drop_expired();
         self.prune_stacks();
         Ok(())
@@ -85,6 +89,9 @@ impl Model {
             cam_y: self.cam.y,
             cam_s: self.cam.s,
             blocks: (&self.blocks, &self.foreign),
+            focus: &self.focus,
+            focus_lines: &self.focus_lines,
+            extra: &self.extra,
         };
         serde_json::to_vec_pretty(&ws).unwrap_or_default()
     }
@@ -125,6 +132,13 @@ struct WorkspaceRef<'a> {
     cam_s: f32,
     #[serde(serialize_with = "blocks_then_foreign")]
     blocks: (&'a [Block], &'a [serde_json::Value]),
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    focus: &'a [Focus],
+    #[serde(rename = "focusLines", skip_serializing_if = "<[_]>::is_empty")]
+    focus_lines: &'a [FocusLine],
+    /// What the top level held that this build does not know.
+    #[serde(flatten)]
+    extra: &'a serde_json::Map<String, serde_json::Value>,
 }
 
 /// deck.json's blocks: those read, then those kept aside as they were.
@@ -153,6 +167,16 @@ struct RawWorkspace {
     cam_s: f32,
     #[serde(default)]
     blocks: Vec<serde_json::Value>,
+    #[serde(default)]
+    focus: Vec<Focus>,
+    #[serde(default, rename = "focusLines")]
+    focus_lines: Vec<FocusLine>,
+    /// Written back by `WorkspaceRef` itself.
+    #[serde(default)]
+    #[allow(dead_code)]
+    version: i32,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The app's own data folder (recents, settings), unless

@@ -57,6 +57,9 @@ pub fn entries() -> Vec<Entry> {
         e("视图", "显示全部 block", Some("cmd-0"), DECK, FitAll),
         e("视图", "放大", Some("cmd-="), DECK, ZoomIn),
         e("视图", "缩小", Some("cmd--"), DECK, ZoomOut),
+        sep(e("视图", "焦点视图", None, DECK, ToggleFocusView)),
+        e("视图", "把当前视野存为焦点", Some("cmd-shift-f"), DECK, KeepFocus),
+        e("视图", "放映焦点", Some("f5"), DECK, PlayFocus),
         e("帮助", "欢迎使用 BoundlessDeck", None, None, ShowWelcome),
         e("帮助", "键盘快捷键", Some("cmd-/"), None, ShowShortcuts),
     ]

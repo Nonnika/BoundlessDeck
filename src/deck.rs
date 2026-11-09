@@ -29,6 +29,7 @@ mod card;
 mod chrome;
 mod editing;
 mod endpoint;
+mod focusview;
 mod input;
 mod inspector;
 mod lifecycle;
@@ -67,6 +68,9 @@ actions!(
         NewText,
         NewShape,
         GoHome,
+        ToggleFocusView,
+        KeepFocus,
+        PlayFocus,
     ]
 );
 
@@ -247,6 +251,8 @@ pub struct DeckView {
     insp: inspector::Inspector,
     /// Agents' tasks, as `process` tells them: the capsule at the bottom.
     tasks: progress::Tasks,
+    /// 焦点视图 and playing 焦点.
+    fv: focusview::FocusView,
     /// The window this deck is drawn in: what `screenshot` captures.
     win: Option<gpui::AnyWindowHandle>,
     /// The camera gliding to where an agent asked the view to be: from, to, since.
@@ -355,6 +361,7 @@ impl DeckView {
             color_slot: inspector::Slot::Fill,
             insp: inspector::Inspector::default(),
             tasks: progress::Tasks::default(),
+            fv: focusview::FocusView::default(),
             m,
             lay,
             zoom_settle: None,
@@ -607,6 +614,7 @@ impl Render for DeckView {
         let vs = window.viewport_size();
         self.view = (f32::from(vs.width), f32::from(vs.height));
         self.win = Some(window.window_handle());
+        self.grab_keys(window, cx);
         self.tick_glide(cx);
         self.settle_layer(Some(window));
         zoomlayer::framestat::begin(self.zooming());
@@ -685,6 +693,7 @@ impl Render for DeckView {
         // Known before the blocks are drawn: web pages under the style panel give way.
         self.inspector_tick();
         self.tasks_tick();
+        self.focus_tick();
         let visible: Vec<String> =
             self.m.visible(self.view.0, self.view.1).into_iter().map(|i| self.m.blocks[i].id.clone()).collect();
         self.frame_rects = visible
@@ -710,7 +719,13 @@ impl Render for DeckView {
         crate::webfocus::guard(window);
         crate::webfocus::set_corners(self.resize_corners.clone());
 
-        let inspector = self.inspector(&t, cx);
+        // Playing, the chrome steps aside.
+        let playing = self.fv.play.is_some();
+        let inspector = if playing { vec![] } else { self.inspector(&t, cx) };
+        let focus_layer = self.focus_layer(&t, cx);
+        let chrome: Vec<AnyElement> =
+            if playing { vec![] } else { vec![self.home_pill(&t, cx), self.toolbar(&t, cx)] };
+        let status = (!playing).then(|| self.status_bar(&t));
         let marquee = match &self.drag {
             Some(Drag::Marquee { from, to }) => {
                 let (x0, y0) = cam.to_screen(from.0.min(to.0), from.1.min(to.1));
@@ -782,7 +797,16 @@ impl Render for DeckView {
                 d.add_kind_at(BlockKind::Browser, x, y, w, cx)
             }))
             .on_action(cx.listener(|_, _: &GoHome, _, cx| cx.emit(DeckEvent::Home)))
-            .on_key_down(cx.listener(Self::stack_keys))
+            .on_action(cx.listener(Self::toggle_focus_view))
+            .on_action(cx.listener(Self::play_focus))
+            .on_action(cx.listener(Self::keep_focus))
+            .on_key_down(cx.listener(|d, ev, window, cx| {
+                if d.focus_keys(ev, window, cx) {
+                    cx.stop_propagation();
+                } else {
+                    d.stack_keys(ev, window, cx);
+                }
+            }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_canvas_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_pan_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_pan_down))
@@ -794,10 +818,10 @@ impl Render for DeckView {
             .child(grid)
             .children(blocks)
             .children(marquee)
-            .child(self.home_pill(&t, cx))
-            .child(self.toolbar(&t, cx))
+            .children(focus_layer)
+            .children(chrome)
             .children(inspector)
-            .child(self.status_bar(&t))
+            .children(status)
             .children(self.task_capsule(&t))
             .children(self.stack_preview(&t, window, cx))
             .children(self.pluck_view(&t))

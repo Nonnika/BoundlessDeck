@@ -33,6 +33,7 @@ When trying things out, point `BOUNDLESSDECK_DATA_DIR` and `BOUNDLESSDECK_ACTIVE
 
 - **QuickLook** sticky notes (they expire), **notes** (Markdown files with live rendering and clickable checkboxes), and **file** previews (text, Markdown, images, PDF, Word, video)
 - **Terminals** (alacritty_terminal, with input method support), **browsers** (WKWebView, with tabs), **charts**, and **stacks**
+- **Focus** views: keep views of the canvas as foci, keep the view as one with ⌘⇧F, link them into lines in a dimmed focus view (the 焦点 button), and play them like slides (F5; space next, return back, Esc ends); agents can make and play them over MCP
 - **Text** (rendered as Markdown) and **shapes** (rectangle, ellipse, diamond, triangle, arrow) drawn right on the canvas, styled from a panel on the right: colors from a palette, a hex code, the screen's eyedropper or the system panel, any installed font from a searchable list beside the panel, size and corners scrubbed by dragging (each corner its own if you like) and alignment
 - Pan, pinch or ⌘-scroll to zoom, marquee select, undo and redo; text is re-laid out at every zoom level, so it stays sharp
 - A first-run welcome that introduces the main features (open it again from Settings), and a choice of accent colors

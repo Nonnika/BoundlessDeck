@@ -67,7 +67,7 @@ fn initialize(params: &Value) -> Value {
             "prompts": {"listChanged": false},
         },
         "serverInfo": {"name": SERVER_NAME, "title": "BoundlessDeck 画布", "version": SERVER_VERSION},
-        "instructions": "这是 BoundlessDeck 的无限画布。「block」是画布上的卡片，kind 有 note（笔记：Markdown 文件）、quicklook（QuickLook 便签，会自动消失）、file（本地文件预览）、terminal（终端）、browser（浏览器）、chart（图表）、stack（块堆：用 items 收纳其他 block）、text（文字：按 Markdown 显示，没有卡片）、shape（图形：矩形、椭圆、菱形、三角或箭头，可写字）；文字与图形的颜色、字体、圆角等用 style 设置。先用 deck_info 和 block_schema 了解现场，用 list_blocks / read_selection 读，用 create_block / update_block / move_blocks / delete_blocks 写；排版用 align_blocks（对齐边或中线）、distribute_blocks（等间距）、arrange_blocks（行/列/网格）；想看一眼画布现在的样子就用 screenshot。工作时必须用 process 报告进度：开始时 preparing、动手时 running（随进展更新 detail/progress）、结束时 done，人会在窗口底部看到它。加、删、移动、堆的收放与排版都进撤销栈，并保存到工作区。",
+        "instructions": "这是 BoundlessDeck 的无限画布。「block」是画布上的卡片，kind 有 note（笔记：Markdown 文件）、quicklook（QuickLook 便签，会自动消失）、file（本地文件预览）、terminal（终端）、browser（浏览器）、chart（图表）、stack（块堆：用 items 收纳其他 block）、text（文字：按 Markdown 显示，没有卡片）、shape（图形：矩形、椭圆、菱形、三角或箭头，可写字）；文字与图形的颜色、字体、圆角等用 style 设置。先用 deck_info 和 block_schema 了解现场，用 list_blocks / read_selection 读，用 create_block / update_block / move_blocks / delete_blocks 写；排版用 align_blocks（对齐边或中线）、distribute_blocks（等间距）、arrange_blocks（行/列/网格）；想看一眼画布现在的样子就用 screenshot；要带人逐处看画布，用 focus_set 存焦点、focus_play 按顺序放映。工作时必须用 process 报告进度：开始时 preparing、动手时 running（随进展更新 detail/progress）、结束时 done，人会在窗口底部看到它。加、删、移动、堆的收放与排版都进撤销栈，并保存到工作区。",
     })
 }
 
