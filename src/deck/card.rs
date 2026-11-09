@@ -129,9 +129,9 @@ impl DeckView {
         self.animating |= appearing;
         card = card.child(self.title_bar(&b, t, &paper, window, cx));
         // Gliding, the body is its picture; at rest, laid out (`snapshot`).
-        let plan = self.body_plan(&b, (sx, sy, w, h), t.dark, window, now);
+        let plan = self.body_plan(&b, t.dark, window, now);
         let body = match plan {
-            super::snapshot::Plan::Show { .. } => div().into_any_element(),
+            super::snapshot::Plan::Show { .. } | super::snapshot::Plan::Blank => div().into_any_element(),
             _ => self.body(&b, t, &paper, window, cx),
         };
         let body = super::snapshot::body_by(plan, body, t.surface);
@@ -152,6 +152,11 @@ impl DeckView {
                 let worked_in = d.active.as_deref() == Some(wid.as_str()) || d.editing(&wid, EditPart::Body).is_some();
                 if worked_in && !zoom && !gesture {
                     cx.stop_propagation();
+                }
+                // Playing, a body is its picture: the wheel makes it live, for its list to scroll.
+                if !zoom && !gesture && d.body_wheel(&wid, Instant::now()) {
+                    cx.stop_propagation();
+                    cx.notify();
                 }
             }));
         if let Some(cover) = self.body_cover(&b, cx) {

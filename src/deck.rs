@@ -222,6 +222,8 @@ struct Runtime {
     life: lifecycle::Life,
     /// The block was last drawn zoomed out, as its frame and title alone.
     lod: bool,
+    /// Drawn live until then, not as its picture: scrolled while playing (`snapshot`).
+    live_until: Option<Instant>,
     /// The body fading in on coming back from LOD.
     appear: sharpen::Sharpen,
     /// A sharper version of the content (a bitmap, a native view) fading in over the old.
@@ -300,6 +302,8 @@ pub struct DeckView {
     photo: photozoom::Photo,
     /// How many glides have started: pictures of blocks are of one glide (`snapshot`).
     glides: u64,
+    /// The bodies this frame pictures, while playing (`snapshot::plan_captures`).
+    captures: snapshot::Captures,
     /// Lists in block bodies lay out only what the window can show (`body_room`).
     clip_bodies: bool,
     /// The window this deck is drawn in: what `screenshot` captures.
@@ -412,6 +416,7 @@ impl DeckView {
             fv: focusview::FocusView::default(),
             photo: photozoom::Photo::default(),
             glides: 0,
+            captures: Default::default(),
             clip_bodies: true,
             m,
             lay,
@@ -772,6 +777,8 @@ impl DeckView {
             .collect();
         self.life_tick(&visible, window, cx);
         self.resize_corners.clear();
+        // Playing, the bodies this frame pictures, nearest the middle first (`snapshot`).
+        self.plan_captures(&visible, t.dark, window);
         let mut built: Vec<Option<Vec<AnyElement>>> = (0..visible.len()).map(|_| None).collect();
         // Blocks coming back from LOD are built nearest the middle of the window
         // first, so they surface like a focus pulling in, and only until this
