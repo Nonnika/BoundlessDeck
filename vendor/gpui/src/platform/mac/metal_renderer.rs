@@ -100,6 +100,9 @@ pub(crate) struct MetalRenderer {
     device: metal::Device,
     layer: metal::MetalLayer,
     presents_with_transaction: bool,
+    /// BoundlessDeck: the last frame presented the usual way, until a frame
+    /// is presented with a transaction (`set_presents_with_transaction`).
+    last_async: Option<metal::CommandBuffer>,
     command_queue: CommandQueue,
     paths_rasterization_pipeline_state: metal::RenderPipelineState,
     path_sprites_pipeline_state: metal::RenderPipelineState,
@@ -258,6 +261,7 @@ impl MetalRenderer {
             device,
             layer,
             presents_with_transaction: false,
+            last_async: None,
             command_queue,
             paths_rasterization_pipeline_state,
             path_sprites_pipeline_state,
@@ -290,6 +294,14 @@ impl MetalRenderer {
     }
 
     pub fn set_presents_with_transaction(&mut self, presents_with_transaction: bool) {
+        // BoundlessDeck: a frame still on its way to the screen when the layer
+        // starts presenting with transactions is held for the next commit,
+        // which waits on this thread, which waits in `next_drawable` for a
+        // drawable that frame holds: a second lost (the 1 s timeout) and no
+        // frame drawn. Let it go first.
+        if presents_with_transaction && let Some(last) = self.last_async.take() {
+            last.wait_until_completed();
+        }
         self.presents_with_transaction = presents_with_transaction;
         self.layer
             .set_presents_with_transaction(presents_with_transaction);
@@ -392,6 +404,7 @@ impl MetalRenderer {
                     } else {
                         command_buffer.present_drawable(drawable);
                         command_buffer.commit();
+                        self.last_async = Some(command_buffer.to_owned());
                     }
                     return;
                 }

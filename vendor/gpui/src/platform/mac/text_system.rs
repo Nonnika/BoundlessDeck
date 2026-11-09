@@ -69,6 +69,10 @@ struct MacTextSystemState {
     postscript_names_by_font_id: HashMap<FontId, String>,
     /// UTF-16 indices of ZWNJS
     zwnjs_scratch_space: Vec<usize>,
+    /// BoundlessDeck: fonts at the sizes lines were laid out in. A CTFont made
+    /// anew for each line rebuilds CoreText's metrics for it (and a variable
+    /// font's deltas), about a fifth of shaping when the size changes.
+    sized_fonts: HashMap<(FontId, u32), CTFont>,
 }
 
 impl MacTextSystem {
@@ -82,6 +86,7 @@ impl MacTextSystem {
             font_ids_by_font_key: HashMap::default(),
             postscript_names_by_font_id: HashMap::default(),
             zwnjs_scratch_space: Vec::new(),
+            sized_fonts: HashMap::default(),
         }))
     }
 }
@@ -473,12 +478,17 @@ impl MacTextSystemState {
                 max_ascent = max_ascent.max(font_metrics.ascent * font_scale);
                 max_descent = max_descent.max(-font_metrics.descent * font_scale);
 
+                // BoundlessDeck: reuse the sized font (`sized_fonts`); a zoom
+                // goes through many sizes, so the cache is dropped when it grows.
+                if self.sized_fonts.len() > 256 {
+                    self.sized_fonts.clear();
+                }
+                let sized = self
+                    .sized_fonts
+                    .entry((run.font_id, font_size.0.to_bits()))
+                    .or_insert_with(|| font.native_font().clone_with_font_size(font_size.into()));
                 unsafe {
-                    string.set_attribute(
-                        cf_range,
-                        kCTFontAttributeName,
-                        &font.native_font().clone_with_font_size(font_size.into()),
-                    );
+                    string.set_attribute(cf_range, kCTFontAttributeName, &*sized);
                 }
             }
         }
