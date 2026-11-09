@@ -11,9 +11,9 @@ use gpui::{
 
 use super::{DeckView, TITLE_H, WordDoc, image_format, message, pdf_backdrop, sharpen};
 use crate::model::Block;
-use crate::preview;
-use crate::terminal::{self, Terminal, TerminalEvent};
-use crate::theme::Theme;
+use crate::content::preview;
+use crate::content::terminal::{self, Terminal, TerminalEvent};
+use crate::ui::theme::Theme;
 
 impl DeckView {
     pub(super) fn load_lines(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -68,7 +68,7 @@ impl DeckView {
         cx.spawn(async move |this, cx| {
             let r = cx
                 .background_spawn(async move {
-                    crate::word::read(&path).map(|d| WordDoc {
+                    crate::content::word::read(&path).map(|d| WordDoc {
                         markdown: d.markdown,
                         media: d
                             .media
@@ -101,7 +101,7 @@ impl DeckView {
         rt.loading = true;
         let id = id.to_string();
         cx.spawn(async move |this, cx| {
-            let r = cx.background_spawn(async move { crate::pdf::Doc::open(&path) }).await;
+            let r = cx.background_spawn(async move { crate::content::pdf::Doc::open(&path) }).await;
             let _ = this.update(cx, |d, cx| {
                 let rt = d.rts.entry(id).or_default();
                 rt.loading = false;
@@ -161,7 +161,7 @@ impl DeckView {
         let has_img = self.rts.get(&b.id).is_some_and(|r| r.pdf_img.is_some());
         if !self.zooming() || !has_img {
             let render_s = if self.lay.s > 0.0 { self.lay.s } else { s };
-            self.render_pdf(&b.id, page, crate::pdf::width_for(b.w * render_s), cx);
+            self.render_pdf(&b.id, page, crate::content::pdf::width_for(b.w * render_s), cx);
         }
         let now = Instant::now();
         let rt = self.rts.entry(b.id.clone()).or_default();

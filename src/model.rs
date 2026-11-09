@@ -552,7 +552,7 @@ impl Model {
                 continue;
             }
             soonest(left);
-            if left <= crate::lifespan::NOTE_FADE_MS {
+            if left <= crate::content::lifespan::NOTE_FADE_MS {
                 soonest(3000);
             } else {
                 soonest(left % 60_000);
@@ -573,9 +573,9 @@ impl Model {
         if let Some(b) = self.block_mut(id)
             && b.kind == BlockKind::Note
             && b.expires > 0
-            && b.expires - now < crate::lifespan::NOTE_RESCUE_MS
+            && b.expires - now < crate::content::lifespan::NOTE_RESCUE_MS
         {
-            b.expires = now + crate::lifespan::NOTE_RESCUE_MS;
+            b.expires = now + crate::content::lifespan::NOTE_RESCUE_MS;
         }
     }
 
@@ -734,7 +734,7 @@ mod tests {
         assert!(gone && m.index_of(&id).is_none());
         m.undo_last();
         let b = m.block(&id).unwrap();
-        assert_eq!(b.expires, 1_006_000 + crate::lifespan::NOTE_RESCUE_MS);
+        assert_eq!(b.expires, 1_006_000 + crate::content::lifespan::NOTE_RESCUE_MS);
     }
 
     #[test]

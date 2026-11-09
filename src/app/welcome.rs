@@ -13,8 +13,8 @@ use gpui::{
     div, fill, point, prelude::FluentBuilder, px, size,
 };
 
-use crate::theme::{Paper, Theme};
-use crate::{commands, windows};
+use crate::ui::theme::{Paper, Theme};
+use crate::app::{commands, windows};
 
 /// What a page's keys show: a menu command's shortcut, or a gesture in words.
 #[derive(Clone, Copy)]
@@ -179,13 +179,13 @@ impl WelcomeView {
 
     /// How far in the panel is: 0 gone, 1 fully shown.
     pub fn presence(&self, now: Instant) -> f32 {
-        if crate::stage::reduce_motion() {
+        if crate::app::stage::reduce_motion() {
             return if self.closing.is_some() { 0. } else { 1. };
         }
         let f = |since: Instant, len: Duration| now.saturating_duration_since(since).as_secs_f32() / len.as_secs_f32();
-        let shown = crate::stage::ease(f(self.opened, IN_TIME).into()) as f32;
+        let shown = crate::app::stage::ease(f(self.opened, IN_TIME).into()) as f32;
         match self.closing {
-            Some(at) => shown * (1. - crate::stage::ease(f(at, OUT_TIME).into()) as f32),
+            Some(at) => shown * (1. - crate::app::stage::ease(f(at, OUT_TIME).into()) as f32),
             None => shown,
         }
     }
@@ -214,7 +214,7 @@ impl WelcomeView {
         let page = page.min(PAGES.len() - 1);
         if page != self.page {
             let now = Instant::now();
-            if !crate::stage::reduce_motion() {
+            if !crate::app::stage::reduce_motion() {
                 let dir = if page > self.page { 1. } else { -1. };
                 self.switch = Some((self.page, self.page_at, now, dir));
             }
@@ -228,7 +228,7 @@ impl WelcomeView {
     fn turn(&self, now: Instant) -> Option<f32> {
         let (_, _, at, _) = self.switch?;
         let f = now.saturating_duration_since(at).as_secs_f32() / SWITCH_TIME.as_secs_f32();
-        (f < 1.).then(|| crate::stage::ease(f.into()) as f32)
+        (f < 1.).then(|| crate::app::stage::ease(f.into()) as f32)
     }
 
     /// How blurred the page is now: most halfway through a turn.
@@ -345,7 +345,7 @@ impl Render for WelcomeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::of(window);
         let now = Instant::now();
-        let still = crate::stage::reduce_motion();
+        let still = crate::app::stage::reduce_motion();
         if !still {
             window.request_animation_frame();
         }
@@ -589,7 +589,7 @@ fn folder(pen: &mut Pen, w: f32, h: f32, time: f32, t: &Theme) {
         let (bg, strip) = match i {
             0 => (paper.top, paper.header),
             1 => (t.surface, t.surface_hover),
-            _ => (crate::terminal::background(t.dark), t.surface_hover),
+            _ => (crate::content::terminal::background(t.dark), t.surface_hover),
         };
         let (bx, by, bw2, _) = mini(pen, cx + dx * cw, cy + dy * ch, bw * cw, bh * ch, pop, bg, strip, t);
         let ink = if i == 0 { paper.muted } else { t.muted };
@@ -620,7 +620,7 @@ fn blocks(pen: &mut Pen, w: f32, h: f32, time: f32, t: &Theme) {
         }
         let (cx, cy) = (x0 + col * (bw + gap) + bw / 2., y0 + row * (bh + gap) + bh / 2.);
         let live = (time - 0.6 - i as f32 * 0.18).max(0.);
-        let term = crate::terminal::background(t.dark);
+        let term = crate::content::terminal::background(t.dark);
         let (bg, strip) = match i {
             0 => (paper.top, paper.header),
             2 => (term, t.surface_hover),
@@ -716,8 +716,8 @@ fn navigate(pen: &mut Pen, w: f32, h: f32, time: f32, t: &Theme) {
 
 /// A color of the palette, as the canvas draws it.
 fn ink(name: &str, t: &Theme) -> Hsla {
-    match crate::theme::paint(name, false, t) {
-        crate::theme::Paint::Color(c) => c,
+    match crate::ui::theme::paint(name, false, t) {
+        crate::ui::theme::Paint::Color(c) => c,
         _ => t.accent,
     }
 }
@@ -931,7 +931,7 @@ fn focus(pen: &mut Pen, w: f32, h: f32, time: f32, t: &Theme) {
 /// along the bottom, kept clear for it, the capsule tells how it goes.
 fn agent(pen: &mut Pen, w: f32, full_h: f32, time: f32, t: &Theme) {
     let h = full_h - 30.;
-    let term = crate::terminal::background(t.dark);
+    let term = crate::content::terminal::background(t.dark);
     let (tx, ty, tw, th) = (w * 0.07, h * 0.2, w * 0.34, h * 0.6);
     pen.card(tx, ty, tw, th, 6., term, t.border);
     pen.rect(tx, ty, tw, 12., 6., t.surface_hover);

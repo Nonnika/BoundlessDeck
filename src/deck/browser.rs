@@ -25,9 +25,9 @@ use gpui::{
 use wry::dpi::{LogicalPosition, LogicalSize};
 
 use super::{DeckView, EditPart, TITLE_H};
-use crate::icons;
+use crate::ui::icons;
 use crate::model::{Block, LOD_SCALE};
-use crate::theme::Theme;
+use crate::ui::theme::Theme;
 
 /// The bar's height at 100%.
 pub(super) const BAR_H: f32 = 34.0;

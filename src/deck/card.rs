@@ -11,10 +11,10 @@ use gpui::{
 };
 
 use super::{DeckView, Drag, EditPart, Popup, TITLE_FONT, TITLE_H, popin, styled};
-use crate::lifespan;
+use crate::content::lifespan;
 use crate::model::{Block, BlockKind, LOD_SCALE};
-use crate::theme::{Paper, Theme};
-use crate::{icons, tape};
+use crate::ui::theme::{Paper, Theme};
+use crate::ui::{icons, tape};
 
 impl DeckView {
     pub(super) fn block_view(&mut self, id: &str, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -370,7 +370,7 @@ impl DeckView {
     /// A chart's type chip (a menu of types) and its table button.
     pub(super) fn chart_controls(&mut self, b: &Block, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let s = self.content_scale();
-        let kind = crate::chart::of(&b.chart);
+        let kind = crate::content::chart::of(&b.chart);
         let editing = self.editing(&b.id, EditPart::Body).is_some();
         let (id1, id2) = (b.id.clone(), b.id.clone());
         let chip = |id: SharedString| {
@@ -395,8 +395,8 @@ impl DeckView {
             .gap(px(2. * s))
             .child(
                 chip(SharedString::from(format!("chart-kind:{}", b.id)))
-                    .child(svg().path(icons::path(crate::chart::icon(kind))).size(px(12. * s)).text_color(t.muted))
-                    .child(crate::chart::label(kind))
+                    .child(svg().path(icons::path(crate::content::chart::icon(kind))).size(px(12. * s)).text_color(t.muted))
+                    .child(crate::content::chart::label(kind))
                     .child(svg().path(icons::path("chevron_down")).size(px(10. * s)).text_color(t.muted))
                     .on_mouse_down(
                         MouseButton::Left,

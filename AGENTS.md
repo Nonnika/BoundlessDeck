@@ -20,9 +20,11 @@ BoundlessDeck 的 Rust 重写：无限画布工作台，界面由 GPUI 原生绘
 |---|---|---|
 | 模型 | `src/model.rs` + `src/model/{block,camera,persist}.rs` | 纯状态：blocks、camera、selection、undo/redo、deck.json、持久化。不依赖 `Window`，可 headless 测试。 |
 | 视图 | `src/deck.rs` + `src/deck/*.rs` | `DeckView` 持有 `Model` 与交互状态；输入、渲染、保存调度都在这里，按职责拆在 `deck/` 的子模块里（见 Key Directories）。 |
-| 外壳 | `src/app.rs` | `Root` 在主页（homescene）与 deck 之间二选一；管理 recents、设置、打开/关闭文件夹。 |
-| 窗口 | `src/main.rs`、`src/windows.rs`、`src/commands.rs` | 装配窗口与生命周期；设置窗口（⌘,）与快捷键窗口（⌘/）共用 `commands.rs` 的命令表。 |
-| Block 内容 | `editor.rs`、`terminal.rs`+`termstate.rs`、`markdown.rs`、`chart.rs`+`chartview.rs`、`pdf.rs`、`word.rs`、`preview.rs`、`memo.rs` | 每种内容的渲染与 I/O。 |
+| 外壳 | `src/app.rs` + `src/app/` | `Root` 在主页（`app/homescene.rs`）与 deck 之间二选一；管理 recents、设置、打开/关闭文件夹；引导页 `app/welcome.rs`、主页与 deck 切换的模糊过渡 `app/stage.rs`、`app/backdrop.rs`。 |
+| 窗口 | `src/main.rs`、`src/app/windows.rs`、`src/app/commands.rs` | 装配窗口与生命周期；设置窗口（⌘,）与快捷键窗口（⌘/）共用 `app/commands.rs` 的命令表。 |
+| 界面部件 | `src/ui.rs` + `src/ui/` | `editor.rs`（文本编辑器）、`theme.rs`（颜色与调色板）、`icons.rs`、`font.rs`（字体索引）、`tape.rs`。 |
+| Block 内容 | `src/content.rs` + `src/content/` | `terminal.rs`、`markdown.rs` + `mdlive.rs`、`chart.rs` + `chartview.rs`、`pdf.rs`、`word.rs`、`preview.rs`、`memo.rs`、`lifespan.rs`：每种内容的解析、渲染与 I/O。 |
+| 平台 | `src/platform.rs` + `src/platform/` | macOS 原生集成：`nativepanel.rs`（系统颜色面板与取色器）、`pinch.rs`（触控板捏合）、`screenshot.rs`（窗口截图）、`webfocus.rs`（网页与 GPUI 的键盘仲裁）。 |
 | MCP | `src/mcp/` | `mod.rs` 端点与注册表，`server.rs` socket 服务，`rpc.rs` JSON-RPC，`tools.rs` + `tools/` 字段表与工具，`bridge.rs` stdio 桥，`config.rs` 各 agent 的全局/项目配置。 |
 
 ### 帧模型（最容易出错的地方）
@@ -110,7 +112,7 @@ GPUI 每帧重建整棵元素树，所以：
 
 | 路径 | 内容 |
 |---|---|
-| `src/` | 唯一的 crate（`boundlessdeck`，single binary，无 `[lib]`），顶层约 30 个模块 |
+| `src/` | 唯一的 crate（`boundlessdeck`，single binary，无 `[lib]`）。顶层只有 `main.rs` 与七个模块：`app`（外壳）、`ui`（界面部件）、`content`（block 内容）、`platform`（macOS 集成）、`deck`、`model`、`mcp`。分组模块是同名的 `x.rs` 加 `x/` 目录，子模块用 `pub(crate) mod` 声明，引用写全路径（`crate::ui::theme::Theme`）。 |
 | `src/deck/` | `DeckView` 的子模块：`input.rs`（按下、拖动、滚轮与焦点）、`card.rs`（block 卡片、标题栏、缩放手柄、出现动画）、`body.rs`（卡片内容与 Markdown/图表缓存）、`chrome.rs`（工具栏、主页按钮、弹层、状态栏）、`camera.rs`（缩放与相机滑动）、`editing.rs`（原地编辑）、`memofile.rs`（笔记文件读写）、`load.rs`（文件、文档、PDF、终端的加载）、`endpoint.rs`（MCP 端点与任务执行）、`stack.rs`（块堆与弹簧动画）、`browser.rs`（WKWebView 嵌入与快照）、`zoomlayer.rs`（缩放状态机）、`sharpen.rs`（清晰度过渡）、`lifecycle.rs`、`popin.rs`、`progress.rs`（agent 任务进度胶囊）、`focusview.rs`（焦点视图、焦点面板与放映）、`styled.rs`、`inspector.rs` |
 | `src/model/` | `block.rs`（`BlockKind`、`Block`、`Style`、默认尺寸）、`camera.rs`（相机与缩放档位）、`focus.rs`（焦点与焦点线）、`persist.rs`（路径与 deck.json 读写）；都由 `model.rs` 重新导出，外部仍写 `crate::model::X` |
 | `src/mcp/` | MCP 端点，见上文；`tools/` 下是 `schema.rs`（字段表与工具列表）、`patch.rs`（字段校验与写入）、`arrange.rs` + `layout.rs`（排版工具与算法）、`style.rs`（样式补丁） |
@@ -145,7 +147,7 @@ cargo run -- /tmp/test-deck
 | `BOUNDLESSDECK_DATA_DIR` | 覆盖数据目录（recents、settings） | `model/persist.rs:160` |
 | `BOUNDLESSDECK_ACTIVE_FILE` | 覆盖活动 deck 注册表路径 | `mcp/mod.rs:103` |
 | `BOUNDLESSDECK_WORKSPACE` | `mcp-stdio` 的默认工作区 | `mcp/bridge.rs:98` |
-| `BOUNDLESSDECK_TERMINAL` / `BOUNDLESSDECK_DECK` | 终端 shell 中由应用设置；`mcp-stdio` 读取后告诉 deck 调用方在哪个终端里 | `mcp/mod.rs`、`terminal.rs` 的 `spawn` |
+| `BOUNDLESSDECK_TERMINAL` / `BOUNDLESSDECK_DECK` | 终端 shell 中由应用设置；`mcp-stdio` 读取后告诉 deck 调用方在哪个终端里 | `mcp/mod.rs`、`content/terminal.rs` 的 `spawn` |
 
 ### 工具链现状
 
@@ -159,7 +161,7 @@ cargo run -- /tmp/test-deck
 ### 命名与语言
 
 - Block ID：`b` + 6 位十六进制，由 `Model::new_id` 生成，不复用。
-- 模块文件名为单数（`model.rs`、`editor.rs`），子模块放进同名目录（`deck/`）。
+- 模块文件名为单数（`model.rs`、`ui/editor.rs`），子模块放进同名目录（`deck/`），不用 `mod.rs`。新文件放进对应分组（`app`、`ui`、`content`、`platform`），不要放回 `src/` 顶层。
 - 模块级文档注释（`//!`）解释设计理由，写中文或英文都可，但保持该文件已有的语言。用户可见文案（错误、按钮、状态）用简体中文。
 - 提交信息：Conventional Commits，scope 与主题用中文。仓库里的例子：`feat(canvas): 支持触控板捏合缩放`、`feat(browser): 网页隐藏时以 WebKit 快照代替`。
 
@@ -199,7 +201,7 @@ cx.spawn(async move |this, cx| {
 
 ### 平台代码
 
-- macOS 专属代码用 `#[cfg(target_os = "macos")]` 包裹：`pdf.rs`（CoreGraphics 的 `#[link]` 与 extern 块）、`pinch.rs`（AppKit 本地事件监视器）、`deck/browser.rs`（WebKit 快照，objc2）。
+- macOS 专属代码用 `#[cfg(target_os = "macos")]` 包裹：`content/pdf.rs`（CoreGraphics 的 `#[link]` 与 extern 块）、`platform/` 下的各文件（AppKit、ScreenCaptureKit）、`deck/browser.rs`（WebKit 快照，objc2）。
 - 非 macOS 的降级路径应返回用户可读的错误字符串，不 panic。
 
 ## Important Files
@@ -213,7 +215,7 @@ cx.spawn(async move |this, cx| {
 | `src/deck/browser.rs` | WKWebView 的生命周期、遮挡与快照回退。 |
 | `src/mcp/tools.rs` | `Ctx` 与 24 个工具的分派；字段表、校验、排版在 `tools/` 子模块。 |
 | `src/mcp/mod.rs` | 端点注册、socket 路径、活动 deck 注册表。 |
-| `src/commands.rs` | 命令表：菜单、快捷键与快捷键窗口的单一来源。 |
+| `src/app/commands.rs` | 命令表：菜单、快捷键与快捷键窗口的单一来源。 |
 | `Cargo.toml` | 依赖；`gpui` 0.2.2 与 `runtime_shaders`；macOS 专属 objc2 系列。 |
 | `README.md` | 功能清单与 Go 版差异。 |
 
@@ -222,16 +224,16 @@ cx.spawn(async move |this, cx| {
 - **浏览器标签页**：`Block.tabs`（`WebTab`，`key` 只在运行时区分标签、不落盘）与 `Block.tab`；`url` 始终等于打开的标签的地址。只写 `url` 的地方（Go 版、MCP、地址栏）之后调用 `Block::ensure_tabs` 让打开的标签跟上。每个标签的 WKWebView 存在 `Runtime.webs`（按 key），`WebEvent` 都带 block id 与标签 key。
 - **新增 block 字段**：在 `Block` 上加 serde 字段（`skip_serializing_if` 保持与 Go 版一致）→ 登记到 `mcp::tools::FIELDS`（`tools/schema.rs`）→ 在 `tools/patch.rs` 中实现读写校验。
 - **新增 block 种类**：`BlockKind`（含 `ALL`、`as_str`、`parse`、`label`）、`new_block_of` 与 `kind_defaults` 的默认尺寸、`deck/body.rs` 中的 body 渲染分支、`FIELDS` 中的 `kinds`。旧版本读到不认识的种类时把它原样留在 `Model.foreign` 并写回，所以新种类不会让旧版本打不开 deck；deck.json 整体读不了时 `Model::load` 返回错误，不会新建一张覆盖它。
-- **文字与图形**（`BlockKind::bare()`）：没有卡片，由 `deck/styled.rs` 画（`look` 把 `Block.style` 解析成颜色、字体、对齐，缺省按种类）；选中时标题栏浮在上方，单击拖动、双击编辑文字。样式在右侧面板（`deck/inspector.rs`）里改：面板从右侧滑入滑出（拖影模拟动态模糊，`DeckView.insp` 记着进度）；字体在面板旁自己的列表里选，索引由 `font.rs` 在启动时于后台用 Core Text 建好（含本地化名）；字号与圆角可加减也可直接输入，圆角可四角分别设置（`Style.corners`）；自定义颜色走系统面板（`src/nativepanel.rs`，选择经 `DeckView.panel_tx` 回到 UI 线程）。
+- **文字与图形**（`BlockKind::bare()`）：没有卡片，由 `deck/styled.rs` 画（`look` 把 `Block.style` 解析成颜色、字体、对齐，缺省按种类）；选中时标题栏浮在上方，单击拖动、双击编辑文字。样式在右侧面板（`deck/inspector.rs`）里改：面板从右侧滑入滑出（拖影模拟动态模糊，`DeckView.insp` 记着进度）；字体在面板旁自己的列表里选，索引由 `ui/font.rs` 在启动时于后台用 Core Text 建好（含本地化名）；字号与圆角可加减也可直接输入，圆角可四角分别设置（`Style.corners`）；自定义颜色走系统面板（`src/platform/nativepanel.rs`，选择经 `DeckView.panel_tx` 回到 UI 线程）。
 - **焦点**：`Model.focus`（列表顺序即默认放映顺序）与 `Model.focus_lines`（`stops` 是焦点 ID，可重复），存在 deck.json 顶层的 `focus` / `focusLines`；焦点存的是视野中心的世界坐标与缩放，`Focus::camera(view)` 换成相机。deck.json 顶层不认识的字段放在 `Model.extra` 原样写回。焦点的增删改不进撤销栈。焦点视图与放映的交互都在 `deck/focusview.rs`（`DeckView.fv`），放映复用 `glide_to`。
-- **新增命令**：`commands.rs` 的命令表，并在对应的 key context 上挂 `.on_action` 处理。
+- **新增命令**：`app/commands.rs` 的命令表，并在对应的 key context 上挂 `.on_action` 处理。
 - **新增交互**：在最内层元素上 `.occlude()` 或 `stop_propagation()`；拖动状态放在 `Drag` 中，结束时用 `record_moves` 与 `after_edit`。
 
 ## Testing & QA
 
 - **框架**：标准 `#[test]`，75 个，分布在 24 个带 `#[cfg(test)]` 的源文件中。无 `tests/` 目录，无 GPUI 测试框架（`TestAppContext`）。
 - **覆盖**：`model.rs`（相机、撤销、块堆、到期、持久化）、`mcp/`（工具、JSON-RPC、socket、配置合并、桥）、解析器（图表、Markdown、docx、PDF、终端按键）。
-- **未覆盖**：GPUI 渲染与命中测试、真实 PTY、WKWebView 生命周期、`app.rs` 与 `editor.rs` 的交互。
+- **未覆盖**：GPUI 渲染与命中测试、真实 PTY、WKWebView 生命周期、`app.rs` 与 `ui/editor.rs` 的交互。
 - **模式**：
   - 文件系统测试用 `tempfile`，不碰真实数据目录或 MCP 配置。
   - 断言可观察状态（`m.blocks`、`m.cam`、`m.sel`、撤销栈长度、文件内容），不要只断言"没 panic"。

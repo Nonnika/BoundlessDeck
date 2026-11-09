@@ -94,7 +94,7 @@ pub(super) fn crossfade(under: Option<AnyElement>, over: AnyElement, alpha: f32)
 }
 
 pub(super) fn reduce_motion() -> bool {
-    crate::stage::reduce_motion()
+    crate::app::stage::reduce_motion()
 }
 
 #[cfg(test)]

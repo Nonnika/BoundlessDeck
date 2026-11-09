@@ -42,12 +42,12 @@ mod stack;
 mod styled;
 mod zoomlayer;
 
-use crate::editor::Editor;
-use crate::markdown;
-use crate::memo;
+use crate::ui::editor::Editor;
+use crate::content::markdown;
+use crate::content::memo;
 use crate::model::{self, Block, BlockKind, Geometry, Model, file_block_size, new_block_of};
-use crate::terminal::Terminal;
-use crate::theme::Theme;
+use crate::content::terminal::Terminal;
+use crate::ui::theme::Theme;
 
 actions!(
     deck,
@@ -155,7 +155,7 @@ struct Runtime {
     /// A Word document read as Markdown, its pictures by name.
     word: Option<Result<Arc<WordDoc>, String>>,
     /// A PDF open for its preview, and its page as last rendered: page, width, image.
-    pdf: Option<Result<Arc<crate::pdf::Doc>, String>>,
+    pdf: Option<Result<Arc<crate::content::pdf::Doc>, String>>,
     pdf_img: Option<(usize, usize, Arc<gpui::RenderImage>)>,
     /// The page as rendered before, under the new one while that fades in.
     pdf_prev: Option<Arc<gpui::RenderImage>>,
@@ -168,7 +168,7 @@ struct Runtime {
     /// Parsed Markdown AST for a stack card's snippet face.
     face_md_cache: Option<(String, markdown::Parsed)>,
     /// Parsed chart table cached across frames while `b.text` is unchanged.
-    chart_cache: Option<(String, Arc<crate::chart::Data>)>,
+    chart_cache: Option<(String, Arc<crate::content::chart::Data>)>,
     list: UniformListScrollHandle,
     term: Option<Entity<Terminal>>,
     term_err: Option<String>,
@@ -241,7 +241,7 @@ pub struct DeckView {
     /// A panel of the window's (the welcome) lies over the deck: web pages give way to their pictures.
     pub covered: bool,
     /// Where the system's Fonts and Colors panels send their picks (`nativepanel`).
-    panel_tx: smol::channel::Sender<crate::nativepanel::Pick>,
+    panel_tx: smol::channel::Sender<crate::platform::nativepanel::Pick>,
     /// Which color of the styled blocks a custom pick goes to.
     color_slot: inspector::Slot,
     /// The style panel showed this frame: web pages under it give way.
@@ -316,7 +316,7 @@ impl DeckView {
     pub fn new(m: Model, workspaces: Vec<String>, cx: &mut Context<Self>) -> DeckView {
         // Pinches on the trackpad zoom about the pointer (pinch.rs); a deck
         // taking over from another drains what that one left.
-        let pinches = crate::pinch::channel();
+        let pinches = crate::platform::pinch::channel();
         while pinches.try_recv().is_ok() {}
         cx.spawn(async move |this, cx| {
             while let Ok((mut x, mut y, mut k)) = pinches.recv().await {
@@ -711,8 +711,8 @@ impl Render for DeckView {
         if std::mem::take(&mut self.animating) {
             window.request_animation_frame();
         }
-        crate::webfocus::guard(window);
-        crate::webfocus::set_corners(self.resize_corners.clone());
+        crate::platform::webfocus::guard(window);
+        crate::platform::webfocus::set_corners(self.resize_corners.clone());
 
         // Playing, the chrome steps aside.
         let playing = self.fv.play.is_some();

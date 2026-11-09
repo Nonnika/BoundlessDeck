@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use gpui::{AppContext, Context};
 
 use super::DeckView;
-use crate::memo;
+use crate::content::memo;
 use crate::model::{Block, BlockKind};
 
 impl DeckView {

@@ -30,11 +30,11 @@ use gpui::{
 
 use super::inspector::{self, ENTER, GHOSTS, LEAVE, MAX_TRAIL, SHUTTER, TRAVEL, ease, ease_rate};
 use super::{DeckView, KeepFocus, PlayFocus, ToggleFocusView, sharpen, shadow};
-use crate::editor::{Editor, EditorEvent};
-use crate::icons;
+use crate::ui::editor::{Editor, EditorEvent};
+use crate::ui::icons;
 use crate::mcp::tools::{PlayCmd, Playing};
 use crate::model::Focus;
-use crate::theme::Theme;
+use crate::ui::theme::Theme;
 
 /// The panel: where it sits and how wide, as the style panel on the right; and its rows.
 const PANEL_LEFT: f32 = inspector::PANEL_RIGHT;
@@ -384,7 +384,7 @@ impl DeckView {
             }
             cx.notify();
         });
-        crate::webfocus::release();
+        crate::platform::webfocus::release();
         window.focus(&editor.focus_handle(cx));
         self.fv.rename = Some(Rename { what, editor, _sub: sub });
         cx.notify();

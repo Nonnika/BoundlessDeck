@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 use gpui::{AnyElement, Context, Hsla, IntoElement, ParentElement, Styled, canvas, div, point, prelude::FluentBuilder, px, relative, svg};
 
 use super::{DeckView, sharpen};
-use crate::icons;
+use crate::ui::icons;
 use crate::mcp::tools::{Report, Stage};
-use crate::theme::{Paint, Theme, paint};
+use crate::ui::theme::{Paint, Theme, paint};
 
 /// How long a finished task stays, then how long it takes to go.
 const LINGER: Duration = Duration::from_millis(1800);

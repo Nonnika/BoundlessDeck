@@ -12,7 +12,7 @@ use gpui::{
 };
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-use crate::theme::MdColors;
+use crate::ui::theme::MdColors;
 
 /// One run of a paragraph being gathered: its text and highlights.
 #[derive(Clone, Default)]
@@ -424,7 +424,7 @@ fn node_element(
             .rounded(px(size * 0.35))
             .px(px(size * 0.7))
             .py(px(size * 0.5))
-            .font_family(crate::font::mono())
+            .font_family(crate::ui::font::mono())
             .text_size(px(size * 0.88))
             .child(code.clone())
             .into_any_element(),
@@ -487,7 +487,7 @@ use gpui::prelude::FluentBuilder as _;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{MdColors, Theme};
+    use crate::ui::theme::{MdColors, Theme};
 
     fn kinds(src: &str) -> Vec<String> {
         let c = MdColors::of_theme(&Theme::light());

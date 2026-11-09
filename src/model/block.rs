@@ -285,8 +285,8 @@ impl Block {
     pub fn default_title(&self) -> String {
         match self.kind {
             BlockKind::File if !self.path.is_empty() => file_name(&self.path),
-            BlockKind::Memo if !self.path.is_empty() => crate::memo::title_of(&self.path),
-            BlockKind::Memo => crate::memo::MEMO_TITLE.to_string(),
+            BlockKind::Memo if !self.path.is_empty() => crate::content::memo::title_of(&self.path),
+            BlockKind::Memo => crate::content::memo::MEMO_TITLE.to_string(),
             k => k.label().to_string(),
         }
     }
@@ -402,7 +402,7 @@ pub fn new_block_of(kind: BlockKind, now_ms: i64) -> Block {
     b.title = kind.label().to_string();
     let (w, h) = match kind {
         BlockKind::Note => {
-            b.expires = now_ms + crate::lifespan::NOTE_LIFE_MS;
+            b.expires = now_ms + crate::content::lifespan::NOTE_LIFE_MS;
             (360.0, 260.0)
         }
         BlockKind::Memo => (420.0, 320.0),
@@ -412,7 +412,7 @@ pub fn new_block_of(kind: BlockKind, now_ms: i64) -> Block {
         BlockKind::Stack => (380.0, 300.0),
         BlockKind::Chart => {
             b.chart = "bar".into();
-            b.text = crate::chart::SAMPLE.into();
+            b.text = crate::content::chart::SAMPLE.into();
             (480.0, 320.0)
         }
         BlockKind::Text => {

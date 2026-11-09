@@ -3,7 +3,7 @@
 
 use gpui::{Bounds, Hsla, PathBuilder, Pixels, Window, point, px};
 
-use crate::theme::rgba_u8;
+use crate::ui::theme::rgba_u8;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Tape {

@@ -15,10 +15,11 @@ use gpui::{
 };
 
 use super::{DeckView, Drag, TITLE_H, kind_icon, message, shadow};
-use crate::markdown;
+use crate::content::markdown;
 use crate::model::{Block, BlockKind};
-use crate::theme::{MdColors, Theme, rgba_u8};
-use crate::{icons, preview};
+use crate::ui::theme::{MdColors, Theme, rgba_u8};
+use crate::content::preview;
+use crate::ui::icons;
 
 /// How fast hovering an edge scrolls the cards, in cards a second.
 const EDGE_SPEED: f32 = 5.0;
@@ -390,7 +391,7 @@ impl DeckView {
             BlockKind::Memo | BlockKind::File => n.path.clone(),
             BlockKind::Terminal => "终端".into(),
             BlockKind::Browser => if n.url.is_empty() { "空白页面".into() } else { n.url.clone() },
-            BlockKind::Chart => crate::chart::parse(&n.text).summary(crate::chart::of(&n.chart)),
+            BlockKind::Chart => crate::content::chart::parse(&n.text).summary(crate::content::chart::of(&n.chart)),
             BlockKind::Stack => String::new(),
             BlockKind::Text | BlockKind::Shape => cut(n.text.trim(), 360),
         }
@@ -574,7 +575,7 @@ impl DeckView {
                 div().into_any_element()
             } else if m.kind == BlockKind::Chart {
                 let data = self.chart_data(&m);
-                crate::chartview::render_compact_data(data, &m.chart, cs, t)
+                crate::content::chartview::render_compact_data(data, &m.chart, cs, t)
             } else {
                 let colors = MdColors::of_theme(t);
                 let text = match self.face_parsed_markdown(&m, &colors, t.dark, cx) {
@@ -805,7 +806,7 @@ impl DeckView {
                 let saved_lay = self.lay;
                 self.m.cam.s = 1.;
                 self.lay.s = 1.;
-                let paper = crate::theme::Paper::of(t);
+                let paper = crate::ui::theme::Paper::of(t);
                 let el = self.body(&card, t, &paper, window, cx);
                 self.m.cam = saved;
                 self.lay = saved_lay;

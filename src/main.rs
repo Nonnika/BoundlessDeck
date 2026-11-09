@@ -3,35 +3,16 @@
 //! saved inside it, in the same deck.json the Go build reads.
 
 mod app;
-mod backdrop;
-mod chart;
-mod chartview;
-mod commands;
+mod content;
 mod deck;
-mod editor;
-mod font;
-mod homescene;
-mod icons;
-mod lifespan;
-mod markdown;
-mod mdlive;
 mod mcp;
-mod memo;
 mod model;
-mod nativepanel;
-mod pinch;
-mod pdf;
-mod preview;
-mod recents;
-mod screenshot;
-mod stage;
-mod tape;
-mod terminal;
-mod theme;
-mod webfocus;
-mod welcome;
-mod windows;
-mod word;
+mod platform;
+mod ui;
+
+use app::{commands, welcome, windows};
+use platform::{pinch, webfocus};
+use ui::{editor, font, icons};
 
 use gpui::{
     AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,

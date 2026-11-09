@@ -83,11 +83,11 @@ impl DeckView {
     }
 
     /// The window as it shows, for the `screenshot` tool.
-    fn photograph(&self, cx: &mut Context<Self>) -> Result<crate::screenshot::Shot, String> {
+    fn photograph(&self, cx: &mut Context<Self>) -> Result<crate::platform::screenshot::Shot, String> {
         let Some(win) = self.win else {
             return Err("这个窗口还没有画出来".into());
         };
-        cx.update_window(win, |_, window, _| crate::screenshot::capture(window))
+        cx.update_window(win, |_, window, _| crate::platform::screenshot::capture(window))
             .map_err(|e| format!("这个窗口已经关了：{e}"))?
     }
 

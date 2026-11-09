@@ -11,10 +11,10 @@ use gpui::{
 };
 
 use crate::app::Root;
-use crate::commands::{self, Group};
+use crate::app::commands::{self, Group};
 use crate::mcp::config::{self, Agent, State};
-use crate::recents::short_path;
-use crate::theme::Theme;
+use crate::app::recents::short_path;
+use crate::ui::theme::Theme;
 
 /// The main window's root, for the small windows to reach the deck open.
 pub struct RootHandle(pub WeakEntity<Root>);
@@ -421,9 +421,9 @@ impl Render for SettingsView {
             );
         }
         // The accents, each a dot in its color for this appearance; the one in use ringed.
-        let current = crate::theme::accent().id;
+        let current = crate::ui::theme::accent().id;
         let swatches = div().flex().flex_row().flex_wrap().items_center().gap(px(6.)).children(
-            crate::theme::ACCENTS.iter().enumerate().map(|(i, a)| {
+            crate::ui::theme::ACCENTS.iter().enumerate().map(|(i, a)| {
                 let on = a.id == current;
                 let color: Hsla = gpui::rgb(if t.dark { a.dark } else { a.light }).into();
                 let id = a.id;
@@ -454,7 +454,7 @@ impl Render for SettingsView {
                 .px(px(14.))
                 .py(px(10.))
                 .child(div().flex_1().text_size(px(13.)).text_color(t.text).child("强调色"))
-                .child(div().text_size(px(12.)).text_color(t.muted).child(crate::theme::accent().name))
+                .child(div().text_size(px(12.)).text_color(t.muted).child(crate::ui::theme::accent().name))
                 .child(swatches),
         );
         let welcome = card(&t).child(
@@ -475,7 +475,7 @@ impl Render for SettingsView {
                         .child(div().text_size(px(13.)).text_color(t.text).child("欢迎引导"))
                         .child(div().text_size(px(11.)).text_color(t.muted).child("在主窗口里再看一遍主要功能的介绍。")),
                 )
-                .child(button("welcome-again".into(), "重新打开", true, &t).on_click(|_, _, cx| crate::welcome::show(cx))),
+                .child(button("welcome-again".into(), "重新打开", true, &t).on_click(|_, _, cx| crate::app::welcome::show(cx))),
         );
         div()
             .id("settings")

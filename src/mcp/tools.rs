@@ -10,10 +10,10 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{Map, Value, json};
 
-use crate::lifespan::NOTE_LIFE_MS;
-use crate::memo;
+use crate::content::lifespan::NOTE_LIFE_MS;
+use crate::content::memo;
 use crate::model::{self, BlockKind, Block, Camera, Model};
-use crate::preview;
+use crate::content::preview;
 
 mod arrange;
 mod focus;
@@ -111,7 +111,7 @@ pub struct Ctx<'a> {
     /// The view moved (`set_view`): from where, and whether to glide there.
     pub view_from: Option<(Camera, bool)>,
     /// The window's picture, taken before the call (`screenshot`): PNG or why not.
-    pub shot: Option<Result<crate::screenshot::Shot, String>>,
+    pub shot: Option<Result<crate::platform::screenshot::Shot, String>>,
     /// A task's progress, as the agent told it (`process`): shown in the window.
     pub process: Option<Report>,
     /// Where the window is playing 焦点, if it is; and what a tool asks of it (`focus_play`).
@@ -890,7 +890,7 @@ mod tests {
         let mut c = Ctx { m: &mut m, view: (1000., 800.), mcp: Value::Null, here: Here::default(), dirty: false, memos: vec![], reload: vec![], view_from: None, shot: None, process: None, playing: None, play: None };
         assert!(c.call("screenshot", &Args::new()).is_err(), "no window, no picture");
         let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3];
-        c.shot = Some(Ok(crate::screenshot::Shot { png: png.clone(), width: 2000, height: 1600 }));
+        c.shot = Some(Ok(crate::platform::screenshot::Shot { png: png.clone(), width: 2000, height: 1600 }));
         let out = c.call("screenshot", &Args::new()).unwrap();
         assert_eq!(out["image"]["mimeType"], "image/png");
         assert_eq!((out["image"]["width"].as_u64(), out["image"]["height"].as_u64()), (Some(2000), Some(1600)));

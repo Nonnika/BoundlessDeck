@@ -592,7 +592,7 @@ impl Element for GridElement {
         let marked = t.marked.clone();
         let font_px = px(t.font_size);
         let line_h = (t.font_size * LINE_HEIGHT).round().max(1.);
-        let font = Font { family: crate::font::mono(), ..window.text_style().font() };
+        let font = Font { family: crate::ui::font::mono(), ..window.text_style().font() };
         let font_id = window.text_system().resolve_font(&font);
         let cell_w = window
             .text_system()

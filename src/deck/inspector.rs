@@ -26,12 +26,12 @@ use gpui::{
 use super::DeckView;
 use super::sharpen;
 use super::styled::{self, Shape};
-use crate::editor::{Editor, EditorEvent};
-use crate::font;
-use crate::icons;
+use crate::ui::editor::{Editor, EditorEvent};
+use crate::ui::font;
+use crate::ui::icons;
 use crate::model::{Block, BlockKind};
-use crate::nativepanel::{self, Pick};
-use crate::theme::{INKS, Paint, Theme, hex, paint};
+use crate::platform::nativepanel::{self, Pick};
+use crate::ui::theme::{INKS, Paint, Theme, hex, paint};
 
 /// The panel's width, and where it sits under the toolbar.
 pub(super) const PANEL_W: f32 = 248.;
@@ -656,7 +656,7 @@ impl DeckView {
                 }
             }
         });
-        crate::webfocus::release();
+        crate::platform::webfocus::release();
         window.focus(&editor.focus_handle(cx));
         self.insp.field = Some(Field { which, editor, _sub: sub });
         cx.notify();
@@ -696,7 +696,7 @@ impl DeckView {
             }
             EditorEvent::Blurred => {}
         });
-        crate::webfocus::release();
+        crate::platform::webfocus::release();
         window.focus(&search.focus_handle(cx));
         self.insp.picker =
             Some(Picker { at: Instant::now(), search, rows: vec![], list: UniformListScrollHandle::new(), waiting: false, _sub: sub });
@@ -1344,7 +1344,7 @@ mod tests {
         assert_eq!(rows.len(), SHADES.len() + 1);
         assert!(rows.iter().all(|r| r.len() == HUES.len() && r.iter().all(|h| parse_hex(h).as_deref() == Some(h.as_str()))));
         assert_eq!((rows[0][0].as_str(), rows[0][HUES.len() - 1].as_str()), ("#ffffff", "#000000"));
-        assert_eq!(crate::theme::hex(hex_color("#3e63dd")), "#3e63dd");
+        assert_eq!(crate::ui::theme::hex(hex_color("#3e63dd")), "#3e63dd");
     }
 
     #[test]

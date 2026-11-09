@@ -12,9 +12,9 @@ use gpui::{
 
 use super::{DOC_FONT, DeckView, EDITOR_FONT, EditPart, ImageFinder, TITLE_H, message};
 use crate::model::{Block, BlockKind};
-use crate::terminal;
-use crate::theme::{MdColors, Paper, Theme};
-use crate::{markdown, preview};
+use crate::content::terminal;
+use crate::ui::theme::{MdColors, Paper, Theme};
+use crate::content::{markdown, preview};
 
 impl DeckView {
     pub(super) fn parsed_markdown(&mut self, id: &str, src: &str, c: &MdColors, dark: bool) -> markdown::Parsed {
@@ -147,14 +147,14 @@ impl DeckView {
         cx.notify();
     }
 
-    pub(super) fn chart_data(&mut self, b: &Block) -> Arc<crate::chart::Data> {
+    pub(super) fn chart_data(&mut self, b: &Block) -> Arc<crate::content::chart::Data> {
         let rt = self.rts.entry(b.id.clone()).or_default();
         if let Some((cached_src, data)) = &rt.chart_cache
             && cached_src == &b.text
         {
             return data.clone();
         }
-        let data = Arc::new(crate::chart::parse(&b.text));
+        let data = Arc::new(crate::content::chart::parse(&b.text));
         rt.chart_cache = Some((b.text.clone(), data.clone()));
         data
     }
@@ -217,7 +217,7 @@ impl DeckView {
             }
             BlockKind::Chart => {
                 let data = self.chart_data(b);
-                let chart = crate::chartview::render_data(data, &b.chart, s, t);
+                let chart = crate::content::chartview::render_data(data, &b.chart, s, t);
                 let Some(ed) = self.editing(&b.id, EditPart::Body).cloned() else { return chart };
                 ed.update(cx, |e, _| {
                     e.font_size = 12. * s;
@@ -342,7 +342,7 @@ impl DeckView {
                         let colors = MdColors::of_theme(t);
                         let parsed = self.parsed_markdown(&b.id, &doc.markdown, &colors, t.dark);
                         let images = Rc::new(move |url: &str| {
-                            let name = url.strip_prefix(crate::word::MEDIA_SCHEME)?;
+                            let name = url.strip_prefix(crate::content::word::MEDIA_SCHEME)?;
                             d2.media.get(name).map(|im| gpui::ImageSource::Image(im.clone()))
                         });
                         self.markdown_list(&b.id, parsed, DOC_FONT * s, colors, images, [12. * s, 16. * s, 16. * s, 16. * s], b.w * s, None)
@@ -386,7 +386,7 @@ impl DeckView {
                         .size_full()
                         .px(px(6. * s))
                         .py(px(4. * s))
-                        .font_family(crate::font::mono())
+                        .font_family(crate::ui::font::mono())
                         .text_size(px(size))
                         .into_any_element()
                     }

@@ -2,6 +2,14 @@
 //! lately), or the deck of the folder open. Each deck is a folder; leaving
 //! it keeps what its terminals showed, saves it and hangs the shells up.
 
+pub(crate) mod windows;
+pub(crate) mod commands;
+pub(crate) mod homescene;
+pub(crate) mod recents;
+pub(crate) mod welcome;
+pub(crate) mod stage;
+pub(crate) mod backdrop;
+
 use std::path::{Path, PathBuf};
 
 use gpui::{
@@ -13,9 +21,9 @@ use gpui::{
 
 use crate::deck::{DeckEvent, DeckView};
 use crate::model::{DECK_DIR, Model};
-use crate::recents::{Recents, ago, short_path};
-use crate::theme::{Paper, Theme};
-use crate::{icons, tape};
+use crate::app::recents::{Recents, ago, short_path};
+use crate::ui::theme::{Paper, Theme};
+use crate::ui::{icons, tape};
 
 actions!(app, [OpenFolder, Quit, About, OpenSettings, ShowShortcuts, ShowWelcome]);
 
@@ -46,12 +54,12 @@ pub struct Root {
     /// How blurred the window is, as the last frame left it.
     blur: f64,
     /// The welcome over the window, while it shows or goes.
-    welcome: Option<Entity<crate::welcome::WelcomeView>>,
+    welcome: Option<Entity<crate::app::welcome::WelcomeView>>,
     /// The welcome was just asked for: it takes the keyboard next frame.
     focus_welcome: bool,
     /// The blur behind the welcome, and over its page while it turns.
-    welcome_blur: crate::backdrop::Backdrop,
-    turn_blur: crate::backdrop::Backdrop,
+    welcome_blur: crate::app::backdrop::Backdrop,
+    turn_blur: crate::app::backdrop::Backdrop,
 }
 
 impl Root {
@@ -74,10 +82,10 @@ impl Root {
             blur: 0.,
             welcome: None,
             focus_welcome: false,
-            welcome_blur: crate::backdrop::Backdrop::default(),
-            turn_blur: crate::backdrop::Backdrop::default(),
+            welcome_blur: crate::app::backdrop::Backdrop::default(),
+            turn_blur: crate::app::backdrop::Backdrop::default(),
         };
-        crate::theme::set_accent(r.settings.accent.as_deref());
+        crate::ui::theme::set_accent(r.settings.accent.as_deref());
         if let Some(p) = open {
             r.open_folder(&p, cx);
         }
@@ -143,16 +151,16 @@ impl Root {
         self.err = None;
         self.recents.touch(&root.to_string_lossy(), blocks);
         self.focus_deck = true;
-        crate::windows::refresh_settings(cx);
+        crate::app::windows::refresh_settings(cx);
         cx.notify();
     }
 
     /// Draws with the accent of this id (`theme::ACCENTS`) from now on, in every window.
     pub fn set_accent(&mut self, id: &str, cx: &mut Context<Self>) {
-        let default = crate::theme::ACCENTS[0].id;
+        let default = crate::ui::theme::ACCENTS[0].id;
         self.settings.accent = (id != default).then(|| id.to_string());
         let _ = self.settings.save();
-        crate::theme::set_accent(Some(id));
+        crate::ui::theme::set_accent(Some(id));
         cx.refresh_windows();
     }
 
@@ -160,7 +168,7 @@ impl Root {
     pub fn show_welcome(&mut self, cx: &mut Context<Self>) {
         match &self.welcome {
             Some(w) => w.update(cx, |v, cx| v.reopen(cx)),
-            None => self.welcome = Some(cx.new(crate::welcome::WelcomeView::new)),
+            None => self.welcome = Some(cx.new(crate::app::welcome::WelcomeView::new)),
         }
         self.focus_welcome = true;
         cx.notify();
@@ -169,7 +177,7 @@ impl Root {
     /// The welcome over the window, faded by how far in it is, with the window
     /// blurred behind it; none once it has gone, and the keyboard goes back.
     fn welcome_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        use crate::welcome;
+        use crate::app::welcome;
         let now = std::time::Instant::now();
         if self.welcome.as_ref().is_some_and(|w| w.read(cx).gone(now)) {
             self.welcome = None;
@@ -188,7 +196,7 @@ impl Root {
             });
         }
         let Some(w) = self.welcome.clone() else {
-            self.welcome_blur.around(window, 0., crate::backdrop::Hole::default());
+            self.welcome_blur.around(window, 0., crate::app::backdrop::Hole::default());
             self.turn_blur.over(window, 0., &[]);
             return None;
         };
@@ -202,11 +210,11 @@ impl Root {
         let vs = window.viewport_size();
         let (x, y, pw, ph) = welcome::panel_rect(f32::from(vs.width), f32::from(vs.height));
         let y = y + 12. * (1. - f);
-        self.welcome_blur.around(window, 14. * f as f64, crate::backdrop::Hole { x, y, w: pw, h: ph, r: welcome::RADIUS });
+        self.welcome_blur.around(window, 14. * f as f64, crate::app::backdrop::Hole { x, y, w: pw, h: ph, r: welcome::RADIUS });
         // Turning a page, the page blurs and comes clear.
         let page = welcome::WelcomeView::page_rect((x, y, pw, ph));
         self.turn_blur.over(window, w.read(cx).turn_blur(now), &[page]);
-        let t = crate::theme::Theme::of(window);
+        let t = crate::ui::theme::Theme::of(window);
         let scrim = gpui::black().opacity(if t.dark { 0.36 } else { 0.14 } * f);
         Some(
             div()
@@ -275,7 +283,7 @@ impl Root {
         if self.switching.is_some() {
             return;
         }
-        let into = crate::stage::uneased(self.blur / crate::stage::BLUR) * crate::stage::OUT_MS;
+        let into = crate::app::stage::uneased(self.blur / crate::app::stage::BLUR) * crate::app::stage::OUT_MS;
         self.stage_from = Some(std::time::Instant::now() - std::time::Duration::from_secs_f64(into / 1000.));
         self.switching = Some(go);
         cx.notify();
@@ -284,7 +292,7 @@ impl Root {
     /// Steps the blur between screens for this frame: blurring out, then
     /// switching at its blurriest, then coming clear.
     fn step_stage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::stage::{BLUR, CLEAR_MS, OUT_MS, ease};
+        use crate::app::stage::{BLUR, CLEAR_MS, OUT_MS, ease};
         let Some(from) = self.stage_from else { return };
         let ms = from.elapsed().as_secs_f64() * 1000.;
         let r = if self.switching.is_some() {
@@ -304,7 +312,7 @@ impl Root {
             BLUR * (1. - ease(ms / CLEAR_MS))
         };
         if (r - self.blur).abs() > 0.01 {
-            crate::stage::set_blur(window, r);
+            crate::app::stage::set_blur(window, r);
             self.blur = r;
         }
         if self.stage_from.is_some() {
@@ -315,7 +323,7 @@ impl Root {
     pub fn go_home(&mut self, cx: &mut Context<Self>) {
         self.close_deck(cx);
         self.recents.check();
-        crate::windows::refresh_settings(cx);
+        crate::app::windows::refresh_settings(cx);
         cx.notify();
     }
 
@@ -348,9 +356,9 @@ impl Root {
                         }
                         r.turning.update(cx, |_, cx| cx.notify());
                         let ms = r.started.elapsed().as_millis() as u64;
-                        let period = crate::homescene::ENDLESS_HOLD_MS + crate::homescene::ENDLESS_SLIDE_MS;
+                        let period = crate::app::homescene::ENDLESS_HOLD_MS + crate::app::homescene::ENDLESS_SLIDE_MS;
                         let into = ms % period;
-                        Some(if into < crate::homescene::ENDLESS_HOLD_MS { crate::homescene::ENDLESS_HOLD_MS - into } else { 16 })
+                        Some(if into < crate::app::homescene::ENDLESS_HOLD_MS { crate::app::homescene::ENDLESS_HOLD_MS - into } else { 16 })
                     })
                     .ok()
                     .flatten();
@@ -370,7 +378,7 @@ impl Root {
             cx.notify();
             return;
         }
-        if let Some(why) = crate::recents::trash_refusal(&dir, dirs::home_dir().as_deref()) {
+        if let Some(why) = crate::app::recents::trash_refusal(&dir, dirs::home_dir().as_deref()) {
             self.err = Some(why);
             cx.notify();
             return;
@@ -389,7 +397,7 @@ impl Root {
                 return;
             }
             let _ = this.update(cx, |r, cx| {
-                match crate::recents::move_to_trash(&dir) {
+                match crate::app::recents::move_to_trash(&dir) {
                     Ok(()) => {
                         r.recents.forget(&path);
                         r.err = None;
@@ -570,7 +578,7 @@ impl Root {
                             .rounded(px(7.))
                             .child(
                                 canvas(|_, _, _| (), move |b, _, window, _| {
-                                    crate::homescene::paint_deck_mark(window, b, &t2, &paper2, missing)
+                                    crate::app::homescene::paint_deck_mark(window, b, &t2, &paper2, missing)
                                 })
                                 .size_full(),
                             ),
@@ -733,7 +741,7 @@ impl Render for DraggedDeck {
             }])
             .child(
                 div().size(px(24.)).child(
-                    canvas(|_, _, _| (), move |b, _, window, _| crate::homescene::paint_deck_mark(window, b, &t, &paper, missing))
+                    canvas(|_, _, _| (), move |b, _, window, _| crate::app::homescene::paint_deck_mark(window, b, &t, &paper, missing))
                         .size_full(),
                 ),
             )
@@ -755,7 +763,7 @@ impl Render for Backdrop {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::of(window);
         let paper = Paper::of(&t);
-        canvas(|_, _, _| (), move |b, _, window, _| crate::homescene::paint(window, b, &t, &paper)).absolute().size_full()
+        canvas(|_, _, _| (), move |b, _, window, _| crate::app::homescene::paint(window, b, &t, &paper)).absolute().size_full()
     }
 }
 
@@ -787,7 +795,7 @@ fn head(t: Theme, ms: u64) -> impl IntoElement {
     let t2 = t;
     // "创意无止境": its first word takes turns with the others, each sliding
     // up out of the way of the next.
-    use crate::homescene::{ENDLESS_WORDS, endless_at};
+    use crate::app::homescene::{ENDLESS_WORDS, endless_at};
     let (w, slide) = endless_at(ms);
     let e = 1. - (1. - slide).powi(3);
     let line_h = 30.;
@@ -845,7 +853,7 @@ fn head(t: Theme, ms: u64) -> impl IntoElement {
                     ),
                 )
                 .child(
-                    canvas(|_, _, _| (), move |b, _, window, _| crate::homescene::paint_robot(window, b, &t2))
+                    canvas(|_, _, _| (), move |b, _, window, _| crate::app::homescene::paint_robot(window, b, &t2))
                         .size(px(88.))
                         .mb(px(4.)),
                 ),

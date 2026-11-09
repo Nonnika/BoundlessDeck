@@ -20,7 +20,7 @@ pub fn style_patch(base: &model::Style, v: &Value) -> Result<model::Style, Strin
                 let c = if reset { String::new() } else { text()? };
                 let ok = c.is_empty()
                     || c == "none"
-                    || crate::theme::INKS.iter().any(|i| i.name == c)
+                    || crate::ui::theme::INKS.iter().any(|i| i.name == c)
                     || (c.len() == 7 && c.starts_with('#') && u32::from_str_radix(&c[1..], 16).is_ok());
                 if !ok {
                     return Err(format!("style.{k} 不认识 {c:?}：写调色板名、#rrggbb 或 none"));

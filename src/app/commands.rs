@@ -6,7 +6,7 @@ use gpui::{Action, App, KeyBinding, Menu, MenuItem, SharedString};
 
 use crate::app::{About, OpenFolder, OpenSettings, Quit, ShowShortcuts, ShowWelcome};
 use crate::deck::*;
-use crate::editor;
+use crate::ui::editor;
 
 pub struct Entry {
     pub menu: &'static str,

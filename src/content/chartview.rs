@@ -10,8 +10,8 @@ use gpui::{
     SharedString, Styled, TextRun, Window, canvas, div, fill, point, px, size,
 };
 
-use crate::chart::{self, Data, Type, MAX_SERIES};
-use crate::theme::{Theme, rgba_u8};
+use crate::content::chart::{self, Data, Type, MAX_SERIES};
+use crate::ui::theme::{Theme, rgba_u8};
 
 fn hue(i: usize, dark: bool) -> Hsla {
     const LIGHT: [u32; 8] = [0x2a78d6, 0xeb6834, 0x1baf7a, 0xeda100, 0xe87ba4, 0x008300, 0x6250d6, 0xe34948];

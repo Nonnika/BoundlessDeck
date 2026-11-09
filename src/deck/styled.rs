@@ -10,10 +10,10 @@ use gpui::{
     SharedString, Styled, Window, canvas, div, fill, point, prelude::FluentBuilder, px, size,
 };
 
-use crate::editor::Editor;
-use crate::markdown::{self, Parsed};
+use crate::ui::editor::Editor;
+use crate::content::markdown::{self, Parsed};
 use crate::model::{Block, BlockKind};
-use crate::theme::{MdColors, Paint, Theme, paint};
+use crate::ui::theme::{MdColors, Paint, Theme, paint};
 
 /// A block's style, worked out: what to draw.
 #[derive(Clone, Debug, PartialEq)]
@@ -340,7 +340,7 @@ mod tests {
         };
         let l = look(&b, &t);
         assert_eq!(l.fill, None);
-        assert_eq!(crate::theme::hex(l.color), "#ff0000");
+        assert_eq!(crate::ui::theme::hex(l.color), "#ff0000");
         assert_eq!((l.size, l.weight, l.radii, l.align, l.valign), (40., FontWeight(700.), [0.; 4], 1., 1.));
         b.style.corners = Some([0., 4., 16., -2.]);
         assert_eq!(look(&b, &t).radii, [0., 4., 16., 0.], "corners one by one, never below 0");

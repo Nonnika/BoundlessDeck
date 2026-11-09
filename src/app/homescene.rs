@@ -10,8 +10,8 @@ use std::f32::consts::PI;
 
 use gpui::{Bounds, Hsla, PathBuilder, Pixels, Window, fill, point, px, size};
 
-use crate::tape::{self, Tape};
-use crate::theme::{Paper, Theme, rgba_u8};
+use crate::ui::tape::{self, Tape};
+use crate::ui::theme::{Paper, Theme, rgba_u8};
 
 /// Below this width the plane holds no blocks: they would crowd the column.
 const SCENE_MIN_WIDTH: f32 = 960.;
@@ -242,7 +242,7 @@ pub fn paint_robot(window: &mut Window, r: Bounds<Pixels>, t: &Theme) {
     let (x0, y0) = (f32::from(r.origin.x), f32::from(r.origin.y));
     let k = f32::from(r.size.width) / 480.;
     let at = |x: f32, y: f32, w: f32, h: f32| (x0 + x * k, y0 + y * k, w * k, h * k);
-    let back: Hsla = if t.dark { t.accent } else { gpui::rgb(crate::theme::accent().dark).into() };
+    let back: Hsla = if t.dark { t.accent } else { gpui::rgb(crate::ui::theme::accent().dark).into() };
     let rad = 88. * k;
     let (x, y, w, h) = at(64., 50., 400., 400.);
     poly(window, &rounded(x, y, w, h, rad, 16.), back.opacity(0.28));

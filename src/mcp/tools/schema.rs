@@ -4,7 +4,7 @@
 use serde_json::{Map, Value, json};
 
 use super::SCHEMA_VERSION;
-use crate::memo;
+use crate::content::memo;
 use crate::model::{self, BlockKind, MIN_BLOCK_H, MIN_BLOCK_W};
 
 /// One field of a block as agents see it.

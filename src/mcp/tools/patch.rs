@@ -9,7 +9,7 @@ use serde_json::Value;
 use super::{Args, Ctx, normalize_url, val_num, val_str};
 use super::schema::{CHART_NAMES, FIELDS, field, for_kind, mutable_names};
 use super::style::style_patch;
-use crate::memo;
+use crate::content::memo;
 use crate::model::{self, Block, BlockKind, MIN_BLOCK_H, MIN_BLOCK_W};
 
 impl Ctx<'_> {

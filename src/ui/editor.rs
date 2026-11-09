@@ -18,7 +18,7 @@ use gpui::{
     div, fill, point, prelude::*, px, relative, size, Font, FontStyle, FontWeight,
 };
 
-use crate::mdlive::{self, Block, Sty};
+use crate::content::mdlive::{self, Block, Sty};
 use unicode_segmentation::UnicodeSegmentation as _;
 
 actions!(
@@ -229,7 +229,7 @@ fn styled_run(len: usize, sty: Sty, block: Block, font: &Font, e: &Editor) -> Te
         f.style = FontStyle::Italic;
     }
     if sty.code {
-        f.family = crate::font::mono();
+        f.family = crate::ui::font::mono();
     }
     let color = if sty.dim || block == Block::Quote {
         e.muted
@@ -519,7 +519,7 @@ impl Editor {
         // A click on a rendered checkbox ticks it, leaving the cursor where it was.
         if !ev.modifiers.shift
             && let Some(at) = self.task_for_mouse(ev.position)
-            && let Some(next) = crate::markdown::toggle_task(&self.text, at)
+            && let Some(next) = crate::content::markdown::toggle_task(&self.text, at)
         {
             window.focus(&self.focus);
             self.text = next;
@@ -803,7 +803,7 @@ impl Element for TextElement {
         let line_height = px(e.font_size * if e.multiline { 1.5 } else { 1.35 });
         let mut font = window.text_style().font();
         if e.mono {
-            font.family = crate::font::mono();
+            font.family = crate::ui::font::mono();
         }
         if let Some(f) = &e.family {
             font.family = f.clone();

@@ -5,8 +5,8 @@ use std::time::Instant;
 use gpui::{AppContext, Context, Entity, Focusable, Window};
 
 use super::{DeckView, EditPart, Editing, browser};
-use crate::editor::{Editor, EditorEvent};
-use crate::memo;
+use crate::ui::editor::{Editor, EditorEvent};
+use crate::content::memo;
 use crate::model::BlockKind;
 
 impl DeckView {
@@ -80,7 +80,7 @@ impl DeckView {
             }
         });
         let f = editor.focus_handle(cx);
-        crate::webfocus::release();
+        crate::platform::webfocus::release();
         window.focus(&f);
         self.editing = Some(Editing { id: id.to_string(), part, editor, from_title, _sub: sub });
         cx.notify();

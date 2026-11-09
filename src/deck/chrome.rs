@@ -8,11 +8,11 @@ use gpui::{
 };
 
 use super::{CHROME_LEFT, CHROME_TOP, DeckEvent, DeckView, Popup, ToggleFocusView, shadow};
-use crate::icons;
-use crate::lifespan::LIFE_CHOICES;
+use crate::ui::icons;
+use crate::content::lifespan::LIFE_CHOICES;
 use crate::model::{self, BlockKind};
-use crate::recents::short_path;
-use crate::theme::Theme;
+use crate::app::recents::short_path;
+use crate::ui::theme::Theme;
 
 impl DeckView {
     pub(super) fn toolbar(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -214,9 +214,9 @@ impl DeckView {
                 m.into_any_element()
             }
             Popup::ChartType { id, at } => {
-                let now = self.m.block(&id).map(|b| crate::chart::of(&b.chart));
+                let now = self.m.block(&id).map(|b| crate::content::chart::of(&b.chart));
                 let mut m = menu(at.0 - 60., at.1);
-                for (kind, name, label, _) in crate::chart::TYPES {
+                for (kind, name, label, _) in crate::content::chart::TYPES {
                     let id = id.clone();
                     m = m.child(
                         row(SharedString::from(format!("chart:{name}")), label.into(), now == Some(kind)).on_click(

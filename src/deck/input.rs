@@ -273,7 +273,7 @@ impl DeckView {
             self.stop_editing(cx);
         }
         self.active = id.map(str::to_string);
-        crate::webfocus::release();
+        crate::platform::webfocus::release();
         // The canvas takes the keyboard unless the block's `on_focus` does; one
         // focused already keeps it.
         if !id.is_some_and(|i| self.rts.get(i).is_some_and(|r| r.life.focused)) {
