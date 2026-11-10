@@ -403,12 +403,12 @@ impl Model {
 
     /// The blocks the window shows some of, tape and shadow included, back to front.
     pub fn visible(&self, vw: f32, vh: f32) -> Vec<usize> {
-        let hidden = self.stacked_ids();
+        let hidden = self.stacked();
         let c = self.cam;
         (0..self.blocks.len())
             .filter(|&i| {
                 let b = &self.blocks[i];
-                if hidden.contains(&b.id) {
+                if hidden.contains(b.id.as_str()) {
                     return false;
                 }
                 let (sx, sy) = c.to_screen(b.x, b.y);
@@ -436,6 +436,15 @@ impl Model {
     // ---- stacks ----
 
     /// Every block ID a stack holds.
+    /// Every block ID a stack holds, borrowed: what each frame asks.
+    pub fn stacked(&self) -> HashSet<&str> {
+        self.blocks
+            .iter()
+            .filter(|b| b.kind == BlockKind::Stack)
+            .flat_map(|b| b.items.iter().map(String::as_str))
+            .collect()
+    }
+
     pub fn stacked_ids(&self) -> HashSet<String> {
         self.blocks
             .iter()

@@ -33,16 +33,19 @@ impl DeckView {
     /// A 文字's words as Markdown, in its own colors, each typed line its own line.
     pub(super) fn text_markdown(&mut self, id: &str, src: &str, c: &MdColors, dark: bool) -> markdown::Parsed {
         // The colors are baked into the parse (links, code), so they are part of what it is cached by.
-        let key = format!("{:?}{:?}{:?}\u{0}{src}", c.text, c.link, c.muted);
+        // Compared in place: the text is not copied into a key each frame.
+        let colors = format!("{:?}{:?}{:?}\u{0}", c.text, c.link, c.muted);
         let rt = self.rts.entry(id.to_string()).or_default();
         if let Some((cached, parsed)) = &rt.md_cache
-            && cached == &key
+            && cached.len() == colors.len() + src.len()
+            && cached.starts_with(&colors)
+            && cached[colors.len()..] == *src
             && parsed.is_dark() == dark
         {
             return parsed.clone();
         }
         let parsed = markdown::parse_lines(src, c, dark);
-        rt.md_cache = Some((key, parsed.clone()));
+        rt.md_cache = Some((colors + src, parsed.clone()));
         parsed
     }
 
@@ -284,9 +287,9 @@ impl DeckView {
         }
         if let Some(ed) = editing {
             // The text may have arrived after the edit began.
-            let text = rt.memo.text.clone();
+            let late = (ed.read(cx).text.is_empty() && !rt.memo.text.is_empty()).then(|| rt.memo.text.clone());
             ed.update(cx, |e, cx| {
-                if e.text.is_empty() && !text.is_empty() {
+                if let Some(text) = late {
                     e.set_text(text, cx);
                 }
                 e.font_size = size;
@@ -297,25 +300,26 @@ impl DeckView {
             return div().w(px(b.w * s)).h_full().flex_none().py(px(8. * s)).px(px(12. * s)).child(ed).into_any_element();
         }
         let save_err = rt.memo.save_err.clone();
-        let text = rt.memo.text.clone();
         self.check_memo(&b.id, cx);
         let colors = MdColors::of_theme(t);
         let pad = [12. * s, 16. * s, 12. * s, 16. * s];
-        if save_err.is_none() && !text.trim().is_empty() {
-            let parsed = self.parsed_markdown(&b.id, &text, &colors, t.dark);
+        // Lent out of the runtime for the parse, not copied each frame; nothing
+        // between here and its return reads it.
+        let text = std::mem::take(&mut self.rts.entry(b.id.clone()).or_default().memo.text);
+        let parsed = (!text.trim().is_empty()).then(|| self.parsed_markdown(&b.id, &text, &colors, t.dark));
+        self.rts.entry(b.id.clone()).or_default().memo.text = text;
+        if let (None, Some(parsed)) = (&save_err, &parsed) {
             let toggle = self.task_toggle(&b.id, cx);
-            return self.markdown_list(&b.id, parsed, size, colors, Rc::new(markdown::local_image), pad, b.w * s, Some(toggle));
+            return self.markdown_list(&b.id, parsed.clone(), size, colors, Rc::new(markdown::local_image), pad, b.w * s, Some(toggle));
         }
         let content = div()
             .flex()
             .flex_col()
             .gap(px(6. * s))
             .when_some(save_err, |d, e| d.child(div().text_size(px(12. * s)).text_color(t.danger).child(e)))
-            .child(if text.trim().is_empty() {
-                div().text_size(px(size)).text_color(t.muted).child("双击开始写，支持 Markdown").into_any_element()
-            } else {
-                let parsed = self.parsed_markdown(&b.id, &text, &colors, t.dark);
-                markdown::render_parsed(&parsed, size, &colors)
+            .child(match parsed {
+                None => div().text_size(px(size)).text_color(t.muted).child("双击开始写，支持 Markdown").into_any_element(),
+                Some(parsed) => markdown::render_parsed(&parsed, size, &colors),
             })
             .into_any_element();
         live_preview(&b.id, content, pad, b.w * s)

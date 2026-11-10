@@ -161,11 +161,10 @@ fn b_w(st: &Block, s: f32) -> f32 {
 }
 
 fn cut(s: &str, max: usize) -> String {
-    let mut out: String = s.chars().take(max).collect();
-    if s.chars().count() > max {
-        out.push('…');
+    match s.char_indices().nth(max) {
+        Some((end, _)) => format!("{}…", &s[..end]),
+        None => s.to_string(),
     }
-    out
 }
 
 impl DeckView {
@@ -201,12 +200,12 @@ impl DeckView {
     /// The stack under a window point, other than `except`: where a block let go there goes.
     pub(super) fn stack_at(&self, x: f32, y: f32, except: &str) -> Option<String> {
         let (wx, wy) = self.m.cam.to_world(x, y);
-        let hidden = self.m.stacked_ids();
+        let hidden = self.m.stacked();
         self.m
             .blocks
             .iter()
             .rev()
-            .filter(|b| b.kind == BlockKind::Stack && b.id != except && !hidden.contains(&b.id))
+            .filter(|b| b.kind == BlockKind::Stack && b.id != except && !hidden.contains(b.id.as_str()))
             .find(|b| b.contains(wx, wy))
             .map(|b| b.id.clone())
     }
@@ -398,33 +397,35 @@ impl DeckView {
     }
 
     /// The Markdown a card's face shows rendered, loading what it needs; "" for none.
+    /// Cut from the text where it is, so a long document is not copied each frame.
     pub(super) fn face_markdown(&mut self, n: &Block, cx: &mut Context<Self>) -> String {
-        let src = match n.kind {
-            BlockKind::Note => n.text.clone(),
-            BlockKind::Memo => {
-                self.load_memo(&n.id, cx);
-                self.rts.get(&n.id).filter(|r| r.memo.loaded).map(|r| r.memo.text.clone()).unwrap_or_default()
-            }
+        match n.kind {
+            BlockKind::Memo => self.load_memo(&n.id, cx),
             BlockKind::File => match preview::of(&n.path) {
-                preview::Kind::Markdown => {
-                    self.load_doc(&n.id, cx);
-                    match self.rts.get(&n.id).and_then(|r| r.doc.clone()) {
-                        Some(Ok(t)) => (*t).clone(),
-                        _ => String::new(),
-                    }
-                }
-                preview::Kind::Word => {
-                    self.load_word(&n.id, cx);
-                    match self.rts.get(&n.id).and_then(|r| r.word.clone()) {
-                        Some(Ok(d)) => d.markdown.clone(),
-                        _ => String::new(),
-                    }
-                }
-                _ => String::new(),
+                preview::Kind::Markdown => self.load_doc(&n.id, cx),
+                preview::Kind::Word => self.load_word(&n.id, cx),
+                _ => {}
             },
-            _ => String::new(),
+            _ => {}
+        }
+        let rt = self.rts.get(&n.id);
+        let src: &str = match n.kind {
+            BlockKind::Note => &n.text,
+            BlockKind::Memo => rt.filter(|r| r.memo.loaded).map_or("", |r| r.memo.text.as_str()),
+            BlockKind::File => match (preview::of(&n.path), rt) {
+                (preview::Kind::Markdown, Some(r)) => match &r.doc {
+                    Some(Ok(t)) => t.as_str(),
+                    _ => "",
+                },
+                (preview::Kind::Word, Some(r)) => match &r.word {
+                    Some(Ok(d)) => d.markdown.as_str(),
+                    _ => "",
+                },
+                _ => "",
+            },
+            _ => "",
         };
-        if src.trim().is_empty() { String::new() } else { cut(&src, 2000) }
+        if src.trim().is_empty() { String::new() } else { cut(src, 2000) }
     }
 
     pub(super) fn stack_body(&mut self, st: &Block, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

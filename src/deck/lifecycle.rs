@@ -35,6 +35,11 @@ use gpui::{Context, Focusable, Window};
 use super::DeckView;
 use crate::model::{Block, BlockKind, LOD_SCALE};
 
+/// How long a block stays off screen before what it read is let go (`sweep_hidden`).
+const HIDDEN_KEEP: std::time::Duration = std::time::Duration::from_secs(60);
+/// How often blocks off screen are looked over.
+const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Why a block is paused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Pause {
@@ -215,6 +220,7 @@ impl DeckView {
                 (false, None) => {
                     if let Some(rt) = self.rts.get_mut(&b.id) {
                         rt.life.shown = true;
+                        rt.hidden_since = None;
                     }
                     hooks(b.kind).on_resume(self, b, cx);
                 }
@@ -270,7 +276,26 @@ impl DeckView {
             return;
         }
         rt.life.shown = false;
+        rt.hidden_since = (why == Pause::Offscreen).then(std::time::Instant::now);
         hooks(b.kind).on_pause(self, b, why, cx);
+    }
+
+    /// Lets go of what blocks long off screen read from their files (text,
+    /// documents, PDF pages): wandering a big deck would otherwise keep all
+    /// of it. Only off screen, not stacked or zoomed out, where faces and a
+    /// zoom back in still want it. Looked over every few seconds.
+    pub(super) fn sweep_hidden(&mut self) {
+        let now = std::time::Instant::now();
+        if self.swept_at.is_some_and(|t| now - t < SWEEP_EVERY) {
+            return;
+        }
+        self.swept_at = Some(now);
+        for rt in self.rts.values_mut() {
+            if !rt.life.shown && !rt.loading && !rt.pdf_rendering && rt.hidden_since.is_some_and(|t| now - t >= HIDDEN_KEEP) {
+                rt.forget_file();
+                rt.hidden_since = None;
+            }
+        }
     }
 
     /// Ends the stays of the blocks that left the deck: blur, pause, `on_delete`,

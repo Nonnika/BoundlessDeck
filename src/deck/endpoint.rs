@@ -139,13 +139,7 @@ impl DeckView {
         }
         for id in reload {
             if let Some(rt) = self.rts.get_mut(&id) {
-                rt.lines = None;
-                rt.doc = None;
-                rt.word = None;
-                rt.pdf = None;
-                rt.pdf_img = None;
-                rt.md_cache = None;
-                rt.face_md_cache = None;
+                rt.forget_file();
                 rt.chart_cache = None;
                 rt.memo = MemoRt::default();
                 // The open tab's page goes again where it was sent; the other tabs keep theirs.

@@ -232,6 +232,24 @@ struct Runtime {
     sharpen: sharpen::Sharpen,
     /// The entrance of a block just made.
     pop: popin::PopIn,
+    /// Since when the block has been off screen: long enough, and what it
+    /// read is let go (`sweep_hidden`).
+    hidden_since: Option<Instant>,
+}
+
+impl Runtime {
+    /// Lets go of what was read from the block's file and what was made of it
+    /// (pages, parses): it is read again when it shows. A list's scroll stays.
+    fn forget_file(&mut self) {
+        self.lines = None;
+        self.doc = None;
+        self.word = None;
+        self.pdf = None;
+        self.pdf_img = None;
+        self.pdf_prev = None;
+        self.md_cache = None;
+        self.face_md_cache = None;
+    }
 }
 
 struct WordDoc {
@@ -361,6 +379,8 @@ pub struct DeckView {
     resize_corners: Vec<[f32; 4]>,
     /// When the canvas last zoomed by a gesture.
     zoomed_at: Option<Instant>,
+    /// When blocks long off screen were last let go of (`sweep_hidden`).
+    swept_at: Option<Instant>,
 }
 
 impl EventEmitter<DeckEvent> for DeckView {}
@@ -460,6 +480,7 @@ impl DeckView {
             frame_rects: Vec::new(),
             resize_corners: Vec::new(),
             zoomed_at: None,
+            swept_at: None,
         }
     }
 
@@ -782,6 +803,7 @@ impl DeckView {
             })
             .collect();
         self.life_tick(&visible, window, cx);
+        self.sweep_hidden();
         self.resize_corners.clear();
         // Playing, the bodies this frame pictures, nearest the middle first (`snapshot`).
         self.plan_captures(&visible, t.dark, window);
