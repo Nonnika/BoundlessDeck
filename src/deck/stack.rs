@@ -476,8 +476,8 @@ impl DeckView {
         rt.scroll = rt.scroll.clamp(0., g.max);
         let mut animating = false;
         // Hovering an open stack: its edges scroll, its middle pushes cards out.
-        if open && !shown && !dragging {
-            if let Some(y) = rt.hover {
+        if open && !shown && !dragging
+            && let Some(y) = rt.hover {
                 let target = if y < g.band && rt.scroll > 0. {
                     Some(0.)
                 } else if y > g.h - g.band && rt.scroll < g.max {
@@ -499,7 +499,6 @@ impl DeckView {
                     }
                 }
             }
-        }
         if shown {
             // The long preview turns the cards: the one it shows is out and in view.
             rt.out = true;

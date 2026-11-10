@@ -79,8 +79,7 @@ pub fn distribute(
     let (first, last) = (o[0], o[o.len() - 1]);
     let n = o.len() as f32;
     let mut ps = Vec::new();
-    let value;
-    if !centers {
+    let value = if !centers {
         let span = if horizontal { last.1 + last.3 - first.1 } else { last.2 + last.4 - first.2 };
         let sizes: f32 = o.iter().map(|r| if horizontal { r.3 } else { r.4 }).sum();
         let gap = (span - sizes) / (n - 1.);
@@ -99,7 +98,7 @@ pub fn distribute(
                 cursor += r.4 + gap;
             }
         }
-        value = gap;
+        gap
     } else {
         let (c0, c1) = (key(first), key(last));
         let step = (c1 - c0) / (n - 1.);
@@ -111,8 +110,8 @@ pub fn distribute(
                 ps.push((r.0.clone(), r.1, c - r.4 / 2.));
             }
         }
-        value = step;
-    }
+        step
+    };
     Ok((o.iter().map(|r| r.0.clone()).collect(), ps, value))
 }
 

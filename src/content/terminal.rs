@@ -165,11 +165,9 @@ impl Terminal {
                     cx.emit(TerminalEvent::Exited(code));
                 }
             }
-            TermEvent::Exit => {
-                if !self.exited {
-                    self.exited = true;
-                    cx.emit(TerminalEvent::Exited(0));
-                }
+            TermEvent::Exit if !self.exited => {
+                self.exited = true;
+                cx.emit(TerminalEvent::Exited(0));
             }
             _ => {}
         }
@@ -217,14 +215,14 @@ impl Terminal {
             return;
         }
         if m.platform {
-            if ks.key == "v" {
-                if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                    let bracketed = self.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
-                    let text = text.replace("\r\n", "\r").replace('\n', "\r");
-                    let bytes = if bracketed { format!("\x1b[200~{text}\x1b[201~") } else { text };
-                    self.write(bytes.into_bytes());
-                    cx.stop_propagation();
-                }
+            if ks.key == "v"
+                && let Some(text) = cx.read_from_clipboard().and_then(|c| c.text())
+            {
+                let bracketed = self.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
+                let text = text.replace("\r\n", "\r").replace('\n', "\r");
+                let bytes = if bracketed { format!("\x1b[200~{text}\x1b[201~") } else { text };
+                self.write(bytes.into_bytes());
+                cx.stop_propagation();
             }
             return; // ⌘ and a key is the app's: a shortcut, not input
         }
@@ -496,7 +494,7 @@ impl gpui::EntityInputHandler for Terminal {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        self.ime_cursor.clone()
+        self.ime_cursor
     }
 
     fn character_index_for_point(
@@ -709,7 +707,7 @@ impl Element for GridElement {
                 let x = origin.x + px(cur.point.column.0 as f32 * cell_w);
                 let y = origin.y + px(cur.point.line.0 as f32 * line_h);
                 let b = Bounds::new(point(x, y), size(px(cell_w), px(line_h)));
-                ime_cursor = Some(b.clone());
+                ime_cursor = Some(b);
                 if let Some(text) = &marked {
                     let color = to_hsla(palette(256, dark));
                     let run = TextRun {

@@ -19,7 +19,7 @@ use gpui::{
     AnyElement, App, AppContext, Context, DispatchPhase, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable,
     Hsla, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Render,
     ScrollWheelEvent, SharedString, Styled, Subscription, UniformListScrollHandle, Window, actions, canvas, div, fill,
-    point, px, size,
+    point, prelude::FluentBuilder, px, size,
 };
 
 mod body;
@@ -963,8 +963,10 @@ impl DeckView {
             .children(self.stack_preview(&t, window, cx))
             .children(self.pluck_view(&t))
             .children(self.popup_view(&t, cx))
-            // TEMP: painted last, so it marks the end of the frame's work (`framestat`).
-            .child(canvas(|_, _, _| (), |_, _, _, _| zoomlayer::framestat::end()).absolute().size_0())
+            // Painted last, so it marks the end of the frame's work (`framestat`).
+            .when(zoomlayer::framestat::enabled(), |d| {
+                d.child(canvas(|_, _, _| (), |_, _, _, _| zoomlayer::framestat::end()).absolute().size_0())
+            })
     }
 }
 

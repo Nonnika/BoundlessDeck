@@ -15,10 +15,10 @@ impl Default for Camera {
 }
 
 impl Camera {
-    pub fn to_screen(&self, wx: f32, wy: f32) -> (f32, f32) {
+    pub fn to_screen(self, wx: f32, wy: f32) -> (f32, f32) {
         ((wx - self.x) * self.s, (wy - self.y) * self.s)
     }
-    pub fn to_world(&self, sx: f32, sy: f32) -> (f32, f32) {
+    pub fn to_world(self, sx: f32, sy: f32) -> (f32, f32) {
         (sx / self.s + self.x, sy / self.s + self.y)
     }
     pub(super) fn clamp(&mut self) {

@@ -46,3 +46,11 @@ objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "WKSnapshotConfigu
 # GPUI 打了本仓库自己的补丁（文字排版缓存等），见 vendor/gpui/PATCHES.md
 [patch.crates-io]
 gpui = { path = "vendor/gpui" }
+
+# 调试版里依赖（GPUI、alacritty 等）也开优化：排版与绘制在 debug 下慢得多，本 crate 仍按 debug 编译
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

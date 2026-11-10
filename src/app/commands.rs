@@ -130,6 +130,9 @@ pub fn glyphs(keys: &str) -> String {
 /// One group of the shortcuts window: its rows of what and how.
 pub type Group = (SharedString, Vec<(SharedString, Vec<SharedString>)>);
 
+/// A gesture and the ways to make it.
+type Gesture = (&'static str, &'static [&'static str]);
+
 /// The menu's commands with keys, then the canvas's gestures.
 pub fn shortcut_groups() -> Vec<Group> {
     let mut out: Vec<Group> = Vec::new();
@@ -140,7 +143,7 @@ pub fn shortcut_groups() -> Vec<Group> {
         }
         out.last_mut().unwrap().1.push((en.label.into(), vec![glyphs(keys).into()]));
     }
-    let gestures: [(&str, &[(&str, &[&str])]); 5] = [
+    let gestures: [(&str, &[Gesture]); 5] = [
         ("画布", &[
             ("新建 QuickLook（在鼠标处）", &["双击空白处"]),
             ("框选", &["拖动空白处"]),

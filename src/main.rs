@@ -75,12 +75,9 @@ fn main() {
             }
         })
         .detach();
-        cx.on_app_quit({
-            let window = window;
-            move |cx| {
-                window.update(cx, |r, _, cx| r.close_deck(cx)).ok();
-                async {}
-            }
+        cx.on_app_quit(move |cx| {
+            window.update(cx, |r, _, cx| r.close_deck(cx)).ok();
+            async {}
         })
         .detach();
         set_dock_icon();

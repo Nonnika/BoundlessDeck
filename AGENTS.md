@@ -129,7 +129,7 @@ cargo test model::tests                     # 按模块路径过滤
 cargo test -- --test-threads=1              # socket / 计时相关测试排查时串行运行
 cargo build --release
 cargo bundle --release                      # 打包 target/release/bundle/osx/BoundlessDeck.app（需 cargo install cargo-bundle --locked；图标 resources/icon.icns）
-cargo clippy                                # 有现存警告（见下），不要新增
+cargo clippy                                # 本 crate 无警告，保持为零
 ```
 
 试运行时隔离真实数据：
@@ -152,7 +152,8 @@ cargo run -- /tmp/test-deck
 ### 工具链现状
 
 - **格式**：仓库没有 `rustfmt.toml`，`cargo fmt --check` 报告约 583 处差异（约 9900 行输出）。不要整文件格式化，只让改动部分符合周围风格。
-- **Lint**：没有 `clippy.toml` 或 `[lints]`。当前 clippy 警告包括 `collapsible_if` 与 `redundant_locals`（`main.rs:88`）。新代码不要新增警告。
+- **Lint**：没有 `clippy.toml` 或 `[lints]`。`boundlessdeck` 本身没有 clippy 警告，剩下的来自 `vendor/gpui`（taffy 的 f32 字面量）与依赖的 future-incompat 提示。新代码不要新增警告。
+- **构建配置**：`[profile.dev.package."*"]` 以 `opt-level = 2` 编译依赖（调试版里 GPUI 排版不至于太慢），release 开 `lto = "thin"` 与 `codegen-units = 1`。
 - **工具链**：无 `rust-toolchain` 文件，也没有 `rust-version` 字段。edition 2024 需要 Rust 1.85+（外部事实，仓库未声明）。本机观察到 rustc 1.99。
 - **`gpui` 特性**：`runtime_shaders` 已开启，因为本机没有 Xcode 的 `metal` 编译器。不要移除。
 

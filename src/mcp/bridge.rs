@@ -189,10 +189,10 @@ pub fn main(args: &[String]) -> Option<i32> {
                 Some(serde_json::to_vec(&rpc::error(id, -32000, &msg)).unwrap())
             }
         };
-        if let Some(a) = answer {
-            if out.write_all(&a).and_then(|_| out.write_all(b"\n")).and_then(|_| out.flush()).is_err() {
-                break;
-            }
+        if let Some(a) = answer
+            && out.write_all(&a).and_then(|_| out.write_all(b"\n")).and_then(|_| out.flush()).is_err()
+        {
+            break;
         }
     }
     Some(0)
