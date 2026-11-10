@@ -35,6 +35,10 @@ pub use block::WebTab;
 /// The folder inside a deck's folder that holds its canvas.
 pub const DECK_DIR: &str = ".boundlessdeck";
 
+/// How many edits undo goes back: each keeps whole blocks (texts and all),
+/// so a long session would otherwise only grow.
+pub const UNDO_DEPTH: usize = 500;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Geometry {
     pub x: f32,
@@ -206,7 +210,7 @@ impl Model {
             b.h = 260.0;
         }
         self.forget_redo();
-        self.undo.push(Change::Add { block: b.clone(), index: self.blocks.len(), sel: self.sel.clone() });
+        self.record(Change::Add { block: b.clone(), index: self.blocks.len(), sel: self.sel.clone() });
         let id = b.id.clone();
         self.created.push(id.clone());
         self.blocks.push(b);
@@ -219,7 +223,7 @@ impl Model {
         let Some(i) = self.index_of(id) else { return };
         self.forget_redo();
         let block = self.detach(i);
-        self.undo.push(Change::Remove { block, index: i });
+        self.record(Change::Remove { block, index: i });
         self.sel.remove(id);
     }
 
@@ -250,6 +254,15 @@ impl Model {
             if let Change::Add { block, .. } = c {
                 self.hung_up.push(block);
             }
+        }
+    }
+
+    /// Puts a new edit on the undo stack, forgetting the oldest past `UNDO_DEPTH`.
+    /// Nothing forgotten needs letting go: a removed block was hung up as it left.
+    fn record(&mut self, c: Change) {
+        self.undo.push(c);
+        if self.undo.len() > UNDO_DEPTH {
+            self.undo.drain(..self.undo.len() - UNDO_DEPTH);
         }
     }
 
@@ -345,7 +358,7 @@ impl Model {
             }
         }
         let n = moves.len();
-        self.undo.push(Change::Moves(moves));
+        self.record(Change::Moves(moves));
         n
     }
 
@@ -368,7 +381,7 @@ impl Model {
         }
         self.forget_redo();
         self.restore_stack_edits(&edits, true);
-        self.undo.push(Change::Stack(edits));
+        self.record(Change::Stack(edits));
     }
 
     /// Records a move or resize done by hand, from the boxes before it, as one undoable change.
@@ -387,7 +400,7 @@ impl Model {
         }
         self.forget_redo();
         let n = moves.len();
-        self.undo.push(Change::Moves(moves));
+        self.record(Change::Moves(moves));
         n
     }
 
@@ -481,7 +494,7 @@ impl Model {
         edits.push(StackEdit { stack: stack.to_string(), before, after });
         self.forget_redo();
         self.restore_stack_edits(&edits, true);
-        self.undo.push(Change::Stack(edits));
+        self.record(Change::Stack(edits));
         self.sel = HashSet::from([stack.to_string()]);
         true
     }
@@ -506,7 +519,7 @@ impl Model {
         b.y = y;
         let after = Geometry::of(b);
         // One undo: the move and the stack edit go back together.
-        self.undo.push(Change::Group(vec![
+        self.record(Change::Group(vec![
             Change::Stack(vec![edit]),
             Change::Moves(vec![MoveChange { id: id.to_string(), before: g, after }]),
         ]));
@@ -818,6 +831,20 @@ mod tests {
         assert_eq!(v["blocks"][1]["glow"], serde_json::json!([1, 2, 3]), "kept as it was");
         assert_eq!(v["blocks"][0]["text"], "你好");
         assert_ne!(m.new_id(), "b000002");
+    }
+
+    #[test]
+    fn undo_keeps_only_the_latest_edits() {
+        let mut m = Model::new("/tmp");
+        for _ in 0..UNDO_DEPTH + 20 {
+            m.add_block(Block::new(BlockKind::Note));
+        }
+        assert_eq!(m.undo.len(), UNDO_DEPTH);
+        for _ in 0..UNDO_DEPTH + 20 {
+            m.undo_last();
+        }
+        assert_eq!(m.blocks.len(), 20, "the oldest additions can no longer be undone");
+        assert_eq!(m.redo.len(), UNDO_DEPTH);
     }
 
     #[test]
