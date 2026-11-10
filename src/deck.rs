@@ -232,6 +232,12 @@ struct Runtime {
     sharpen: sharpen::Sharpen,
     /// The entrance of a block just made.
     pop: popin::PopIn,
+    /// When the linked file had last changed as its content was read: a
+    /// different time on disk reads it again (`check_file`).
+    file_seen: Option<SystemTime>,
+    /// When the file was last looked at for a change, and whether a look is under way.
+    file_checked: Option<Instant>,
+    file_checking: bool,
     /// Since when the block has been off screen: long enough, and what it
     /// read is let go (`sweep_hidden`).
     hidden_since: Option<Instant>,
@@ -249,6 +255,8 @@ impl Runtime {
         self.pdf_prev = None;
         self.md_cache = None;
         self.face_md_cache = None;
+        self.file_seen = None;
+        self.file_checked = None;
     }
 }
 

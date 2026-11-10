@@ -328,6 +328,9 @@ impl DeckView {
     pub(super) fn file_body(&mut self, b: &Block, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let s = self.content_scale();
         let path = self.m.path_of(&b.path);
+        if matches!(preview::of(&b.path), preview::Kind::Markdown | preview::Kind::Word | preview::Kind::Pdf | preview::Kind::Text) {
+            self.check_file(&b.id, cx);
+        }
         match preview::of(&b.path) {
             preview::Kind::Image => div()
                 .size_full()

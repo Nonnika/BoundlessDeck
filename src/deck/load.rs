@@ -1,8 +1,9 @@
 //! Loading what blocks show off the UI thread: text files, documents,
 //! Word files, PDF pages, and a terminal's shell.
 
+use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use gpui::{
     AnyElement, AppContext, Context, InteractiveElement, IntoElement, MouseButton, ObjectFit, ParentElement,
@@ -26,10 +27,11 @@ impl DeckView {
         rt.loading = true;
         let id = id.to_string();
         cx.spawn(async move |this, cx| {
-            let r = cx.background_spawn(async move { preview::read_lines(&path) }).await;
+            let (seen, r) = cx.background_spawn(async move { (modified(&path), preview::read_lines(&path)) }).await;
             let _ = this.update(cx, |d, cx| {
                 let rt = d.rts.entry(id).or_default();
                 rt.loading = false;
+                rt.file_seen = seen;
                 rt.lines = Some(r.map(Arc::new));
                 cx.notify();
             });
@@ -46,10 +48,11 @@ impl DeckView {
         rt.loading = true;
         let id = id.to_string();
         cx.spawn(async move |this, cx| {
-            let r = cx.background_spawn(async move { preview::read_doc(&path) }).await;
+            let (seen, r) = cx.background_spawn(async move { (modified(&path), preview::read_doc(&path)) }).await;
             let _ = this.update(cx, |d, cx| {
                 let rt = d.rts.entry(id).or_default();
                 rt.loading = false;
+                rt.file_seen = seen;
                 rt.doc = Some(r.map(Arc::new));
                 cx.notify();
             });
@@ -66,9 +69,9 @@ impl DeckView {
         rt.loading = true;
         let id = id.to_string();
         cx.spawn(async move |this, cx| {
-            let r = cx
+            let (seen, r) = cx
                 .background_spawn(async move {
-                    crate::content::word::read(&path).map(|d| WordDoc {
+                    (modified(&path), crate::content::word::read(&path).map(|d| WordDoc {
                         markdown: d.markdown,
                         media: d
                             .media
@@ -78,12 +81,13 @@ impl DeckView {
                                 (name, img)
                             })
                             .collect(),
-                    })
+                    }))
                 })
                 .await;
             let _ = this.update(cx, |d, cx| {
                 let rt = d.rts.entry(id).or_default();
                 rt.loading = false;
+                rt.file_seen = seen;
                 rt.word = Some(r.map(Arc::new));
                 cx.notify();
             });
@@ -101,10 +105,11 @@ impl DeckView {
         rt.loading = true;
         let id = id.to_string();
         cx.spawn(async move |this, cx| {
-            let r = cx.background_spawn(async move { crate::content::pdf::Doc::open(&path) }).await;
+            let (seen, r) = cx.background_spawn(async move { (modified(&path), crate::content::pdf::Doc::open(&path)) }).await;
             let _ = this.update(cx, |d, cx| {
                 let rt = d.rts.entry(id).or_default();
                 rt.loading = false;
+                rt.file_seen = seen;
                 rt.pdf = Some(r.map(Arc::new));
                 cx.notify();
             });
@@ -232,6 +237,41 @@ impl DeckView {
             .into_any_element()
     }
 
+    /// Reads the block's file again when it changed on disk since it was
+    /// read (edited elsewhere, rewritten by a build), looking at most every
+    /// `memo::POLL`. Called while the body shows; a file that went away
+    /// shows its error, one that comes back shows again.
+    pub(super) fn check_file(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(b) = self.m.block(id) else { return };
+        let path = self.m.path_of(&b.path);
+        let Some(rt) = self.rts.get_mut(id) else { return };
+        let read = rt.lines.is_some() || rt.doc.is_some() || rt.word.is_some() || rt.pdf.is_some();
+        if !read || rt.loading || rt.pdf_rendering || rt.file_checking {
+            return;
+        }
+        let now = Instant::now();
+        if rt.file_checked.is_some_and(|t| now - t < crate::content::memo::POLL) {
+            return;
+        }
+        rt.file_checked = Some(now);
+        rt.file_checking = true;
+        let id = id.to_string();
+        cx.spawn(async move |this, cx| {
+            let on_disk = cx.background_spawn(async move { modified(&path) }).await;
+            let _ = this.update(cx, |d, cx| {
+                let Some(rt) = d.rts.get_mut(&id) else { return };
+                rt.file_checking = false;
+                // Let go of meanwhile (`sweep_hidden`): read again anyway.
+                let read = rt.lines.is_some() || rt.doc.is_some() || rt.word.is_some() || rt.pdf.is_some();
+                if read && on_disk != rt.file_seen && !rt.loading && !rt.pdf_rendering {
+                    rt.forget_file();
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Starts the block's shell in the deck's folder.
     pub(super) fn start_terminal(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(b) = self.m.block(id) else { return };
@@ -266,4 +306,9 @@ impl DeckView {
         rt.term = Some(term);
         rt._term_sub = Some(sub);
     }
+}
+
+/// When a file last changed, or None when it cannot be read.
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
