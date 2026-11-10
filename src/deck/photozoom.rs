@@ -226,7 +226,8 @@ mod tests {
         assert_eq!(drawn.to_screen(150., 100.).0.round(), 300.);
         // It shows the view, and the view zoomed out about the pointer, until OVERSCAN.
         assert!(covers(drawn, live, view));
-        let mut m = crate::model::Model { cam: live, ..Default::default() };
+        let mut m = crate::model::Model::default();
+        m.cam = live;
         m.zoom_at(pointer.0, pointer.1, 1.1 / OVERSCAN);
         assert!(covers(drawn, m.cam, view), "still inside");
         m.zoom_at(pointer.0, pointer.1, 1. / 1.2);

@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
@@ -95,6 +95,8 @@ const GESTURE_HOLD: Duration = Duration::from_millis(300);
 /// shaping and starting of them all is spread out instead of one stall. One
 /// block always gets through, so a frame full of slow ones still makes progress.
 const LOD_WAKE_BUDGET: Duration = Duration::from_millis(6);
+/// How long after an edit asks for a save deck.json is written (`request_save`).
+const SAVE_IDLE: Duration = Duration::from_millis(250);
 
 /// A frame's allowance for blocks leaving LOD: about `LOD_WAKE_BUDGET` of work,
 /// at least one block. `draw` begins it before building the blocks that wait,
@@ -338,7 +340,8 @@ pub struct DeckView {
     zoom_anchor: (f32, f32),
     zoom_gen: u64,
     wake_at: Option<Instant>,
-    save_seq: Arc<Mutex<u64>>,
+    /// An edit asked for a save that has not been written yet (`request_save`).
+    save_pending: bool,
     /// The workspace's MCP endpoint while it runs, or why it could not start.
     mcp: Option<crate::mcp::server::Server>,
     mcp_err: Option<String>,
@@ -447,7 +450,7 @@ impl DeckView {
             zoom_anchor: (0.0, 0.0),
             zoom_gen: 0,
             wake_at: None,
-            save_seq: Arc::new(Mutex::new(0)),
+            save_pending: false,
             mcp: None,
             mcp_err: None,
             bridge: None,
@@ -462,21 +465,24 @@ impl DeckView {
 
     // ---- saving and closing ----
 
-    /// Writes deck.json off the UI thread: only the newest snapshot is written.
+    /// Writes deck.json off the UI thread, `SAVE_IDLE` after the first edit
+    /// asks: a run of edits (dragging a slider, typing) is one snapshot and
+    /// one write, not one each. `close` writes whatever is still waiting.
     fn request_save(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.m.deck_file() else { return };
-        let data = self.m.snapshot();
-        let seq = self.save_seq.clone();
-        let mine = {
-            let mut s = seq.lock().unwrap();
-            *s += 1;
-            *s
-        };
-        cx.background_spawn(async move {
-            let s = seq.lock().unwrap();
-            if *s == mine {
-                let _ = model::write_file_atomic(&path, &data);
-            }
+        if self.save_pending {
+            return;
+        }
+        self.save_pending = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_IDLE).await;
+            let _ = this.update(cx, |d, cx| {
+                if !std::mem::take(&mut d.save_pending) {
+                    return; // closed meanwhile: written there
+                }
+                if let Some(write) = d.m.save_job() {
+                    cx.background_spawn(async move { write() }).detach();
+                }
+            });
         })
         .detach();
     }
@@ -488,8 +494,8 @@ impl DeckView {
         self.life_delete(cx);
         self.life_close(cx);
         self.stop_editing(cx);
-        *self.save_seq.lock().unwrap() += 1; // no write under way overtakes this one
-        let _ = self.m.save();
+        self.save_pending = false;
+        let _ = self.m.save(); // after any write under way, and no older one lands after it
     }
 
     /// Hangs up the block's shell, if it has one.

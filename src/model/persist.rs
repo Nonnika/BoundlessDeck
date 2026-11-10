@@ -4,6 +4,8 @@
 use std::fs;
 use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize, Serializer};
 
@@ -96,10 +98,30 @@ impl Model {
         serde_json::to_vec_pretty(&ws).unwrap_or_default()
     }
 
-    /// Writes deck.json atomically, here and now.
+    /// Writes deck.json atomically, here and now. It waits for a write under
+    /// way, and no write handed out before (`save_job`) lands after it.
     pub fn save(&self) -> std::io::Result<()> {
         let Some(path) = self.deck_file() else { return Ok(()) };
-        write_file_atomic(&path, &self.snapshot())
+        let data = self.snapshot();
+        self.saves.seq.fetch_add(1, Ordering::SeqCst);
+        let _writing = self.saves.lock();
+        write_file_atomic(&path, &data)
+    }
+
+    /// Snapshots the deck now and hands back the write, to run off the UI
+    /// thread. Only the newest job writes; one overtaken by a later job or
+    /// `save` does nothing. Taking the job never waits for a write under way.
+    pub fn save_job(&self) -> Option<impl FnOnce() + Send + 'static> {
+        let path = self.deck_file()?;
+        let data = self.snapshot();
+        let gate = self.saves.clone();
+        let mine = gate.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        Some(move || {
+            let _writing = gate.lock();
+            if gate.seq.load(Ordering::SeqCst) == mine {
+                let _ = write_file_atomic(&path, &data);
+            }
+        })
     }
 
     fn seed(&mut self) {
@@ -117,6 +139,23 @@ impl Model {
             .into();
         self.add_block(b);
         self.sel.clear();
+    }
+}
+
+/// Orders a deck's writes: each takes a number, and writes one at a time,
+/// so an older snapshot never lands over a newer one, nor two writes share
+/// the temporary file.
+#[derive(Default)]
+pub struct SaveGate {
+    /// The number of the newest write asked for.
+    seq: AtomicU64,
+    /// Held while deck.json is written.
+    writing: Mutex<()>,
+}
+
+impl SaveGate {
+    fn lock(&self) -> MutexGuard<'_, ()> {
+        self.writing.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

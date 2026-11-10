@@ -110,6 +110,8 @@ pub struct Model {
     pub hung_up: Vec<Block>,
     /// The clock QuickLook blocks go by, in Unix ms; the wall clock when None.
     pub clock: Option<i64>,
+    /// Orders the writes of deck.json (`save`, `save_job`).
+    saves: std::sync::Arc<persist::SaveGate>,
 }
 
 impl Model {
@@ -807,6 +809,38 @@ mod tests {
         assert_eq!(v["blocks"][1]["glow"], serde_json::json!([1, 2, 3]), "kept as it was");
         assert_eq!(v["blocks"][0]["text"], "你好");
         assert_ne!(m.new_id(), "b000002");
+    }
+
+    #[test]
+    fn an_older_save_never_lands_over_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(DECK_DIR).join("deck.json");
+        let mut m = Model::new(dir.path());
+        let titled = |m: &mut Model, t: &str| {
+            let mut b = Block::new(BlockKind::Note);
+            b.title = t.into();
+            m.add_block(b);
+        };
+        let saved_titles = || -> Vec<String> {
+            let v: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+            v["blocks"].as_array().unwrap().iter().map(|b| b["title"].as_str().unwrap().to_string()).collect()
+        };
+
+        // A job overtaken by a later one writes nothing, whichever runs first.
+        titled(&mut m, "一");
+        let old = m.save_job().unwrap();
+        titled(&mut m, "二");
+        let new = m.save_job().unwrap();
+        new();
+        old();
+        assert_eq!(saved_titles(), ["一", "二"]);
+
+        // A job taken before a save now (closing, `save_deck`) does not undo it.
+        let old = m.save_job().unwrap();
+        titled(&mut m, "三");
+        m.save().unwrap();
+        old();
+        assert_eq!(saved_titles(), ["一", "二", "三"]);
     }
 
     #[test]
