@@ -143,8 +143,10 @@ pub fn parse(src: &str) -> Data {
     for (i, r) in data.iter().enumerate() {
         let (cat, cells) = if labeled { (r[0].clone(), &r[1..]) } else { ((i + 1).to_string(), &r[..]) };
         d.cats.push(cat);
-        for si in 0..nser {
-            d.vals[si].push(cells.get(si).and_then(|c| cell_number(c)).unwrap_or(f64::NAN));
+        // A row may hold fewer numbers than there are series: the rest are missing.
+        let rest = std::iter::repeat(None);
+        for (vals, cell) in d.vals.iter_mut().zip(cells.iter().map(Some).chain(rest)) {
+            vals.push(cell.and_then(|c| cell_number(c)).unwrap_or(f64::NAN));
         }
     }
     d

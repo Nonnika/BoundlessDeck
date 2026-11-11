@@ -74,7 +74,7 @@ impl DeckView {
             if zoomed && layerzoom::available() {
                 // The first picture shows the view as it was, drawn wider if going out.
                 self.photo.drawn = Some(picture_for(before, self.last_pointer, self.photo.out));
-                self.photo.core = self.photo.out.then(|| (before.x, before.y, self.view.0 / before.s, self.view.1 / before.s));
+                self.photo.core = self.photo.out.then_some((before.x, before.y, self.view.0 / before.s, self.view.1 / before.s));
                 self.photo.pending = true;
                 self.photo_swap(Swap::Start, cx);
             } else {
