@@ -557,6 +557,11 @@ impl Root {
             let path = r.path.clone();
             let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(path.clone());
             let missing = r.missing;
+            let meta = if missing {
+                "找不到这个文件夹".to_string()
+            } else {
+                format!("{} 个 block · {}", r.blocks, ago(now, r.opened_at))
+            };
             list = list.child(
                 div()
                     .id(SharedString::from(format!("recent:{i}")))
@@ -609,16 +614,13 @@ impl Root {
                                     .child(
                                         div().flex_1().min_w_0().overflow_hidden().text_ellipsis().child(short_path(&path)),
                                     )
-                                    .child(if missing {
-                                        div().flex_none().text_color(t.danger).child("找不到这个文件夹")
-                                    } else {
-                                        div()
-                                            .flex_none()
-                                            .child(format!("{} 个 block · {}", r.blocks, ago(now, r.opened_at)))
-                                    }),
+                                    .child(div().flex_none().when(missing, |d| d.text_color(t.danger)).child(meta.clone())),
                             ),
                     )
-                    .on_drag(DraggedDeck { path: path.clone(), name: name.clone(), missing }, |d, _, _, cx| cx.new(|_| d.clone()))
+                    .on_drag(
+                        DraggedDeck { path: path.clone(), name: name.clone(), meta: meta.clone(), missing },
+                        |d, _, _, cx| cx.new(|_| d.clone()),
+                    )
                     .on_click(cx.listener(move |r, _, _, cx| r.begin_open(PathBuf::from(&path), cx))),
             );
         }
@@ -714,6 +716,8 @@ fn paint_corner_glow(window: &mut Window, at: gpui::Point<gpui::Pixels>, radius:
 struct DraggedDeck {
     path: String,
     name: String,
+    /// The row's second line: the count and when, or the missing note.
+    meta: String,
     missing: bool,
 }
 
@@ -722,17 +726,22 @@ impl Render for DraggedDeck {
         let t = Theme::of(window);
         let paper = Paper::of(&t);
         let missing = self.missing;
+        let (face, outline) = if t.dark { (gpui::black(), t.border) } else { (gpui::white(), t.border) };
+        // GPUI lays a drag ghost out at min-content (it is prepainted with
+        // AvailableSpace::min_size()), so the width must be given or the row
+        // collapses to a sliver of wrapped words. 550 is a list row's width.
         div()
+            .w(px(550.))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(10.))
+            .gap(px(12.))
             .px(px(12.))
-            .py(px(8.))
-            .bg(t.surface)
+            .py(px(10.))
+            .bg(face)
             .border_1()
-            .border_color(t.border)
-            .opacity(0.92)
+            .border_color(outline)
+            .opacity(0.95)
             .shadow(vec![gpui::BoxShadow {
                 color: t.shade,
                 offset: point(px(0.), px(6.)),
@@ -740,17 +749,44 @@ impl Render for DraggedDeck {
                 spread_radius: px(0.),
             }])
             .child(
-                div().size(px(24.)).child(
-                    canvas(|_, _, _| (), move |b, _, window, _| crate::app::homescene::paint_deck_mark(window, b, &t, &paper, missing))
-                        .size_full(),
+                div().size(px(30.)).flex().items_center().justify_center().child(
+                    canvas(|_, _, _| (), move |b, _, window, _| {
+                        crate::app::homescene::paint_deck_mark(window, b, &t, &paper, missing)
+                    })
+                    .size_full(),
                 ),
             )
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.text).child(self.name.clone()))
-                    .child(div().text_size(px(11.)).text_color(t.muted).child(short_path(&self.path))),
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if missing { t.muted } else { t.text })
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(self.name.clone()),
+                    )
+                    // The path, and on its line (so on its baseline) the count and when.
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(12.))
+                            .text_size(px(12.))
+                            .text_color(t.muted)
+                            .whitespace_nowrap()
+                            .child(
+                                div().flex_1().min_w_0().overflow_hidden().text_ellipsis().child(short_path(&self.path)),
+                            )
+                            .child(div().flex_none().when(missing, |d| d.text_color(t.danger)).child(self.meta.clone())),
+                    ),
             )
     }
 }
